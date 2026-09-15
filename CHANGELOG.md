@@ -37,6 +37,33 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   The report text is not what the bench scores, so the terse description cannot move scores.
 - **Status:** committed; not yet benched.
 
+## 2026-09-15 — Auto-snapshot byte cap (≤ ~8k chars) on action results, `full` / `limit` pass-through
+- **What:** the `snapshot` attached to every action result (fast_click / fast_fill /
+  fast_wait / fast_select_option / fast_hover / … — everything through `withSnap`) is
+  now capped by BYTES after the existing count caps: `byteCapSnapshot()` trims content
+  block text to 100 chars, drops content blocks from the ranked tail, trims item
+  text/innerText to 60 chars, then drops items from the tail (never below 8). Item ids
+  (`i`) and geometry are never touched. When anything was dropped or trimmed (by count
+  OR bytes) the snapshot carries `truncated:true`, `dropped:{items,content,textTrimmed}`
+  and a `hint`. `full:true` on the ACTION returns the whole serialize uncapped;
+  `limit:N` overrides the 30-item cap. (`capAutoSnapshot` is the single entry point;
+  the stale-fallback path uses it too.) The explicit `fast_snapshot` path is unchanged
+  (numeric `truncated` count, its own `full`/`limit`).
+- **Why:** the Grok latency profile (`docs/GROK_LATENCY_2026-09-15.md`): click results
+  reached ~37k chars on text-heavy pages because a single content block can be 500
+  chars — ~0.9s of fresh prefill per model turn, every turn.
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** the cap measures `JSON.stringify(snap)` (the snapshot object, not the
+  whole result) — a result lands at ~8.1k with its own fields. Loss order is
+  deliberate (content before items, text before whole entries): don't reorder it or a
+  click result loses the very control the model needs next. `full`/`limit` are read
+  from the action's own args, so a `fast_batch` step passes them per step.
+- **Status:** committed / verified on the isolated hvm rig on Wikipedia's Main_Page:
+  default `fast_wait` result 8064 chars (`items 30, content 15, truncated:true,
+  dropped {content:6, items:18}`), `full:true` → 11849 chars (48 items / 21 content,
+  no `truncated`), `limit:3` → 2913 chars. Shipped to hvm via rsync + `bench/FIXER_READY`
+  (rig agent restarts); Windows copy NOT synced.
+
 ## 2026-09-15 — Grok-runner bench fumbles → tool fixes: actionable misses, titled/emotion react-select, portal listbox sweep, storm-safe fast_wait
 - **What:** Four tool defects surfaced by the 2026-09-15 Grok runner pass (local bench,
   8/8 cells, every fumble classified from `~/.local/state/fastrun/runs.jsonl`), all in

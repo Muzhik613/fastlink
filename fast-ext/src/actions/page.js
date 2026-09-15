@@ -1041,6 +1041,56 @@ const capSnapshot = (snap, itemCap, contentCap) => {
   return snap;
 };
 
+// Byte cap for the AUTO-snapshot attached to action results (fast_click / fill /
+// wait / select …). The count caps above leave click results at ~37k chars on
+// text-heavy pages (Wikipedia, GCP) — ~0.9s of fresh prefill per model turn, per
+// the Grok latency profile — because a single content block can be 500 chars.
+// Order of loss: content text trimmed → content blocks dropped from the (ranked)
+// tail → item text trimmed → items dropped from the tail, never below
+// AUTO_MIN_ITEMS. Item ids (`i`) and geometry are never touched, so a caller can
+// still act on anything listed. Sets `truncated:true` + `dropped` counts + a hint
+// pointing at `full:true` / `limit:N` on the action, or fast_snapshot.
+const AUTO_SNAP_MAX_CHARS = 8000;
+const AUTO_MIN_ITEMS      = 8;
+const AUTO_TEXT_TRIM      = 100;   // content block text after the first trim pass
+const AUTO_ITEM_TEXT_TRIM = 60;    // item text/innerText after the item trim pass
+const byteCapSnapshot = (snap, max = AUTO_SNAP_MAX_CHARS) => {
+  if (!snap || typeof snap !== 'object' || !Array.isArray(snap.items)) return snap;
+  const size = () => { try { return JSON.stringify(snap).length; } catch { return 0; } };
+  const dropped = { content: 0, items: 0 };
+  let trimmed = false;
+  if (size() > max && Array.isArray(snap.content)) {
+    for (const c of snap.content) if (c.text && c.text.length > AUTO_TEXT_TRIM) { c.text = c.text.slice(0, AUTO_TEXT_TRIM) + '…'; trimmed = true; }
+    while (snap.content.length && size() > max) { snap.content.pop(); dropped.content++; }
+  }
+  if (size() > max) {
+    for (const it of snap.items) {
+      if (it.text && it.text.length > AUTO_ITEM_TEXT_TRIM) { it.text = it.text.slice(0, AUTO_ITEM_TEXT_TRIM) + '…'; trimmed = true; }
+      if (it.innerText && it.innerText.length > AUTO_ITEM_TEXT_TRIM) { it.innerText = it.innerText.slice(0, AUTO_ITEM_TEXT_TRIM) + '…'; trimmed = true; }
+    }
+    while (snap.items.length > AUTO_MIN_ITEMS && size() > max) { snap.items.pop(); dropped.items++; }
+  }
+  const countCapped = typeof snap.truncated === 'number' ? snap.truncated : 0;
+  const contentCountCapped = typeof snap.contentTruncated === 'number' ? snap.contentTruncated : 0;
+  if (dropped.content || dropped.items || trimmed || countCapped || contentCountCapped) {
+    snap.count = snap.items.length;
+    if (Array.isArray(snap.content)) snap.contentCount = snap.content.length;
+    snap.truncated = true;
+    snap.dropped = { items: dropped.items + countCapped, content: dropped.content + contentCountCapped, textTrimmed: trimmed };
+    delete snap.contentTruncated;
+    snap.hint = `auto-snapshot preview capped (~${max} chars): pass full:true or limit:N on the action for more, or call fast_snapshot`;
+  }
+  return snap;
+};
+// The action-result preview: count caps, then the byte cap. `full:true` on the
+// action returns the whole serialize uncapped; `limit:N` overrides the item cap.
+const capAutoSnapshot = (snap, args) => {
+  if (args && (args.full === true || args.full === 'true')) return snap;
+  const itemCap = (args && typeof args.limit === 'number' && args.limit >= 0) ? args.limit : AUTO_ITEM_CAP;
+  capSnapshot(snap, itemCap, AUTO_CONTENT_CAP);
+  return byteCapSnapshot(snap);
+};
+
 // Look up an element by snapshot id. Stable for the page's lifetime.
 const elById = (id) => INDEX.byId.get(id);
 
@@ -1177,9 +1227,9 @@ async function runPageAction(action, args) {
         const inView = (it) => !!it.inOverlay || !(it.y + it.h < 0 || it.y > vh || it.x + it.w < 0 || it.x > vw);
         const items = preSnap.items.filter(inView);
         const content = Array.isArray(preSnap.content) ? preSnap.content.filter(inView) : [];
-        res.snapshot = capSnapshot(
+        res.snapshot = capAutoSnapshot(
           { ...preSnap, count: items.length, items, contentCount: content.length, content },
-          AUTO_ITEM_CAP, AUTO_CONTENT_CAP,
+          args,
         );
         res.snapshotStale = true; // match-time DOM: the fresh post-action walk was unavailable
         if (preSnap.snapshotTimedOut || preSnap.partial || preSnap.capped) {
@@ -1205,7 +1255,7 @@ async function runPageAction(action, args) {
       if ((!snap || !Array.isArray(snap.items) || snap.items.length === 0) && hasPre) {
         attachStale(result);
       } else {
-        capSnapshot(snap, AUTO_ITEM_CAP, AUTO_CONTENT_CAP);
+        capAutoSnapshot(snap, args);
         result.snapshot = snap;
         result.snapshotFresh = true; // post-action capture: reflects what the action did
         if (snap && (snap.snapshotTimedOut || snap.partial || snap.capped)) {
