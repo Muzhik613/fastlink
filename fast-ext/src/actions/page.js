@@ -1345,7 +1345,7 @@ async function runPageAction(action, args) {
   // zones, React effects, etc. have a chance to mutate before we serialize.
   // Opt-out per call with args.noSnapshot. Skipped on error returns and when
   // an action already returns its own snapshot.
-  const withSnap = async (result, preSnap) => {
+  const withSnap = async (result, preSnap, { settleMs = SETTLE_MAX_MS } = {}) => {
     if (!result || typeof result !== 'object') return result;
     // noSnapshot opt-out — coerce defensively: a param not declared in the tool's
     // inputSchema can reach us STRINGIFIED (e.g. the string "false", which is
@@ -1375,7 +1375,7 @@ async function runPageAction(action, args) {
     // Then let the re-render the action triggered finish (DOM quiet for 150ms,
     // ≤ SETTLE_MAX_MS) so the snapshot shows the result of the action, not the
     // frame before it. A page still mutating at the cap is flagged `settling`.
-    const settle = await settleDom(SETTLE_MAX_MS);
+    const settle = await settleDom(settleMs);
     // FRESH POST-ACTION SNAPSHOT (field-feedback #1): re-walk the DOM AFTER the
     // action settles so the returned snapshot reflects what the action DID — a
     // dropdown it opened, a framework re-render, a revealed panel — instead of the
@@ -2258,14 +2258,29 @@ async function runPageAction(action, args) {
       return out;
     };
 
+    // Name/id lookups are explicit; label/aria/placeholder lookups only consider
+    // VISIBLE control-like elements (controls first, then aria-labelled custom
+    // widgets) and never a landmark/container — GCP's hidden "Skip links"
+    // [aria-label] div once won "Application type" over the real combobox.
+    const CONTROLISH = 'select,input,textarea,[role="combobox"],[role="listbox"],[role="textbox"],[role="searchbox"],[aria-haspopup],[contenteditable="true"],[contenteditable=""]';
+    const LANDMARK_ROLES = /^(banner|complementary|contentinfo|main|navigation|region|form|group|dialog|alertdialog|search|toolbar|tabpanel|presentation|none|heading|list|table|grid)$/;
+    const usableField = (el) => {
+      let r; try { r = el.getBoundingClientRect(); } catch { return false; }
+      if (!fieldVisible(el, r)) return false;
+      const role = el.getAttribute('role');
+      return !(role && LANDMARK_ROLES.test(role));
+    };
     const findField = (fieldRaw, fieldLo) => {
-      const escName = CSS.escape(fieldRaw);
-      const byName = queryAllDeep(document, `[name="${escName}" i]`)[0];
+      const nameSel = `[name="${CSS.escape(fieldRaw)}" i]`;
+      // ONE composed-tree walk (a heavy page pays seconds per walk under a storm).
+      const all = queryAllDeep(document, `${nameSel},${CONTROLISH},[aria-labelledby],[aria-label],[placeholder]`);
+      const byName = all.find(el => el.matches && el.matches(nameSel));
       if (byName) return byName;
       const byId = lookupId(document.documentElement, fieldRaw);
       if (byId) return byId;
-      const fieldish = 'input,select,textarea,[role="combobox"],[role="listbox"],[role="textbox"],[role="searchbox"],[contenteditable="true"],[contenteditable=""],[aria-labelledby],[aria-label],[placeholder]';
-      const candidatesAll = queryAllDeep(document, fieldish);
+      const usable = all.filter(usableField);
+      const isCtl = (el) => el.matches && el.matches(CONTROLISH);
+      const candidatesAll = usable.filter(isCtl).concat(usable.filter(el => !isCtl(el)));
       // Wired label (for=/wrapping/aria-labelledby) OR a sibling <label> in the
       // same field group — the latter rescues react-select inputs whose only
       // aria-label is an opaque internal id (Greenhouse dropdowns).
@@ -2344,13 +2359,24 @@ async function runPageAction(action, args) {
         return cleanLabel(el.textContent).slice(0, 200);
       } catch { return ''; }
     };
-    const withReadback = async (res, el, ctrl) => {
-      await settleDom(SETTLE_MAX_MS);
-      const value = readShown(el, res.kind, ctrl);
-      const verified = !!value && value.toLowerCase().includes(String(res.picked).toLowerCase());
+    // Returns as soon as the control's read-back shows the pick (polled every
+    // 30ms), else at the cap — never a fixed DOM-quiet wait, which on a storming
+    // page (GCP) always ran to SETTLE_MAX_MS.
+    const withReadback = async (res, el, ctrl, timing = {}) => {
+      const t0 = nowMs();
+      const want = String(res.picked).toLowerCase();
+      let value = '';
+      for (;;) {
+        value = readShown(el, res.kind, ctrl);
+        if (value && value.toLowerCase().includes(want)) break;
+        if (nowMs() - t0 >= SETTLE_MAX_MS) break;
+        await wait(30);
+      }
+      timing.readbackMs = Math.round(nowMs() - t0);
+      const verified = !!value && value.toLowerCase().includes(want);
       const head = { verified, picked: res.picked, value, field: describeField(el) };
       if (!verified) head.reason = `the dropdown now shows ${JSON.stringify(value)}, not "${res.picked}" — the pick did not take (or landed on another control: see field); do not report it as selected`;
-      return frontload(res, head);
+      return frontload({ ...res, timing }, head);
     };
 
     // Set ONE dropdown. Returns a plain result object (no snapshot) so it can be
@@ -2363,8 +2389,10 @@ async function runPageAction(action, args) {
       if (!fieldLo || !optionText) return { error: 'field and option required' };
 
       const t0 = nowMs();
+      const timing = {};   // performance.now() marks per phase, reported on every result
       let field = findField(fieldRaw, fieldLo);
       while (!field && nowMs() - t0 < AUTO_WAIT_MS) { await wait(150); field = findField(fieldRaw, fieldLo); }
+      timing.resolveMs = Math.round(nowMs() - t0);
       if (field) { try { const r = field.getBoundingClientRect(); if (r.bottom < 0 || r.top > window.innerHeight) field.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {} }
       if (!field) {
         const act = pageActivity();
@@ -2376,12 +2404,14 @@ async function runPageAction(action, args) {
         const target = pickByText(all, o => (o.text || '').trim().toLowerCase(), optionText)
                     || all.find(o => (o.value || '').toLowerCase() === optionText.toLowerCase());
         if (!target) return { error: 'option not found in <select>', field: describeField(field), available: all.map(o => o.text) };
+        const tp = nowMs();
         field.value = target.value;
         // composed:true so a validator listening OUTSIDE the select's shadow root
         // (web-component / Angular-Material composite control) revalidates — a
         // non-composed change does not cross the shadow boundary (GitHub #1).
         field.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-        return withReadback({ picked: target.text, kind: 'native-select' }, field);
+        timing.pickMs = Math.round(nowMs() - tp);
+        return withReadback({ picked: target.text, kind: 'native-select' }, field, null, timing);
       }
 
       // react-select detection must be CLASS-PREFIX-AGNOSTIC. The classNamePrefix
@@ -2410,6 +2440,7 @@ async function runPageAction(action, args) {
         // Open state: the `--menu-is-open` modifier only exists WITH a prefix;
         // aria-expanded on the combobox input is always maintained.
         const menuOpen = /--menu-is-open/.test(ctrl.className) || (rsInput && rsInput.getAttribute('aria-expanded') === 'true');
+        const tOpen = nowMs();
         // react-select opens on the control's MOUSEDOWN (onControlMouseDown), not
         // on click — a bare .click() only ever worked when the typed filter text
         // opened the menu, which a non-searchable (dummy-input) select never does.
@@ -2443,43 +2474,110 @@ async function runPageAction(action, args) {
           opts = listbox ? Array.from(listbox.querySelectorAll('[id*="-option-"], [role="option"]')) : [];
         }
         const target = pickByText(opts, optText, optionText);
+        timing.openMs = Math.round(nowMs() - tOpen);
         if (!target) {
-          return { error: 'no matching option in react-select', tried: optionText, kind: 'react-select', field: describeField(field), instance: instId || undefined, available: opts.slice(0, 10).map(o => (o.textContent || '').trim()) };
+          return { error: 'no matching option in react-select', tried: optionText, kind: 'react-select', field: describeField(field), instance: instId || undefined, available: opts.slice(0, 10).map(o => (o.textContent || '').trim()), timing };
         }
+        const tp = nowMs();
         target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
         target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
         target.click();
-        await wait(250);
-        return withReadback({ picked: (target.textContent || '').trim(), kind: 'react-select' }, field, ctrl);
+        timing.pickMs = Math.round(nowMs() - tp);
+        return withReadback({ picked: (target.textContent || '').trim(), kind: 'react-select', opened: menuOpen ? 'already' : 'mousedown' }, field, ctrl, timing);
       }
 
-      // Generic ARIA listbox / menu. Open the field, then resolve its options
-      // SYNCHRONOUSLY from (1) the panel its aria-controls/aria-owns names
-      // (mat-select / cfc-select), (2) the portal/overlay sweep, (3) the index's
-      // option side-set — in that order, on every look. The budget is WALL
-      // CLOCK: on a storming page (GCP's Angular re-render) a 50ms timer can
-      // sleep for seconds, so each wake re-checks elapsed time and gives up at
-      // the budget instead of after N ticks; a starved wait is reported.
-      field.focus();
-      field.click();
+      // Generic ARIA listbox / menu (the ARIA contract only: role=combobox|button
+      // + aria-haspopup / aria-expanded / aria-controls|aria-owns → role=listbox
+      // with role=option|menuitem — no framework selectors). Options resolve
+      // SYNCHRONOUSLY from (1) the panel aria-controls/aria-owns names, (2) the
+      // portal/overlay sweep, (3) the index's option side-set — VISIBLE ones only
+      // (a closed APG listbox keeps its options in the DOM under display:none).
+      // OPEN CHAIN when no panel is open: click the trigger → ArrowDown → Enter,
+      // each followed by a MutationObserver wait for the panel (no timer loop);
+      // `opened` says which step worked, `opened:false` + `tried` when none did.
       const optTextLo = optionText.toLowerCase();
-      const OPTION_SEL = '[role="option"],mat-option,cfc-option,[role="menuitem"],[role="menuitemradio"],li[data-value],[data-option-value]';
+      const OPTION_SEL = '[role="option"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],li[data-value],[data-option-value]';
+      const visibleOnly = (els) => {
+        const out = [];
+        for (let i = 0; i < els.length && i < 400; i++) { let r; try { r = els[i].getBoundingClientRect(); } catch { continue; } if (visible(els[i], r)) out.push(els[i]); }
+        return out;
+      };
       const optionEls = () => {
         for (const id of ariaPanelIds(field)) {
           const panel = lookupId(field, id) || document.getElementById(id);
           if (!panel) continue;
-          const els = Array.from(panel.querySelectorAll(OPTION_SEL));
+          const els = visibleOnly(panel.querySelectorAll(OPTION_SEL));
           if (els.length) return { els, via: 'aria-controls' };
         }
         let swept = null; try { swept = collectOverlayEls(); } catch {}
         if (swept && swept.size) {
-          const els = [...swept].filter(el => el.matches && el.matches(OPTION_SEL));
+          const els = visibleOnly([...swept].filter(el => el.matches && el.matches(OPTION_SEL)));
           if (els.length) return { els, via: 'overlay' };
         }
         const els = [];
         for (const el of INDEX.options) if (el.isConnected) els.push(el);
-        return { els, via: 'index' };
+        return { els: visibleOnly(els), via: 'index' };
       };
+      // The element that opens the list: the field itself when it is the
+      // combobox/popup button, else the first such descendant (a labelled
+      // wrapper around a role=combobox host).
+      const OPENER_SEL = '[role="combobox"],[aria-haspopup],[role="listbox"],button,[role="button"]';
+      const trigger = (field.matches && field.matches(OPENER_SEL)) ? field : ((field.querySelector && field.querySelector(OPENER_SEL)) || field);
+      const expanded = () => {
+        try {
+          if (trigger.getAttribute('aria-expanded') === 'true' || field.getAttribute('aria-expanded') === 'true') return true;
+          return !!(field.querySelector && field.querySelector('[aria-expanded="true"]'));
+        } catch { return false; }
+      };
+      // "Open" = visible options in a panel this field names / an overlay, or
+      // index options while the trigger claims aria-expanded — never bare index
+      // options (another widget's).
+      const panelOpen = () => { const f = optionEls(); return f.els.length && (f.via !== 'index' || expanded()) ? f : null; };
+      const waitForPanel = (capMs) => new Promise((resolve) => {
+        const t0 = nowMs(); let done = false, mo = null, timer = null, lastCheck = 0;
+        const finish = (f) => { if (done) return; done = true; try { if (mo) mo.disconnect(); } catch {} clearTimeout(timer); resolve(f); };
+        const check = () => {
+          if (done || nowMs() - lastCheck < 30) return;   // a mutation storm must not turn the probe into the load
+          lastCheck = nowMs();
+          const f = panelOpen();
+          if (f) finish(f); else if (nowMs() - t0 >= capMs) finish(null);
+        };
+        try { mo = new MutationObserver(check); mo.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded', 'aria-controls', 'aria-owns', 'hidden', 'style', 'class'] }); } catch {}
+        // Shadow-root panels are invisible to a document observer: coarse fallback tick, wall-clock capped.
+        const tick = () => { if (done) return; check(); if (!done) timer = setTimeout(tick, 100); };
+        check(); if (!done) timer = setTimeout(tick, 100);
+      });
+      const fire = (el, types) => {
+        for (const type of types) {
+          const Ev = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+          el.dispatchEvent(new Ev(type, { bubbles: true, cancelable: true, composed: true, button: 0, ...(type.startsWith('pointer') ? { pointerId: 1, isPrimary: true, pointerType: 'mouse' } : {}) }));
+        }
+      };
+      const key = (el, k) => { const o = keyInit(k); el.dispatchEvent(new KeyboardEvent('keydown', o)); el.dispatchEvent(new KeyboardEvent('keyup', o)); };
+      const tOpen = nowMs();
+      const tried = [];
+      let opened = 'already';
+      let panel = panelOpen();
+      if (!panel) {
+        tried.push('click'); opened = 'click';
+        try { trigger.focus(); } catch {}
+        fire(trigger, ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']);
+        panel = await waitForPanel(1500);
+      }
+      if (!panel) {
+        tried.push('ArrowDown'); opened = 'ArrowDown';
+        key(trigger, 'ArrowDown');
+        panel = await waitForPanel(600);
+      }
+      // Enter only on a non-text trigger that does not claim to be open already
+      // (on an open-but-unseen list Enter would commit its highlighted entry).
+      if (!panel && !/^(INPUT|TEXTAREA)$/.test(trigger.tagName) && !expanded()) {
+        tried.push('Enter'); opened = 'Enter';
+        key(trigger, 'Enter');
+        panel = await waitForPanel(600);
+      }
+      if (!panel) opened = false;
+      timing.openMs = Math.round(nowMs() - tOpen);
       const pickOption = (els) => {
         let exact = null, starts = null, sub = null;
         for (const el of els) {
@@ -2491,25 +2589,31 @@ async function runPageAction(action, args) {
         }
         return exact || starts || sub;
       };
+      // Options may still stream in after the panel opens (async / virtual
+      // lists): re-probe until the wanted one shows, WALL CLOCK capped (a
+      // starved timer on a storming page is reported, never run past budget).
       const budgetMs = args.timeoutMs || 3000;
       const tStart = nowMs();
-      let target = null, via = null, found = null, starved = false;
+      let target = null, via = null, found = panel || optionEls(), starved = false;
       for (let tick = 0; ; tick++) {
-        drainPendingSync(2000, 30);
-        found = optionEls();
+        if (tick) { drainPendingSync(2000, 30); found = optionEls(); }
         target = pickOption(found.els);
         if (target) { via = found.via; break; }
-        if (nowMs() - tStart >= budgetMs) break;
+        if (!opened || nowMs() - tStart >= budgetMs) break;   // nothing opened: report now, no 3s poll
         const before = nowMs();
-        await wait(tick === 0 ? 0 : 50);
+        await wait(50);
         if (nowMs() - before > 1000) starved = true;   // the timer slept far past its 50ms: main thread starved
       }
       if (target) {
+        const tp = nowMs();
         target.click();
-        return withReadback({ picked: (target.textContent || '').trim(), kind: 'aria-listbox', via }, field);
+        timing.pickMs = Math.round(nowMs() - tp);
+        return withReadback({ picked: (target.textContent || '').trim(), kind: 'aria-listbox', via, opened }, field, null, timing);
       }
       const available = found ? found.els.slice(0, 10).map(el => (el.textContent || '').trim()).filter(Boolean) : [];
-      return { error: 'no matching option in listbox / no listbox detected', tried: optionText, field: describeField(field), elapsedMs: Math.round(nowMs() - tStart), ...(starved ? { starved: true, hint: 'the page was re-rendering so heavily that timers starved; retry once the view settles (fast_wait for text of the finished state), or fast_click the option text directly' } : {}), panelIds: ariaPanelIds(field), available };
+      const base = { tried: optionText, field: describeField(field), opened, elapsedMs: Math.round(nowMs() - t0), timing, panelIds: ariaPanelIds(field), available };
+      if (!opened) return { error: `could not open the dropdown "${fieldRaw}" — no options appeared after ${tried.join(' / ')} on its trigger (${trigger.tagName.toLowerCase()}${trigger.getAttribute('role') ? ` role=${trigger.getAttribute('role')}` : ''}); nothing was changed`, triedOpen: tried, ...base, hint: 'fast_click the control and read the auto-snapshot for what opened; if the options are drawn on canvas / in a cross-origin frame use the vision tier (fast_point)' };
+      return { error: 'no matching option in the open list', ...base, ...(starved ? { starved: true, hint: 'the page was re-rendering so heavily that timers starved; retry once the view settles (fast_wait for text of the finished state), or fast_click the option text directly' } : {}) };
     };
 
     // BATCH mode: a { field: option } map sets many dropdowns in one call —
@@ -2535,8 +2639,14 @@ async function runPageAction(action, args) {
     }
 
     // Single form: success wrapped with a fresh snapshot, misses returned plain.
+    // A verified pick is settled by definition: the snapshot waits one short
+    // quiet window, not the full SETTLE_MAX_MS (1s on a storming page).
     const r = await setOne(args.field, args.option);
-    return (r && !r.error) ? calmIfVerified(await withSnap(r)) : r;
+    if (!r || r.error) return r;
+    const ts = nowMs();
+    const out = await withSnap(r, undefined, { settleMs: r.verified ? 150 : SETTLE_MAX_MS });
+    if (r.timing) r.timing.snapshotMs = Math.round(nowMs() - ts);
+    return calmIfVerified(out);
   }
 
   if (action === 'fast_hover') {

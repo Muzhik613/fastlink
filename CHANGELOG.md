@@ -19,6 +19,47 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — fast_select_option: generic ARIA open chain (click → ArrowDown → Enter, observer-waited), control-only field lookup, readback-confirmed pick, `timing`
+- **What:** page.js `fast_select_option` generic branch, ARIA contract only (no framework
+  selectors): (1) `findField` label/aria/placeholder passes consider only VISIBLE control-like
+  elements (`select/input/textarea/[role=combobox|listbox|textbox|searchbox]/[aria-haspopup]/
+  contenteditable`) first, then aria-labelled custom widgets, never a landmark/container role —
+  one composed-tree walk instead of three. (2) Trigger = the field when it is the
+  combobox/popup button, else its first such descendant. When no panel is open (visible options
+  in the `aria-controls`/`aria-owns` panel or an overlay, or index options while the trigger
+  says `aria-expanded=true`) the chain is: pointer/mouse/click sequence on the trigger →
+  `ArrowDown` → `Enter` (skipped on text inputs and on a trigger already claiming expanded),
+  each followed by `waitForPanel` — a MutationObserver on the document (attribute filter
+  aria-expanded/-controls/-owns/hidden/style/class, ≥30ms between probes) plus a 100ms
+  fallback tick for shadow-root panels, wall-clock capped (1500 / 600 / 600ms). Result carries
+  `opened:"already"|"click"|"ArrowDown"|"Enter"`; when nothing opened the call returns at once
+  with `opened:false`, `triedOpen:[…]` and a hint — no 3s option poll. (3) Options are
+  visible-only (a closed APG listbox keeps `display:none` options in the DOM). (4) `withReadback`
+  polls the control's read-back every 30ms and returns the moment it shows the pick (cap 1s)
+  instead of a fixed DOM-quiet wait; a verified pick's auto-snapshot settles 150ms, not 1s
+  (`withSnap(result, pre, {settleMs})`). (5) Every result carries
+  `timing:{resolveMs, openMs, pickMs, readbackMs, snapshotMs}` (performance.now marks).
+- **Why:** gcpform cell on grok-4.3 (18:51Z): `fast_select_option "Application type"` took 8.8s
+  and failed "no listbox detected" — `findField` had matched GCP's hidden "Skip links"
+  `[aria-label]` div (its containerLabel held the text), so the click opened nothing and the
+  panel search ran the full budget under the render storm; after a plain `fast_click` opened
+  the real `cfc-select`, the retry took 6.7s (settle 1s + snapshot settle 1s + storm) and read
+  back the wrong element. Owner rule: works on every site, nothing keyed to GCP/Material.
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** the react-select branch keeps its own mousedown open path (+250/400ms fixed
+  waits); `Enter` is deliberately not sent to a trigger that already reports expanded (it would
+  commit the highlighted entry of a list we cannot see). `mat-option`/`cfc-option` tags left the
+  option selector — both carry `role=option`. Timings below are in-page; the bridge/broker add
+  their own.
+- **Status:** committed; `fast-runner` tests pass; verified live (hot-loaded page.js) on
+  w3.org APG select-only combobox (opened:click, resolve 2 / open 1 / pick 0 / readback 0 /
+  snapshot 154 ms, verified), ng-matero.github.io Angular Material `mat-select` (Pokemon,
+  Colors: open 3–17 / readback 30 / snapshot 141 ms, verified), react-select.com "Single"
+  (open 683 / readback 0, verified), native selects on selenium.dev web-form and the Bootstrap
+  checkout example (≈0 ms), and the `opened:false` path on a text input (2.2s, nothing changed).
+  material.angular.dev itself could not be hot-loaded (CSP `default-src 'self'` blocks fetch +
+  eval) — the lead's post-reload GCP re-run covers `cfc-select`.
+
 ## 2026-09-15 — fast_fill REFUSES a label that matches several fields (candidates + section/index hint) instead of writing the first
 - **What:** `fast_fill` (single and `{fields}`; page.js `resolveAll`): when a match resolves to
   >1 fillable element and neither `section`/`near` nor `index` picks one, the field is NOT
