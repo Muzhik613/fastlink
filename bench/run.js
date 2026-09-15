@@ -166,7 +166,7 @@ export async function runCell({
     // Trace source + watermark BEFORE anything can generate a row.
     let source;
     let handle = null; // runner driver: the spawned cli.mjs (its trace is `source`)
-    if (driver === 'runner') { handle = runner.start(test.prompt, { browser }); source = handle.trace; }
+    if (driver === 'runner') { handle = runner.start(test.prompt, { browser, transport }); source = handle.trace; }
     else if (transport === 'local') source = new LocalTrace({ since: Date.now() });
     else {
       const token = resolveDeviceToken(deviceToken);
@@ -328,7 +328,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       '',
       '  --transport relay|local   default relay (chat sites use the relay)',
       '  --driver    web|manual    web = script the chat UI; manual = print the prompt and record',
-      '                            (client grok_runner always uses the runner driver: fast-runner/cli.mjs over the relay)',
+      '                            (client grok_runner always uses the runner driver: fast-runner/cli.mjs; --transport picks relay or local)',
       '  --browser   <name>        runner only: relay browser name to pin via fast_profile (e.g. yaakovschrome)',
       '  --install   <label>       Chrome profile to OBSERVE (reset/trail/scoring) via fast_profile.',
       '                            On --transport local it is also the driven profile. On relay,',

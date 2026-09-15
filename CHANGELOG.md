@@ -19,6 +19,28 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — bench: self-driving hvm rig (grok_runner over the LOCAL transport, n=3)
+- **What:** `bench/hvm-rig.sh` (env + idempotent bring-up: Xvfb `:98`, Chrome for Testing
+  with the unpacked `fast-ext`, broker `:9876`, grokcode proxy `:8791`, proof that the
+  extension is on the broker), `bench/hvm-run.sh` (PASSES×6 auth-free cells, commit per
+  pass, doc regenerated per pass), `bench/hvm-report.js` (per test × pass score/wall/calls,
+  best + median wall vs the relay baseline, all-pass tool histogram with per-tool fumble
+  count, fumble list; targets read from the runner's run store). `drive-runner.start` takes
+  `transport` so `run.js --transport local` spawns `cli.mjs --local` instead of always
+  `--relay`.
+- **Why:** run the Grok-runner suite on a box that does not sleep; phase 1 needs tool-choice
+  data, not hop latency, so the local transport is fine there.
+- **Files:** `bench/hvm-rig.sh`, `bench/hvm-run.sh`, `bench/hvm-report.js`,
+  `bench/drive-runner.js`, `bench/run.js`.
+- **Watch out:** hvm-specific facts baked into hvm-rig.sh — branded Chrome ≥137 ignores
+  `--load-extension` (hence Chrome for Testing under `~/.local/share/fastlink-bench-chrome`),
+  Chrome needs `--no-sandbox` there (AppArmor), `:8790` on hvm is an unrelated service so the
+  proxy is on `:8791` (`GROKCODE_PORT/URL`, already env-driven in `xai.mjs`). `gcpform` /
+  `cfworkers` are skipped (no login in that profile). hvm and WSL now hold separate copies of
+  `~/.grok/auth.json`: if xAI rotates refresh tokens, one side's refresh can invalidate the
+  other — cure is `grok login` on the side that breaks.
+- **Status:** in code / committed / rig verified live on hvm.
+
 ## 2026-09-15 — docs: Grok runner phase-2 tool triage draft (`docs/TOOL_TRIAGE_DRAFT.md`) — 45-tool inventory + use counts, overlap map, ≤15-tool toolset (core/fold/internal/drop), Grok-tuned descriptions, no-cdp profile, phase-3 risks; source only, no code touched.
 
 ## 2026-09-15 — fast-runner phase 0b + 1: relay transport (OAuth client) + bench runner driver

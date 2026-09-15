@@ -50,6 +50,24 @@ Claude (any session / frontdesk agent)
 | 3 | fold decisions land in `tools.js` itself (relay mirror too), toolset.json shrinks to overrides only | no dormant tool paths left |
 | 4 | hosted: runner beside the relay per user (container lane, frontdesk owns the box) | out of scope this pass |
 
+## Phase 4 contract — FastLink inside frontdesk's per-user container (decided 2026-09-15)
+
+Owner decision: box 10 goes **local first**. Frontdesk DO ↔ container directly; identity = `usr_id`
+(container name); no relay pairing, no device tokens. Later door: people drive their own container
+from their OWN Claude via a connector (relay keyed by usr_id, or frondesk.ai/mcp; undecided).
+
+| item | spec |
+|---|---|
+| broker | new local-broker mode bound on **:8080** (Container defaultPort). Only the frontdesk DO reaches it. Commands + results only; cookies/profile never cross it |
+| extension config | Chromium managed policy `3rdparty.extensions.<id>` → `chrome.storage.managed`: `{ brokerUrl:"http://127.0.0.1:8080", browserName:"<usr_id>", toolProfile:"<name>" }` |
+| boot | extension re-registers itself on every boot (profile restored from snapshot; `Singleton*` locks deleted by their start script) |
+| action log | every command `{t, tool, url, outcome}` streamed to the caller; memory-only inside the container |
+| stop | a STOP command halts the current run and refuses new commands until cleared (per-person kill switch) |
+| tool profile | `toolProfile` selects a toolset (e.g. `no-cdp`); "no debugger" is a hypothesis, deciding test = 8 pages container-vs-container with the input.js CDP tier on vs off |
+| runner placement | undecided (Grok vs Claude brain); whatever calls the broker must never hold the container awake waiting on a human: checkpoint + return |
+
+Frontdesk owns: image, Container DO, Workflow caller, profile snapshot/restore, live view for first sign-in.
+
 ## Not in this pass
 
 - Gemini/scout code: untouched. Separate lever; revisit after phase 2 shows what Grok still needs.

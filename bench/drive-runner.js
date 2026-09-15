@@ -63,8 +63,8 @@ export class RunnerTrace {
 
 /** Spawn the runner on `prompt`. Returns a handle; nothing is awaited here so
  *  run.js can start watching immediately. */
-export function start(prompt, { browser = null } = {}) {
-  const args = [CLI, '--relay'];
+export function start(prompt, { browser = null, transport = 'relay' } = {}) {
+  const args = [CLI, transport === 'local' ? '--local' : '--relay'];
   if (browser) args.push('--browser', browser);
   args.push(prompt);
   const proc = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
