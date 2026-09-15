@@ -1703,6 +1703,20 @@ async function runPageAction(action, args) {
     }
     return report;
   };
+  // A visible select-type control (native select, ARIA combobox/listbox, popup
+  // button, react-select input) whose label / aria-label / placeholder holds `m`.
+  // Bounded: one composed-tree query of DROPDOWN_SEL, ≤300 controls.
+  const selectControlByLabel = (m) => {
+    const found = [];
+    try { walkDeep(document, DROPDOWN_SEL, (el) => { if (found.length < 300) found.push(el); }); } catch {}
+    for (const el of found) {
+      const name = labelFor(el) || containerLabel(el) || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+      if (!name || !name.toLowerCase().includes(m)) continue;
+      let r; try { r = el.getBoundingClientRect(); } catch { continue; }
+      if (fieldVisible(el, r)) return { el, name: cleanLabel(name).slice(0, 120) };
+    }
+    return null;
+  };
   // Nearest preceding heading/legend — the section name a model can pass back.
   const headingAbove = (el) => {
     try {
@@ -3191,9 +3205,36 @@ async function runPageAction(action, args) {
         // The name may be an element id the model copied from `focused` (react-select-8-input).
         const hid = rep.hiddenMatches && rep.hiddenMatches.find(h => /^react-select-/.test(h.id || ''));
         const byId = document.getElementById(sp.match) || (hid ? document.getElementById(hid.id) : null);
-        sel = selectHintFor(byId) || (() => { const c = document.querySelector(`[role="combobox"][aria-label*="${CSS.escape(sp.match)}" i]`); return c ? selectHintFor(c) : null; })();
+        sel = selectHintFor(byId);
       } catch {}
-      if (sel) { out.hint = sel.hint; out.selectField = sel.selectField; }
+      // The name belongs to a visible select / combobox control (not fillable):
+      // listed as a kind:"select" candidate and redirected to fast_select_option.
+      if (!sel) {
+        const sc = selectControlByLabel(sp.m);
+        if (sc) {
+          const f = describeField(sc.el);
+          out.candidates = [{ kind: 'select', ...f, label: sc.name }, ...(out.candidates || [])].slice(0, 12);
+          sel = { selectField: f, hint: `${JSON.stringify(sc.name)} is a select control; use fast_select_option {field:${JSON.stringify(sc.name)}, option:"<choice>"}` };
+        }
+      }
+      if (sel) { out.hint = sel.hint; out.selectField = sel.selectField; return out; }
+      // The name is a SECTION that holds no input yet, only button(s) that create
+      // one (repeatable fields: "Add URI", "Add email").
+      if (!rep.hiddenMatches) {
+        try {
+          const sec = resolveSection(sp.m);
+          if (sec.matched && !sec.items.length) {
+            const btns = resolveSection(sp.m, 'button,[role="button"],input[type="button"],input[type="submit"]').items
+              .map(it => cleanLabel(it.text || it.ariaLabel || '')).filter(Boolean);
+            if (btns.length) {
+              const title = sec.sections.find(t => t.toLowerCase().includes(sp.m)) || sp.match;
+              out.section = title;
+              out.buttons = [...new Set(btns)].slice(0, 5);
+              out.hint = `${JSON.stringify(sp.match)} is a section with no input yet; click ${JSON.stringify(out.buttons[0])} in it to create the field, then fill it (pass section:${JSON.stringify(title)})`;
+            }
+          }
+        } catch {}
+      }
       return out;
     };
     const act = pageActivity();

@@ -33,6 +33,28 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast_fill miss: a select control's name redirects to fast_select_option; a section with no input names the button that creates it
+- **What:** page.js `enrichMiss` (single + `{fields}` misses). (1) `selectControlByLabel(m)`: a
+  visible select-type control (`DROPDOWN_SEL`: native select, ARIA combobox/listbox, popup
+  button, react-select input) whose label / containerLabel / aria-label / placeholder holds the
+  name → candidate `{kind:"select", …field}` first in `candidates`, `selectField`, and
+  `hint:"\"<label>\" is a select control; use fast_select_option {field:\"<label>\",
+  option:\"<choice>\"}"`. Replaces the `[role=combobox][aria-label*=…]`-only lookup (the
+  copied-react-select-id path stays). (2) When the name matches an outline section (the
+  `section:` resolver) that holds no visible fillable field but does hold button(s): `section`,
+  `buttons:[≤5]`, `hint:"\"<label>\" is a section with no input yet; click \"<button>\" in it to
+  create the field, then fill it (pass section:\"<heading>\")"`.
+- **Why:** gcpform over relay 19:50:07Z (cc84b8b9, grok-4.3): `fast_fill {fields:{"Application
+  type", …}}` listed only the page search box as a candidate (4.2s), and "Authorized JavaScript
+  origins" / "Authorized redirect URIs" — headings with only an "Add URI" button until clicked —
+  missed with "No visible fillable element"; Grok reported both as "(blank)".
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** the section path runs only when no hidden match and no select control explains
+  the miss; a heading whose span has buttons but no inputs for another reason (a collapsed
+  panel's "Expand") will name that button — the hint says to click it first, which is still the
+  right move.
+- **Status:** committed; live proof on hvm below.
+
 ## 2026-09-15 — fast-runner gate: each missed `{fields}` label / failed batch step is its own failed action
 - **What:** `partialFailures(name, args, text)` (runner.mjs): a `fast_fill` result's `fields`
   entries with `error`, and each `fast_batch` step with `ok:false` (plus a batch fill step's
