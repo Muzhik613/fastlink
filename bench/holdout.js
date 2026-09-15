@@ -69,7 +69,10 @@ const SELECT2_SINGLE = `() => {
   const w = s.nextElementSibling;
   const r = w && w.querySelector('.select2-selection__rendered');
   const shown = r ? (r.textContent || '') : '';
-  return { url: location.href, value: s.value, shown: shown.replace(/^×/, '').trim() };
+  // HARNESS TRAP: never name a reader field `value` (or `result`) — bench/fastlink.js
+  // evalIn unwraps `r.value`, so {value:'AK', shown:'Alaska'} came back as the bare
+  // string "AK" and every pick read "AK" (widget shown scored "OR" on a page showing Oregon).
+  return { url: location.href, code: s.value, shown: shown.replace(/^×/, '').trim() };
 }`;
 
 // DataTables zero-configuration example (#example, 57 employees, 10 per page).
@@ -170,7 +173,7 @@ export const HOLDOUT = [
     prompt: `${LEAD} https://select2.org/getting-started/basic-usage and, in the "Single select boxes" example (the single-value state dropdown), search for and select "Oregon". Then report the selected value.`,
     checkpoints: [
       { kind: 'tab', name: 'tab opened on the Select2 basic-usage page', urlIncludes: 'select2.org/getting-started/basic-usage' },
-      { kind: 'eval', name: 'underlying <select> value = OR (committed, not just typed)', tab: 'select2.org', fn: SELECT2_SINGLE, pick: 'value', expect: { equals: 'OR' } },
+      { kind: 'eval', name: 'underlying <select> value = OR (committed, not just typed)', tab: 'select2.org', fn: SELECT2_SINGLE, pick: 'code', expect: { equals: 'OR' } },
       { kind: 'eval', name: 'widget shows Oregon', tab: 'select2.org', fn: SELECT2_SINGLE, pick: 'shown', expect: { equalsIgnoreCase: 'Oregon' } },
       { kind: 'live', name: 'reported the live selected value', tab: 'select2.org', fn: SELECT2_SINGLE, pick: 'shown' },
     ],
