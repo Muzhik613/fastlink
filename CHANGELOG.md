@@ -720,3 +720,10 @@ accidentally revert them:
 - **Files:** `bench/hvm-rig.sh`.
 - **Watch out:** rig-only flag; not a FastLink change. The same symptom will appear in any headless container without a keyring — the box10 image needs the same flag.
 - **Status:** in code / rsynced to hvm; takes effect on the next Chrome restart there.
+
+## 2026-09-15 — relay: fast_evaluate enabled for the operator account (config, no code)
+- **What:** D1 `users` row for the operator (yjturetsky@gmail.com): `allow_evaluate=1, eval_allow_all=1` via `wrangler d1 execute --remote`. Was 0/0.
+- **Why:** owner: "get it on for now and see the numbers" — both Grok models reached for fast_evaluate in 11/32 bench cells and every call was blocked, one wasted turn each. Aug's Grok speed came partly from pushing work into the page with it.
+- **Files:** none (remote D1 data). Revert: same UPDATE with 0/0.
+- **Watch out:** allow_all is honored only because the row is `is_operator=1`; other relay users still need per-origin allowlisting. The box10 container profile excludes fast_evaluate regardless (cookie reach).
+- **Status:** applied remote / verified via the runner over the relay (see next entry or bench doc).
