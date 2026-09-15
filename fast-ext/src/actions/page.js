@@ -1049,6 +1049,26 @@ const serializeSnapshot = async (viewportOnly, opts) => {
   };
 };
 
+// Options panel of an ARIA select: the ids named by aria-controls / aria-owns on
+// the field itself, on its inner combobox/input, or on a [aria-haspopup]
+// descendant (mat-select / cfc-select set them on open). Pure: takes any object
+// with getAttribute + querySelectorAll (unit-tested with a fake DOM).
+const ARIA_PANEL_HOSTS = '[role="combobox"],input,[aria-haspopup],[aria-controls],[aria-owns]';
+const ariaPanelIds = (field) => {
+  const ids = [];
+  const take = (el) => {
+    for (const attr of ['aria-controls', 'aria-owns']) {
+      let v = null; try { v = el.getAttribute(attr); } catch {}
+      if (v) for (const id of String(v).trim().split(/\s+/)) if (id && !ids.includes(id)) ids.push(id);
+    }
+  };
+  if (!field) return ids;
+  take(field);
+  let inner = []; try { inner = Array.from(field.querySelectorAll(ARIA_PANEL_HOSTS)).slice(0, 20); } catch {}
+  for (const el of inner) take(el);
+  return ids;
+};
+
 // A field the model still has to fill: text-like input / textarea / select /
 // contenteditable with no value yet (checkbox, radio, button, file… excluded).
 const NON_FILL_TYPES = new Set(['hidden', 'checkbox', 'radio', 'button', 'submit', 'reset', 'image', 'file', 'range', 'color']);
@@ -1672,12 +1692,17 @@ async function runPageAction(action, args) {
   // or an ARIA combobox with a listbox popup? Returns the control element for
   // the hint, else null. Bounded 8-hop climb.
   const RS_INPUT_SEL = 'input[id^="react-select-"]';
+  const TEXT_INPUT_SEL = 'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([id^="react-select-"]),textarea';
   const selectControlOf = (el) => {
     if (!el || el.nodeType !== 1) return null;
     try {
       if (el.tagName === 'SELECT') return el;
       if (el.matches(RS_INPUT_SEL)) return el;
-      if (el.getAttribute('role') === 'combobox' && el.tagName !== 'INPUT') return el;
+      // A typeable input inside a [role=combobox] wrapper is an AUTOCOMPLETE
+      // (Google Maps' search box, GCP's filter) — typing is the right tool there.
+      if (el.matches(TEXT_INPUT_SEL)) return null;
+      const closedList = (p) => !(p.querySelector && p.querySelector(TEXT_INPUT_SEL));
+      if (el.getAttribute('role') === 'combobox' && closedList(el)) return el;
       let p = el;
       for (let hops = 0; p && hops < 8; hops++, p = p.parentElement) {
         if (p.tagName === 'SELECT') return p;
@@ -1686,8 +1711,8 @@ async function runPageAction(action, args) {
           if (rs) return rs;
         }
         const role = p.getAttribute && p.getAttribute('role');
-        if (role === 'combobox' || role === 'listbox') return p;
-        if (p.getAttribute && /^(listbox|true)$/.test(p.getAttribute('aria-haspopup') || '')) return p;
+        if ((role === 'combobox' || role === 'listbox') && closedList(p)) return p;
+        if (p.getAttribute && /^(listbox|true)$/.test(p.getAttribute('aria-haspopup') || '') && closedList(p)) return p;
       }
     } catch {}
     return null;
@@ -2314,58 +2339,63 @@ async function runPageAction(action, args) {
         return withReadback({ picked: (target.textContent || '').trim(), kind: 'react-select' }, field, ctrl);
       }
 
-      // Generic ARIA listbox / menu. Index-driven: open the field, then poll
-      // INDEX for option/menuitem entries matching the requested text. Much
-      // faster than re-walking the document on every poll cycle.
+      // Generic ARIA listbox / menu. Open the field, then resolve its options
+      // SYNCHRONOUSLY from (1) the panel its aria-controls/aria-owns names
+      // (mat-select / cfc-select), (2) the portal/overlay sweep, (3) the index's
+      // option side-set — in that order, on every look. The budget is WALL
+      // CLOCK: on a storming page (GCP's Angular re-render) a 50ms timer can
+      // sleep for seconds, so each wake re-checks elapsed time and gives up at
+      // the budget instead of after N ticks; a starved wait is reported.
       field.focus();
       field.click();
       const optTextLo = optionText.toLowerCase();
-      // Scan the side-set of option-like entries — typically tens of elements,
-      // not the whole INDEX. Maintained at index-time by isOptionEntry().
-      const findOptInIndex = () => {
+      const OPTION_SEL = '[role="option"],mat-option,cfc-option,[role="menuitem"],[role="menuitemradio"],li[data-value],[data-option-value]';
+      const optionEls = () => {
+        for (const id of ariaPanelIds(field)) {
+          const panel = lookupId(field, id) || document.getElementById(id);
+          if (!panel) continue;
+          const els = Array.from(panel.querySelectorAll(OPTION_SEL));
+          if (els.length) return { els, via: 'aria-controls' };
+        }
+        let swept = null; try { swept = collectOverlayEls(); } catch {}
+        if (swept && swept.size) {
+          const els = [...swept].filter(el => el.matches && el.matches(OPTION_SEL));
+          if (els.length) return { els, via: 'overlay' };
+        }
+        const els = [];
+        for (const el of INDEX.options) if (el.isConnected) els.push(el);
+        return { els, via: 'index' };
+      };
+      const pickOption = (els) => {
         let exact = null, starts = null, sub = null;
-        for (const el of INDEX.options) {
-          if (!el.isConnected) continue;
-          const entry = INDEX.byEl.get(el);
-          if (!entry) continue;
-          const t = (entry.text || '').toLowerCase().trim();
+        for (const el of els) {
+          const t = (el.textContent || '').trim().toLowerCase();
           if (!t) continue;
-          if (t === optTextLo)              { exact  = el; break; }
+          if (t === optTextLo) { exact = el; break; }
           if (!starts && t.startsWith(optTextLo)) starts = el;
-          if (!sub    && t.includes(optTextLo))   sub   = el;
+          if (!sub && t.includes(optTextLo)) sub = el;
         }
         return exact || starts || sub;
       };
-      const deadline = Date.now() + (args.timeoutMs || 3000);
-      let target = null;
-      let polls = 0;
-      while (Date.now() < deadline) {
+      const budgetMs = args.timeoutMs || 3000;
+      const tStart = nowMs();
+      let target = null, via = null, found = null, starved = false;
+      for (let tick = 0; ; tick++) {
         drainPendingSync(2000, 30);
-        // Options mount in a PORTAL (Angular cdk-overlay-container, [role=listbox]
-        // at end of <body>). On a heavy page the observer is storm-tripped /
-        // backlogged, so the drain above never sees them and the poll ran the full
-        // 3s to "no listbox detected" (GCP "Application type" → cfc-select, while a
-        // plain fast_click on the option worked because snapshots sweep overlays).
-        // Sweep the known overlay containers directly, like the snapshot does.
-        if ((polls++ & 3) === 1) { try { collectOverlayEls(); } catch {} }
-        target = findOptInIndex();
-        if (target) break;
-        await wait(50);
+        found = optionEls();
+        target = pickOption(found.els);
+        if (target) { via = found.via; break; }
+        if (nowMs() - tStart >= budgetMs) break;
+        const before = nowMs();
+        await wait(tick === 0 ? 0 : 50);
+        if (nowMs() - before > 1000) starved = true;   // the timer slept far past its 50ms: main thread starved
       }
       if (target) {
         target.click();
-        return withReadback({ picked: (target.textContent || '').trim(), kind: 'aria-listbox' }, field);
+        return withReadback({ picked: (target.textContent || '').trim(), kind: 'aria-listbox', via }, field);
       }
-      // Build a small `available` list from the options side-set so Claude
-      // has something to work with on a miss.
-      const available = [];
-      for (const el of INDEX.options) {
-        if (!el.isConnected) continue;
-        const entry = INDEX.byEl.get(el);
-        if (entry) available.push((entry.text || '').trim());
-        if (available.length >= 10) break;
-      }
-      return { error: 'no matching option in listbox / no listbox detected', tried: optionText, field: describeField(field), available };
+      const available = found ? found.els.slice(0, 10).map(el => (el.textContent || '').trim()).filter(Boolean) : [];
+      return { error: 'no matching option in listbox / no listbox detected', tried: optionText, field: describeField(field), elapsedMs: Math.round(nowMs() - tStart), ...(starved ? { starved: true, hint: 'the page was re-rendering so heavily that timers starved; retry once the view settles (fast_wait for text of the finished state), or fast_click the option text directly' } : {}), panelIds: ariaPanelIds(field), available };
     };
 
     // BATCH mode: a { field: option } map sets many dropdowns in one call —
@@ -2781,7 +2811,7 @@ async function runPageAction(action, args) {
       const r = fillItem(it, sp.value, sp.append);
       if (r.error) { res.misses.set(sp, r); continue; }
       if (it.ariaLabel && !r.filled.label) r.filled.ariaLabel = it.ariaLabel;
-      const sel = (el && el.tagName !== 'SELECT') ? selectHintFor(el) : null;
+      const sel = (el && el.matches && el.matches(RS_INPUT_SEL)) ? selectHintFor(el) : null;
       if (sel) { r.hint = sel.hint; r.selectField = sel.selectField; }
       written.set(sp, { el, r });
     }

@@ -189,11 +189,22 @@ const MAIN_WORLD_FILES = ['src/actions/page.js'];
 // Run the page bridge in the target tab's MAIN world. Returns the bridge's
 // value, OR a {__injectError} sentinel when executeScript itself throws (tab
 // closed / navigated to a restricted URL mid-flight).
+// Wall-clock deadline on the in-page script: a stuck page action must not
+// outlive the broker/relay's 30s call timeout, or the NEXT call queues behind
+// it. A deadline, not a retry — the caller gets a structured "page busy".
+const BRIDGE_DEADLINE_MS = 20000;
 async function runBridge(tabId, action, args) {
+  const t0 = Date.now();
   try {
-    const [{ result }] = await chrome.scripting.executeScript({
+    const exec = chrome.scripting.executeScript({
       target: { tabId }, world: 'MAIN', func: pageBridge, args: [action, JSON.stringify(args || {})],
     });
+    const raced = await Promise.race([exec, new Promise((r) => setTimeout(() => r({ __deadline: true }), BRIDGE_DEADLINE_MS))]);
+    if (raced && raced.__deadline) {
+      exec.catch(() => {});
+      return { error: 'page busy', phase: action, elapsedMs: Date.now() - t0, hint: `${action} did not return within ${BRIDGE_DEADLINE_MS / 1000}s — the page is re-rendering or frozen; fast_wait for text of the settled view, then retry` };
+    }
+    const [{ result }] = raced;
     return typeof result === 'string' ? JSON.parse(result) : result;
   } catch (e) {
     // Keep the raw chrome message ALONGSIDE the human-readable wrapper so the
