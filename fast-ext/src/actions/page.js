@@ -1318,6 +1318,22 @@ async function runPageAction(action, args) {
   // Dropdown-ish controls, for fast_select_option's titled-section lookup.
   const DROPDOWN_SEL = 'select,[role="combobox"],[role="listbox"],input[id^="react-select-"],[aria-haspopup="listbox"],[aria-haspopup="menu"],[aria-haspopup="true"]';
   const MAX_SECTION_FIELDS = 500;
+  // Visibility of a FIELD, not its input: a non-searchable react-select renders a
+  // 1px opacity-0 "dummy input", so measuring the input alone hides the whole
+  // control. Measure the nearest ancestor whose class token ends in "control"
+  // (react-select's own naming, prefixed or emotion-hashed) for those.
+  const fieldVisible = (el, rect) => {
+    if (visible(el, rect)) return true;
+    if (!(el.matches && el.matches('input[id^="react-select-"]'))) return false;
+    let p = el.parentElement;
+    for (let hops = 0; p && hops < 6; hops++, p = p.parentElement) {
+      if (/(?:^|\s)[\w-]*control(?:\s|$)/i.test(String(p.className || ''))) {
+        let r; try { r = p.getBoundingClientRect(); } catch { return false; }
+        return visible(p, r);
+      }
+    }
+    return false;
+  };
   // Resolve a section request. ALWAYS returns a report — callers must NOT fall
   // back to the unscoped pool on a miss (a silent wrong-field write is worse than
   // an error), which is exactly what the old `if (scoped.length)` guard did.
@@ -1357,7 +1373,7 @@ async function runPageAction(action, args) {
     for (const el of fillable) {
       if (!inAnySpan(el)) continue;
       let rect; try { rect = el.getBoundingClientRect(); } catch { continue; }
-      if (!visible(el, rect)) continue;          // hidden fields are not fillable targets
+      if (!fieldVisible(el, rect)) continue;     // hidden fields are not fillable targets
       indexElement(el);                           // stable id + a fresh (live-value) entry
       const entry = INDEX.byEl.get(el);
       if (!entry || entry.kind !== 'click') continue;
@@ -1597,16 +1613,31 @@ async function runPageAction(action, args) {
     // Cheap, bounded descent to the smallest element fully containing `t`, so a
     // content match can still carry coords. One child scan per level, depth-
     // capped — never a full-document walk.
+    // Returns null when the ONLY place the text lives is script/style/template
+    // text — body.textContent includes inline <script> bodies (JSON state blobs,
+    // templates), which are not "the view mounted". Skipping those subtrees keeps
+    // the descent on rendered content.
+    const NON_VIEW_TAGS = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT']);
     const smallestContaining = () => {
       try {
         let el = document.body;
         if (!el || !(el.textContent || '').toLowerCase().includes(t)) return null;
         for (let depth = 0; depth < 200; depth++) {
-          let next = null;
+          let next = null, onlyNonView = false;
           for (const child of el.children) {
-            if (child.nodeType === 1 && (child.textContent || '').toLowerCase().includes(t)) { next = child; break; }
+            if (child.nodeType !== 1 || !(child.textContent || '').toLowerCase().includes(t)) continue;
+            if (NON_VIEW_TAGS.has(child.tagName)) { onlyNonView = true; continue; }
+            next = child; break;
           }
-          if (!next) break;
+          if (!next) {
+            // Own text nodes may still hold it; if only a script/style child did, it is not on the page.
+            if (onlyNonView) {
+              let own = '';
+              for (const c of el.childNodes) if (c.nodeType === 3) own += c.data;
+              if (!own.toLowerCase().includes(t)) return null;
+            }
+            break;
+          }
           el = next;
         }
         return el;
@@ -1694,7 +1725,8 @@ async function runPageAction(action, args) {
           try {
             const tc = document.body && document.body.textContent;
             if (tc && tc.toLowerCase().includes(t)) {
-              return resolveContent(smallestContaining(), args.text);
+              const host = smallestContaining();   // null → the text is only inside script/style, not on the page
+              if (host) return resolveContent(host, args.text);
             }
           } catch {}
           const attrHit = probeAttrText();
@@ -1786,7 +1818,7 @@ async function runPageAction(action, args) {
         for (const el of queryAllDeep(document, DROPDOWN_SEL)) {
           if (out.length >= 12) break;
           let rect; try { rect = el.getBoundingClientRect(); } catch { continue; }
-          if (!visible(el, rect)) continue;
+          if (!fieldVisible(el, rect)) continue;
           const c = { tag: el.tagName.toLowerCase() };
           const role = el.getAttribute('role'); if (role) c.role = role;
           const lbl = labelFor(el) || containerLabel(el); if (lbl) c.label = lbl;

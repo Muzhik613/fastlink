@@ -106,9 +106,13 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   `5ba6bd6`). Pass 3 (all 6 cells) runs on the final file (`cd7af46a…`, this commit),
   shipped at the pass-2 → 3 boundary at 06:22:31Z: the watcher fired the instant the
   pass-2 `mapsdir` run.js exited, before hvm-run.sh's `rig_up`, which relaunched the
-  rig Chrome on the new file for pass 3 cell 1 (06:22:32Z). **Windows extension copy
-  NOT synced tonight** (the local bench stays on unfixed tools); `chrome://extensions`
-  reload still needed there later.
+  rig Chrome on the new file (06:22:38Z). That Chrome needed SIGKILL (SIGTERM had not
+  finished in 0.5s) and the fresh extension then took ~90s to get its broker slot back,
+  so `rig_up` gave up and **pass 3 `multipage` was SKIPPED by hvm-run.sh ("rig down",
+  no row)**; pass 3 cells 2–6 ran on `cd7af46a…`. The slow re-slot is a broker defect
+  (see the slot-probe entry above, if present). **Windows extension copy NOT synced
+  tonight** (the local bench stays on unfixed tools); `chrome://extensions` reload
+  still needed there later.
 
 ## 2026-09-15 — fast-runner: per-model-turn instrumentation (`turns[]` in runs.jsonl)
 - **What:** every model call is logged to the run row as `turns[]`: `{turn, t, latencyMs,
