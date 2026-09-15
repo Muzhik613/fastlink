@@ -114,6 +114,11 @@ export const TOOLS = [
     },
   },
   {
+    name: 'fast_ext_reload',
+    description: 'INTERNAL / ops — not for driving pages. Local broker only (never the cloud relay): reload the FastLink extension in the ONE Chrome profile this session is pinned to (chrome.runtime.reload re-reads the unpacked folder), then wait up to 20s for it to reconnect. Requires fast_profile {install:"<label>"} first — unpinned and "auto" are refused. Returns { reloaded:true, install, build, previousBuild, ms } or { reloaded:false, reason }. `build` is the git short sha stamped into build.json by scripts/ship-ext.sh ("dev" when absent); fast_status shows it per profile as installs.<label>.build.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
     name: 'fast_prewarm',
     description: 'Turn ON background pre-warming for the next ~60s. While active, each page navigation triggers a silent scout + vision pre-pass (cached snapshot/visual map) so the FIRST fast_scout / fast_point / fast_fill_vision on a freshly-loaded page is near-instant. Pre-warming NEVER starts on its own — call this once when you are about to do a burst of page-driving work. Any subsequent tool call extends the window; it shuts off automatically 60s after your last tool. No browser action is taken — this only arms the warmer.',
     inputSchema: { type: 'object', properties: {}, required: [] },

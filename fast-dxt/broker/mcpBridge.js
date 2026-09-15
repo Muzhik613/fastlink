@@ -10,7 +10,7 @@
 import { WebSocketServer } from 'ws';
 import { state } from './state.js';
 import { log, onFatalListenError } from './lifecycle.js';
-import { dispatchCall, dropPendingForClient } from './router.js';
+import { dispatchCall, dispatchReload, dropPendingForClient } from './router.js';
 import { attachHeartbeat, startHeartbeatLoop } from './heartbeat.js';
 import { MCP_PORT } from './config.js';
 
@@ -51,7 +51,11 @@ export function startMcpBridge() {
     ws.on('message', (data) => {
       let msg;
       try { msg = JSON.parse(data.toString()); } catch { return; }
-      if (msg.type === 'call') return dispatchCall(ws, msg.id, msg.action, msg.args, msg.install);
+      if (msg.type === 'call') {
+        // Broker-level action: reload the pinned slot's extension (router.js dispatchReload).
+        if (msg.action === 'fast_ext_reload') return dispatchReload(ws, msg.id, msg.install);
+        return dispatchCall(ws, msg.id, msg.action, msg.args, msg.install);
+      }
       if (msg.type === 'status') {
         ws.send(JSON.stringify({ type: 'status', id: msg.id, data: state.snapshot() }));
       }

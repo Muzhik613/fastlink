@@ -12,7 +12,7 @@ import { WebSocket } from 'ws';
 process.env.FASTLINK_BROKER_PORT = '19870';
 process.env.FASTLINK_EXT_PORTS = '19876,19877';
 const { state } = await import('../broker/state.js');
-const { dispatchCall, onExtensionResponse } = await import('../broker/router.js');
+const { dispatchCall, dispatchReload, onExtensionResponse } = await import('../broker/router.js');
 const { LOG_FILE, PID_FILE, resolveExtBind } = await import('../broker/config.js');
 
 const fakeWs = () => ({ readyState: 1, sent: [], send(s) { this.sent.push(JSON.parse(s)); } });
@@ -77,6 +77,43 @@ test('router: one slot → routes unpinned; two slots → unpinned refused, auto
   for (const m of [...primary.sent, ...work.sent]) onExtensionResponse({ id: m.id, result: 1 });
 });
 
+test('state: hello build lands in the snapshot; awaitHello resolves on the next connect or null on timeout', async () => {
+  const ws = fakeWs();
+  state.setExtensionSocket('buildtest', ws, 'hello', 'abc1234');
+  assert.equal(state.snapshot().installs.buildtest.build, 'abc1234');
+  assert.equal(state.getBuild('buildtest'), 'abc1234');
+  assert.equal(await state.awaitHello('buildtest', 30), null, 'no connect → null');
+  const p = state.awaitHello('buildtest', 5000);
+  state.setExtensionSocket('buildtest', fakeWs(), 'hello', 'def5678');
+  assert.deepEqual(await p, { build: 'def5678' });
+  state.clearExtensionSocket('buildtest', ws, 'close 1000');
+});
+
+test('router: ext-reload refuses unpinned/auto, sends {type:reload} to the pinned slot and answers on its next hello', async () => {
+  const mcp = fakeWs(), old = fakeWs();
+  state.setExtensionSocket('reloadme', old, 'hello', 'v1');
+  await dispatchReload(mcp, 'r0', undefined);
+  assert.match(mcp.sent.at(-1).error, /pinned to ONE profile label/);
+  await dispatchReload(mcp, 'r1', 'auto');
+  assert.match(mcp.sent.at(-1).error, /pinned to ONE profile label/);
+  await dispatchReload(mcp, 'r2', 'nosuch');
+  assert.match(mcp.sent.at(-1).error, /Unknown install "nosuch"/);
+  assert.equal(old.sent.length, 0, 'refusals send nothing to the extension');
+
+  const done = dispatchReload(mcp, 'r3', 'reloadme');
+  assert.deepEqual(old.sent.at(-1), { type: 'reload' });
+  assert.equal(old.__closeReason, 'reload requested (fast_ext_reload)');
+  state.clearExtensionSocket('reloadme', old, old.__closeReason);
+  state.setExtensionSocket('reloadme', fakeWs(), 'hello', 'v2');
+  await done;
+  const r = mcp.sent.at(-1);
+  assert.equal(r.id, 'r3');
+  assert.equal(r.result.reloaded, true);
+  assert.equal(r.result.build, 'v2');
+  assert.equal(r.result.previousBuild, 'v1');
+  assert.ok(typeof r.result.ms === 'number');
+});
+
 // ── throwaway broker ──
 const here = dirname(fileURLToPath(import.meta.url));
 let broker;
@@ -85,11 +122,18 @@ after(() => { try { broker?.kill(); } catch {} for (const f of [LOG_FILE, PID_FI
 const open = (url) => new Promise((res, rej) => { const s = new WebSocket(url); s.once('open', () => res(s)); s.once('error', rej); });
 const next = (ws) => new Promise((res) => ws.once('message', (d) => res(JSON.parse(d.toString()))));
 const until = async (fn, ms = 3000) => { const t0 = Date.now(); for (;;) { const v = await fn(); if (v) return v; if (Date.now() - t0 > ms) throw new Error('timeout'); await new Promise(r => setTimeout(r, 50)); } };
-// An ext fake that says hello and echoes every call as {id, result:{via:label}}.
-async function fakeExt(label) {
+// An ext fake that says hello (with a build id) and echoes every call as
+// {id, result:{via:label}}; on {type:'reload'} it drops the socket and re-dials
+// 300ms later as build "<build>.1", like a real SW reload.
+const respawned = [];
+async function fakeExt(label, build = 'v1') {
   const ws = await open('ws://127.0.0.1:19876');
-  ws.send(JSON.stringify({ type: 'hello', installId: label }));
-  ws.on('message', (d) => { const m = JSON.parse(d.toString()); if (m.id && m.action) ws.send(JSON.stringify({ id: m.id, result: { via: label } })); });
+  ws.send(JSON.stringify({ type: 'hello', installId: label, build }));
+  ws.on('message', (d) => {
+    const m = JSON.parse(d.toString());
+    if (m.type === 'reload') { ws.close(1001, 'reloading'); setTimeout(() => fakeExt(label, build + '.1').then((s) => respawned.push(s)), 300); return; }
+    if (m.id && m.action) ws.send(JSON.stringify({ id: m.id, result: { via: label } }));
+  });
   return ws;
 }
 const rpc = (mcp, msg) => { const id = Math.random().toString(36).slice(2); const p = new Promise((res) => { const h = (d) => { const m = JSON.parse(d.toString()); if (m.id === id) { mcp.off('message', h); res(m); } }; mcp.on('message', h); }); mcp.send(JSON.stringify({ ...msg, id })); return p; };
@@ -128,13 +172,26 @@ test('throwaway broker: log file records hello/connect/disconnect with reasons; 
   assert.equal(status.installs.work.recent[0].reason, 'close 1000 test done');
   assert.equal(status.installs.work.recent[2].reason, 'hello');
 
+  // ext-reload: unpinned refused; pinned → the ext drops, re-hellos as v1+1, the
+  // call answers with the new build and status shows it.
+  assert.equal(status.installs.primary.build, 'v1');
+  assert.match((await rpc(mcp, { type: 'call', action: 'fast_ext_reload', args: {} })).error, /pinned to ONE profile label/);
+  const reloaded = await rpc(mcp, { type: 'call', action: 'fast_ext_reload', args: {}, install: 'primary' });
+  assert.equal(reloaded.result.reloaded, true);
+  assert.equal(reloaded.result.previousBuild, 'v1');
+  assert.equal(reloaded.result.build, 'v1.1');
+  assert.ok(reloaded.result.ms >= 300 && reloaded.result.ms < 5000, `ms=${reloaded.result.ms}`);
+  assert.equal((await rpc(mcp, { type: 'status' })).data.installs.primary.build, 'v1.1');
+
   const logText = readFileSync(LOG_FILE, 'utf8');
   const iso = /\[broker\] \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /;
-  for (const needle of ['hello install="work" raw="work"', 'connect install="work" on :19876 reason=hello', 'slotBusy install="work"', 'disconnect install="work" on :19876 reason=close 1000 test done']) {
+  for (const needle of ['hello install="work" raw="work" build=v1', 'connect install="work" on :19876 reason=hello build=v1', 'slotBusy install="work"', 'disconnect install="work" on :19876 reason=close 1000 test done',
+    'ext-reload install="primary" sent (build v1)', 'disconnect install="primary" on :19876 reason=reload requested (fast_ext_reload)', 'hello install="primary" raw="primary" build=v1.1', 'ext-reload install="primary" back in']) {
     const line = logText.split('\n').find(l => l.includes(needle));
     assert.ok(line, `log has: ${needle}`);
     assert.match(line, iso);
   }
   p.close(); mcp.close(); dup.close();
+  for (const s of respawned) s.close();
   broker.kill();
 });

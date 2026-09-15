@@ -59,6 +59,43 @@ export function dispatchCall(mcpClient, mcpId, action, args, install) {
   }
 }
 
+// fast_ext_reload — LOCAL broker only (never over the relay). Needs a pin to ONE
+// label ("auto"/unpinned refused: a reload must not land on whichever slot is
+// active). Sends {type:'reload'} on that slot's socket (the SW calls
+// reloadSelf('broker')) and answers on the next hello from the SAME label —
+// {reloaded:true, build} — or {reloaded:false, reason} after the timeout.
+const RELOAD_HELLO_TIMEOUT_MS = 20_000;
+const RELOAD_CLOSE_REASON = 'reload requested (fast_ext_reload)';
+export async function dispatchReload(mcpClient, mcpId, install) {
+  if (!install || install === 'auto') {
+    return reply(mcpClient, mcpId, {
+      error: 'fast_ext_reload needs this session pinned to ONE profile label — call fast_profile {install:"<label>"} first (unpinned and "auto" are refused).',
+      reloaded: false,
+      connectedInstalls: state.connectedInstalls(),
+    });
+  }
+  const { ext, ...refusal } = resolveSocket(install);
+  if (!ext) return reply(mcpClient, mcpId, { reloaded: false, ...refusal });
+  const previousBuild = state.getBuild(install);
+  const t0 = Date.now();
+  ext.__closeReason = RELOAD_CLOSE_REASON;   // the disconnect log line names the cause
+  try { ext.send(JSON.stringify({ type: 'reload' })); }
+  catch (e) {
+    ext.__closeReason = undefined;
+    return reply(mcpClient, mcpId, { error: `Send to extension failed: ${e.message}`, reloaded: false });
+  }
+  log(`ext-reload install="${install}" sent (build ${previousBuild ?? 'n/a'}), waiting for hello`);
+  const hello = await state.awaitHello(install, RELOAD_HELLO_TIMEOUT_MS);
+  const ms = Date.now() - t0;
+  if (!hello) {
+    if (ext.__closeReason === RELOAD_CLOSE_REASON) ext.__closeReason = undefined;   // it never left
+    log(`ext-reload install="${install}" no hello within ${RELOAD_HELLO_TIMEOUT_MS}ms`);
+    return reply(mcpClient, mcpId, { result: { reloaded: false, install, reason: `no hello from "${install}" within ${RELOAD_HELLO_TIMEOUT_MS}ms — the extension did not reconnect (SW error? check chrome://extensions)`, previousBuild, ms } });
+  }
+  log(`ext-reload install="${install}" back in ${ms}ms build=${hello.build ?? 'n/a'}`);
+  return reply(mcpClient, mcpId, { result: { reloaded: true, install, build: hello.build, previousBuild, ms } });
+}
+
 export function onExtensionResponse(msg) {
   const entry = pending.get(msg.id);
   if (!entry) return;
