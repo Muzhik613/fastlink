@@ -28,6 +28,12 @@ export async function connect({ transport = 'relay', browser } = {}) {
   });
   const client = new Client({ name: 'fast-runner', version: '0.1.0' });
   await client.connect(t);
+  // broker refuses unpinned calls when >1 profile is connected (8498cbe): pin first, fail loud.
+  if (browser) {
+    const r = await client.callTool({ name: 'fast_profile', arguments: { install: browser } });
+    const txt = r?.content?.[0]?.text || '';
+    if (r?.isError || /"error"/.test(txt)) { await client.close(); throw new Error(`fast_profile ${browser}: ${txt.slice(0, 300)}`); }
+  }
   return {
     instructions: client.getInstructions() || '',
     async listTools() { return (await client.listTools()).tools; },

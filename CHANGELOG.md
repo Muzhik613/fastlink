@@ -7,6 +7,13 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-09-15 — runner local transport pins its profile; bench passes the observed install to it
+- **What:** `fast-runner/fastlink-client.mjs` local branch calls `fast_profile {install: browser}` right after connect and throws if the pin errors; `bench/run.js` passes `install` as the runner's `browser` for local cells.
+- **Why:** since 8498cbe the broker refuses unpinned calls when >1 profile is connected. The runner's local session never pinned, so on the owner's machine (primary + secondary connected) the multipage cell died in 3.6s on 3 consecutive "has not pinned one" errors. hvm has one slot, so its local runs never showed it.
+- **Files:** `fast-runner/fastlink-client.mjs`, `bench/run.js`.
+- **Watch out:** `--local` without `--browser` still works only when exactly one profile is connected; that is the broker's rule, not the runner's.
+- **Status:** in code; verified by the multipage cell below.
+
 ## 2026-09-15 — status hint: delete the pre-pin-required fallback branch
 - **What:** `statusReport` (fast-dxt/server/handlers.js) keeps only the `pinRequired` hint; the "calls default to <routedInstall>" branch and its `connectedSlots` recomputation are deleted.
 - **Why:** that branch only fired against a broker older than 8498cbe. Both live brokers (WSL, hvm) now run pin-required code, so it was a dormant second source of truth that told the model calls would silently route.

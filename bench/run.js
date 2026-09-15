@@ -168,7 +168,8 @@ export async function runCell({
     // Trace source + watermark BEFORE anything can generate a row.
     let source;
     let handle = null; // runner driver: the spawned cli.mjs (its trace is `source`)
-    if (driver === 'runner') { handle = runner.start(test.prompt, { browser, transport, toolset }); source = handle.trace; }
+    // local: the runner's own MCP session must pin the observed profile (broker refuses unpinned when >1 connected)
+    if (driver === 'runner') { handle = runner.start(test.prompt, { browser: browser || (transport === 'local' ? install : null), transport, toolset }); source = handle.trace; }
     else if (transport === 'local') source = new LocalTrace({ since: Date.now() });
     else {
       const token = resolveDeviceToken(deviceToken);
