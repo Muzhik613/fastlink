@@ -16,6 +16,7 @@ const TOOLS = [
         transport: { type: 'string', enum: ['relay', 'local'], description: 'relay (default, relay.ytx.app) or local (spawn fast-dxt server on this machine).' },
         browser: { type: 'string', description: 'Relay browser name to pin (fast_profile), e.g. browser-1.' },
         toolset: { type: 'string', description: 'Which tool list Grok sees: "default" (all tools, baseline), a name like "phase2" or "no-cdp" (fast-runner/toolset.<name>.json), or a path to a toolset JSON. Default: FASTRUN_TOOLSET env or "default". Recorded per run in runs.jsonl.' },
+        gate: { type: 'string', enum: ['on', 'record', 'off'], description: 'report_done evidence gate: "on" (refuse until the report is backed, the default), "record" (never refuse; the row gets gateWouldRefuse when "on" would have refused), "off" (no checks). Default: FASTRUN_GATE env or "on". Recorded per run.' },
       },
       required: ['task'],
     },
@@ -44,7 +45,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   let out;
   try {
     switch (req.params.name) {
-      case 'grok_run': out = await runTask({ task: a.task, transport: a.transport || 'relay', browser: a.browser, toolset: a.toolset }); break;
+      case 'grok_run': out = await runTask({ task: a.task, transport: a.transport || 'relay', browser: a.browser, toolset: a.toolset, gate: a.gate }); break;
       case 'grok_answer': out = await answer(a.run_id, a.answer); break;
       case 'grok_status': out = status(a.run_id); break;
       case 'grok_cancel': out = cancel(a.run_id); break;

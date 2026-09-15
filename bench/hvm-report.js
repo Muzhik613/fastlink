@@ -92,10 +92,11 @@ md.push(`Client \`${client}\`, ${passes} pass(es) over ${tests.length} tests, dr
 md.push('Baseline = the same cells over the RELAY transport from WSL (2026-09-15). Local vs relay changes hop latency only; the tool-choice data is what phase 1 needs.', '');
 md.push(`Skipped as environment-invalid (fresh profile, no login): ${Object.entries(SKIPPED).map(([k, v]) => `\`${k}\` (${v})`).join(', ')}.`, '');
 if (notes.trim()) md.push(`Runtime per pass: ${notes.trim()}`, '');
-// what the run store says each pass actually ran (model / toolset), independent of the notes
+// what the run store says each pass actually ran (model / toolset / gate), independent of the notes
+// (rows written before the gate mode existed ran with the gate on)
 const passRuntime = new Map();
-for (const list of byTest.values()) list.forEach((r, i) => { const rec = recOf(r); if (rec) { const k = `${rec.model || '?'}/${rec.toolset || 'default'}`; const s = passRuntime.get(i + 1) || new Set(); s.add(k); passRuntime.set(i + 1, s); } });
-if (passRuntime.size) md.push(`Run store per pass (model/toolset): ${[...passRuntime.entries()].sort((a, b) => a[0] - b[0]).map(([p, s]) => `pass ${p} = ${[...s].join(' + ')}`).join('; ')}.`, '');
+for (const list of byTest.values()) list.forEach((r, i) => { const rec = recOf(r); if (rec) { const k = `${rec.model || '?'}/${rec.toolset || 'default'}/gate ${rec.gate || 'on'}`; const s = passRuntime.get(i + 1) || new Set(); s.add(k); passRuntime.set(i + 1, s); } });
+if (passRuntime.size) md.push(`Run store per pass (model/toolset/gate): ${[...passRuntime.entries()].sort((a, b) => a[0] - b[0]).map(([p, s]) => `pass ${p} = ${[...s].join(' + ')}`).join('; ')}.`, '');
 md.push('## Per test', '', 'Cell = `score/total wall calls [m=model time, sum of turn latencies]` · flags: X invalid, S stuck, ! overclaim, ~ underclaim.', '');
 md.push(`| test | ${Array.from({ length: passes }, (_, i) => `pass ${i + 1}`).join(' | ')} | best wall | median wall | median calls | score | baseline wall | best vs baseline |`);
 md.push(`|---|${'---|'.repeat(passes)}---:|---:|---:|---|---:|---:|`);
@@ -115,6 +116,15 @@ const validRows = rows.filter((r) => r.valid !== false);
 md.push('', `Totals over valid cells: ${validRows.length} cells, ${validRows.reduce((s, r) => s + r.score, 0)}/${validRows.reduce((s, r) => s + r.total, 0)} checkpoints, ${validRows.reduce((s, r) => s + r.toolCalls, 0)} tool calls, ${fmt(secs(validRows.reduce((s, r) => s + (r.wallMs || 0), 0)))} wall.`, '');
 const outcomes = rows.map((r) => `${r.testId}#${passOf.get((/run_id=(\w+)/.exec(r.notes || '') || [])[1])?.pass ?? '?'}=${r.outcome}${r.invalidReason ? ` (${r.invalidReason})` : ''}`);
 md.push(`Outcomes: ${outcomes.join(', ') || 'none'}.`, '');
+
+// gate=record: each report the gate WOULD have refused, next to what the page actually scored
+// (a would-be refusal on a full-score cell = the gate would have been wrong)
+const would = [];
+for (const [id, list] of byTest) list.forEach((r, i) => {
+  for (const w of recOf(r)?.gateWouldRefuse || []) would.push(`- pass ${i + 1} ${id}: scored ${r.score}/${r.total} (${r.score === r.total ? 'full — the gate would have been WRONG' : 'short — the gate would have been RIGHT'}) — ${w.problems.map((p) => p.replace(/\s+/g, ' ').slice(0, 160)).join(' | ')}`);
+});
+const overclaims = rows.filter((r) => r.claimedComplete === true && r.score < r.total).map((r) => `- pass ${passOf.get(runIdOf(r))?.pass ?? '?'} ${r.testId}: reported done at ${r.score}/${r.total}${recOf(r)?.gateWouldRefuse ? ' (the gate would have refused)' : ' (the gate would NOT have caught it)'}`);
+if (rows.some((r) => recOf(r)?.gate === 'record')) md.push('## Gate would-refuse (gate=record)', '', ...(would.length ? would : ['- none']), '', '## Overclaims (reported done, score < total)', '', ...(overclaims.length ? overclaims : ['- none']), '');
 
 md.push('## Tool histogram (all passes)', '', '| tool | calls | errors | avg ms | fumbles | tests used in |', '|---|---:|---:|---:|---:|---|');
 const order = TESTS.map((t) => t.id);

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// node cli.mjs [--local|--relay] [--browser NAME] [--toolset NAME|PATH] "task"
+// node cli.mjs [--local|--relay] [--browser NAME] [--toolset NAME|PATH] [--gate on|record|off] "task"
 //   streams tool calls, answers ask_caller from stdin, prints final JSON.
 // node cli.mjs --toolset NAME --dump-tools
 //   prints the exact tool list Grok would receive for that toolset (read from fast-dxt/server/tools.js —
@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline';
 import { runTask, answer, loadToolset, buildTools, buildSystem } from './runner.mjs';
 
 const argv = process.argv.slice(2);
-let transport = 'relay', browser, toolset, dumpTools = false;
+let transport = 'relay', browser, toolset, gate, dumpTools = false;
 const rest = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -16,6 +16,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--relay') transport = 'relay';
   else if (a === '--browser') browser = argv[++i];
   else if (a === '--toolset') toolset = argv[++i];
+  else if (a === '--gate') gate = argv[++i];
   else if (a === '--dump-tools') dumpTools = true;
   else rest.push(a);
 }
@@ -37,7 +38,7 @@ if (dumpTools) {
 }
 
 const task = rest.join(' ').trim();
-if (!task) { console.error('usage: node cli.mjs [--local|--relay] [--browser NAME] [--toolset NAME|PATH] "task"\n       node cli.mjs --toolset NAME --dump-tools'); process.exit(2); }
+if (!task) { console.error('usage: node cli.mjs [--local|--relay] [--browser NAME] [--toolset NAME|PATH] [--gate on|record|off] "task"\n       node cli.mjs --toolset NAME --dump-tools'); process.exit(2); }
 
 // stdin lines are queued so a piped answer that arrives before the question is not lost.
 const rl = createInterface({ input: process.stdin, terminal: false });
@@ -52,7 +53,7 @@ const onEvent = (e) => {
 };
 
 const t0 = Date.now();
-let r = await runTask({ task, transport, browser, toolset, holdMs: 3_600_000, onEvent }).catch(fail);
+let r = await runTask({ task, transport, browser, toolset, gate, holdMs: 3_600_000, onEvent }).catch(fail);
 while (r.status === 'question') r = await answer(r.run_id, await ask(r.question), { holdMs: 3_600_000 });
 rl.close();
 console.log(JSON.stringify({ ...r, wallMs: Date.now() - t0 }, null, 2));

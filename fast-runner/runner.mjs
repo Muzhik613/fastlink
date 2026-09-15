@@ -308,6 +308,47 @@ export function gateProblems(run, args) {
   return problems;
 }
 
+// Gate mode, ONE per run (--gate / `gate` arg / FASTRUN_GATE env, default "on"):
+//   on     — the gate above: refuse, up to MAX_GATE_REFUSALS, then accept flagged gateOverridden
+//   record — run every check exactly as `on` would at the FIRST report_done, but never
+//            refuse: the report is accepted and, when `on` would have refused, the row
+//            gets gateWouldRefuse:[{t, problems, evidence, result}] (measures the model alone)
+//   off    — no checks, no gate fields
+// The system prompt is the same in every mode, so only the refusal itself changes.
+export const GATE_MODES = ['on', 'record', 'off'];
+export function gateMode(spec = process.env.FASTRUN_GATE || 'on') {
+  const m = String(spec || 'on').toLowerCase();
+  if (!GATE_MODES.includes(m)) throw new Error(`gate "${spec}": must be one of ${GATE_MODES.join(' | ')}`);
+  return m;
+}
+
+// The loop's decision at a report_done: { refuse: problems } (on: the model continues)
+// or { finish: fields } (the run ends 'done' with these fields).
+export function reportDone(run, args, t) {
+  const done = (fields = {}) => ({ finish: { result: args.result ?? '', evidence: args.evidence ?? '', ...fields } });
+  if (run.gate === 'off') return done();
+  const problems = gateProblems(run, args);
+  const unresolved = unresolvedFailures(run.toolLog);
+  const claims = claimMismatch(run.toolLog, args.result);
+  const checks = { unresolvedFailures: unresolved.length ? unresolved : null, claimMismatch: claims.length ? claims : null };
+  const report = { result: String(args.result ?? '').slice(0, 2000), evidence: String(args.evidence ?? '').slice(0, 4000) };
+  if (problems.length && run.gate === 'record') return done({ ...checks, gateWouldRefuse: [{ t, problems, ...report }] });
+  if (problems.length && run.gateRefusals.length < MAX_GATE_REFUSALS) {
+    // the refused report itself, so a post-mortem sees what was quoted
+    run.gateRefusals.push({ turn: run.turns.length, t, problems, ...report, ...(unresolved.length ? { unresolvedFailures: unresolved } : {}), ...(claims.length ? { claimMismatch: claims } : {}) });
+    return { refuse: problems };
+  }
+  if (problems.length) run.gateOverridden = problems;
+  return done(checks);
+}
+
+// The gate fields a run row / snapshot carries, per mode.
+const gateFields = (run) => run.gate === 'off' ? { gate: 'off' } : {
+  gate: run.gate,
+  ...(run.gate === 'on' ? { gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined } : { gateWouldRefuse: run.gateWouldRefuse || undefined }),
+  unresolvedFailures: run.unresolvedFailures || undefined, claimMismatch: run.claimMismatch || undefined,
+};
+
 const NATIVE_TOOLS = [
   {
     name: 'ask_caller',
@@ -441,7 +482,7 @@ function snapshot(run) {
   const base = { status: run.status, run_id: run.id };
   if (run.status === 'question') return { ...base, question: run.question, so_far: soFar(run) };
   if (run.status === 'running') return base;
-  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined, unresolvedFailures: run.unresolvedFailures || undefined, claimMismatch: run.claimMismatch || undefined };
+  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, ...gateFields(run) };
 }
 
 function notify(run) {
@@ -460,8 +501,7 @@ function finish(run, status, fields = {}) {
       toolset: run.toolset.name, status, startedAt: new Date(run.startedAt).toISOString(), wallMs: run.endedAt - run.startedAt,
       toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog, turns: run.turns,
       result: run.result, evidence: run.evidence, error: run.error, usage: run.usage, urlTrail: run.urlTrail,
-      gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined, unresolvedFailures: run.unresolvedFailures || undefined,
-      claimMismatch: run.claimMismatch || undefined,
+      ...gateFields(run),
     }) + '\n');
   } catch {}
   run.client?.close().catch(() => {});
@@ -512,18 +552,13 @@ async function loop(run) {
       if (run.cancelled) return;
       const args = u.input || {};
       if (u.name === 'report_done') {
-        const problems = gateProblems(run, args);
-        const unresolved = unresolvedFailures(run.toolLog);
-        const claims = claimMismatch(run.toolLog, args.result);
-        if (problems.length && run.gateRefusals.length < MAX_GATE_REFUSALS) {
-          // the refused report itself, so a post-mortem sees what was quoted
-          run.gateRefusals.push({ turn: run.turns.length, t: Date.now() - t0, problems, result: String(args.result ?? '').slice(0, 2000), evidence: String(args.evidence ?? '').slice(0, 4000), ...(unresolved.length ? { unresolvedFailures: unresolved } : {}), ...(claims.length ? { claimMismatch: claims } : {}) });
-          onEvent?.({ type: 'gate', problems });
-          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: `report_done refused: ${problems.join('; ')}. Fix that, then call report_done again.` }] });
+        const verdict = reportDone(run, args, Date.now() - t0);
+        if (verdict.refuse) {
+          onEvent?.({ type: 'gate', problems: verdict.refuse });
+          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: `report_done refused: ${verdict.refuse.join('; ')}. Fix that, then call report_done again.` }] });
           continue;
         }
-        if (problems.length) run.gateOverridden = problems;
-        return finish(run, 'done', { result: args.result ?? '', evidence: args.evidence ?? '', unresolvedFailures: unresolved.length ? unresolved : null, claimMismatch: claims.length ? claims : null });
+        return finish(run, 'done', verdict.finish);
       }
       if (u.name === 'ask_caller') {
         run.question = String(args.question ?? '');
@@ -568,17 +603,18 @@ async function loop(run) {
   }
 }
 
-export async function runTask({ task, transport = 'relay', browser, toolset: toolsetSpec, budgets = {}, holdMs = 240_000, onEvent } = {}) {
+export async function runTask({ task, transport = 'relay', browser, toolset: toolsetSpec, gate: gateSpec, budgets = {}, holdMs = 240_000, onEvent } = {}) {
   if (!task) throw new Error('task required');
   const toolset = loadToolset(toolsetSpec); // throws before any connect on a bad name/path
+  const gate = gateMode(gateSpec);
   await ensureProxy();
   const client = await connect({ transport, browser });
   const { tools, back } = buildTools(await client.listTools(), toolset);
   const run = {
-    id: randomBytes(4).toString('hex'), task, transport, browser, toolset, status: 'running',
+    id: randomBytes(4).toString('hex'), task, transport, browser, toolset, gate, status: 'running',
     messages: [{ role: 'user', content: [{ type: 'text', text: `TASK: ${task}` }] }],
     system: buildSystem(toolset, client.instructions),
-    tools, back, client, toolLog: [], turns: [], corpus: [], urlTrail: [], gateRefusals: [], gateOverridden: null, unresolvedFailures: null, question: null, waiters: [], pendingAnswer: null,
+    tools, back, client, toolLog: [], turns: [], corpus: [], urlTrail: [], gateRefusals: [], gateOverridden: null, gateWouldRefuse: null, unresolvedFailures: null, question: null, waiters: [], pendingAnswer: null,
     budgets: { ...DEFAULT_BUDGETS, ...budgets }, onEvent, startedAt: Date.now(), consecutiveErrors: 0,
     usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, modelMs: 0 }, abort: new AbortController(), cancelled: false, done: false,
   };

@@ -67,6 +67,7 @@ export function start(prompt, { browser = null, transport = 'relay', toolset = n
   const args = [CLI, transport === 'local' ? '--local' : '--relay'];
   if (browser) args.push('--browser', browser);
   if (toolset) args.push('--toolset', toolset);
+  if (process.env.FASTRUN_GATE) args.push('--gate', process.env.FASTRUN_GATE); // report_done gate mode (on | record | off)
   args.push(prompt);
   const proc = spawn(process.execPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
   const handle = {

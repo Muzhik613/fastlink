@@ -236,6 +236,7 @@ export async function runCell({
       if (!idle.record) notes.push('runner run store had no record for this run — tool histogram is empty');
       final = runner.readFinalMessage(handle);
       notes.push(`runner ${final.status || 'no-json'}${final.runId ? ` run_id=${final.runId}` : ''}${handle.questions ? ` (answered ${handle.questions} ask_caller)` : ''}`);
+      if (handle.final?.gate) notes.push(`gate=${handle.final.gate}${handle.final.gateWouldRefuse ? ` (would refuse: ${handle.final.gateWouldRefuse[0].problems.length} problem(s))` : ''}`);
     } else if (driver !== 'manual' && site) {
       try {
         const idle = await web.waitForIdle(site);
@@ -283,6 +284,7 @@ export async function runCell({
       browser,
       toolset: handle ? (handle.final?.toolset || toolset || 'default') : null,
       model: handle ? (handle.final?.model || null) : null,
+      gate: handle ? (handle.final?.gate || null) : null, // report_done gate mode the runner ran with
       notes: notes.join('; '),
     };
     appendFileSync(RESULTS, JSON.stringify(row) + '\n');

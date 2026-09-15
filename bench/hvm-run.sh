@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.." || exit 1
 PASSES=${PASSES:-3}
 PASS_START=${PASS_START:-1}       # continue an earlier run: PASS_START=4 PASSES=1 SINCE=<its start ts>
 SINCE=${SINCE:-}
-TOOLSET=${TOOLSET:-}              # fast-runner toolset name (default = all tools); FASTRUN_MODEL is inherited by cli.mjs
+TOOLSET=${TOOLSET:-}              # fast-runner toolset name (default = all tools); FASTRUN_MODEL / FASTRUN_GATE are inherited (drive-runner passes --gate)
 TESTS=${TESTS:-"multipage staticform overlay extract flightsearch mapsdir"}
 DOC=${DOC:-docs/GROK_RUNNER_BENCH_hvm_$(date -u +%F).md}
 export GIT_AUTHOR_NAME=Turetsky GIT_AUTHOR_EMAIL=yjturetsky@gmail.com GIT_COMMITTER_NAME=Turetsky GIT_COMMITTER_EMAIL=yjturetsky@gmail.com
@@ -30,9 +30,9 @@ fixer_check
 rig_up || exit 1
 [ -n "$SINCE" ] || SINCE=$(date -u +%FT%T.000Z)
 LAST=$((PASS_START + PASSES - 1))
-echo "=== run start $SINCE  passes=$PASS_START..$LAST  tests=[$TESTS]  doc=$DOC  model=${FASTRUN_MODEL:-grok-4.6} toolset=${TOOLSET:-default}"
+echo "=== run start $SINCE  passes=$PASS_START..$LAST  tests=[$TESTS]  doc=$DOC  model=${FASTRUN_MODEL:-grok-4.6} toolset=${TOOLSET:-default} gate=${FASTRUN_GATE:-on}"
 for p in $(seq "$PASS_START" "$LAST"); do
-  NOTES="$NOTES pass $p on $(git rev-parse --short HEAD) (${FASTRUN_MODEL:-grok-4.6}, toolset ${TOOLSET:-default});"
+  NOTES="$NOTES pass $p on $(git rev-parse --short HEAD) (${FASTRUN_MODEL:-grok-4.6}, toolset ${TOOLSET:-default}, gate ${FASTRUN_GATE:-on});"
   echo "=== pass $p/$LAST starts on $(git rev-parse --short HEAD)"
   for t in $TESTS; do
     echo "=== pass $p/$LAST  $t  $(date -u +%FT%TZ)"

@@ -1,7 +1,7 @@
 // node --test — the report_done evidence gate on synthetic tool logs (no browser, no model).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gateProblems, recordResult, corpusRow, unresolvedFailures, claimMismatch, partialFailures, resultSections, buildSystem, loadToolset } from '../runner.mjs';
+import { gateProblems, recordResult, corpusRow, unresolvedFailures, claimMismatch, partialFailures, resultSections, buildSystem, loadToolset, reportDone, gateMode } from '../runner.mjs';
 
 const LIST = 'https://dash.cloudflare.com/acc/workers-and-pages';
 const WORKER = 'https://dash.cloudflare.com/acc/workers/services/view/fastlink-relay/production';
@@ -321,4 +321,59 @@ test('check 3: a missed section label is resolved by a later fill with section:<
     ['fast_fill', { match: 'URIs 1', value: 'a', index: 0 }, JSON.stringify({ verified: true, filled: { tag: 'input', label: 'URIs 1', section: JS4 } })],
     ['fast_select_option', { field: 'Region', option: 'EU' }, JSON.stringify({ verified: true, field: { tag: 'select', label: 'Region', section: RD4 } })]]);
   assert.deepEqual(unresolvedFailures(byResult.toolLog), []);
+});
+
+// ── gate mode: on | record | off ──────────────────────────────────────────────
+const CF = 'https://dash.cloudflare.com/?to=/:account/workers-and-pages';
+const cfRows = [
+  ['fast_tab', { url: CF }, `{"id":1,"url":"${CF}"}`],
+  ['fast_snapshot', { full: true }, snap(LIST, 'fastlink-relay', 'gauth-father')],
+  ['fast_click', { text: 'fastlink-relay', role: 'a' }, '{"error":"none satisfied role=\\"a\\""}'],
+  ['fast_text', {}, txt('Workers & Pages\nfastlink-relay\ngauth-father')],
+];
+const bad = { result: 'Worker "fastlink-relay" opened', evidence: 'the price is right, trust me' };   // 3 checks fire + claimMismatch
+const good = { result: 'Listed: fastlink-relay, gauth-father', evidence: `"gauth-father" at ${LIST}` };
+const moded = (gate, rows = cfRows) => Object.assign(runOf(rows), { gate, turns: [] });
+
+test('gate mode: record runs the same checks as on, never refuses, and records what on would have refused', () => {
+  const on = moded('on');
+  const refused = reportDone(on, bad, 1234);
+  assert.ok(refused.refuse?.length >= 3, JSON.stringify(refused));
+  const rec = moded('record');
+  const v = reportDone(rec, bad, 1234);
+  assert.equal(v.refuse, undefined, 'record never refuses');
+  assert.deepEqual(v.finish.gateWouldRefuse, [{ t: 1234, problems: refused.refuse, evidence: bad.evidence, result: bad.result }]);
+  assert.deepEqual(rec.gateRefusals, [], 'no refusal is logged in record mode');
+  assert.deepEqual(v.finish.unresolvedFailures, unresolvedFailures(rec.toolLog));
+  assert.deepEqual(v.finish.claimMismatch, [{ verb: 'opened', family: 'fast_click / fast_nav / fast_tab (beyond the first page load)' }]);
+  // a report on would pass → record finishes with no gateWouldRefuse (only the unresolved click is still carried, as on carries it)
+  const clean = moded('record', [...cfRows.slice(0, 2), cfRows[3]]);
+  const ok = reportDone(clean, good, 50);
+  assert.equal(ok.finish.gateWouldRefuse, undefined);
+  assert.deepEqual(reportDone(moded('on', [...cfRows.slice(0, 2), cfRows[3]]), good, 50), ok);
+});
+
+test('gate mode: on refuses up to 3 times then accepts flagged gateOverridden (unchanged); off checks nothing', () => {
+  const on = moded('on');
+  for (let i = 0; i < 3; i++) assert.ok(reportDone(on, bad, i).refuse, `refusal ${i + 1}`);
+  const last = reportDone(on, bad, 9);
+  assert.equal(last.finish.result, bad.result);
+  assert.equal(on.gateRefusals.length, 3);
+  assert.match(on.gateOverridden.join(), /evidence does not quote/);
+  const off = moded('off');
+  assert.deepEqual(reportDone(off, bad, 1), { finish: { result: bad.result, evidence: bad.evidence } });
+  assert.deepEqual(reportDone(moded('off', []), {}, 1), { finish: { result: '', evidence: '' } }, 'not even "no tool has been called"');
+  assert.deepEqual(off.gateRefusals, []);
+  assert.equal(off.gateOverridden, undefined);
+});
+
+test('gate mode: default on, FASTRUN_GATE / explicit spec, bad values throw', () => {
+  const env = process.env.FASTRUN_GATE;
+  delete process.env.FASTRUN_GATE;
+  assert.equal(gateMode(), 'on');
+  process.env.FASTRUN_GATE = 'record';
+  assert.equal(gateMode(), 'record');
+  assert.equal(gateMode('OFF'), 'off');
+  assert.throws(() => gateMode('maybe'), /must be one of on \| record \| off/);
+  if (env == null) delete process.env.FASTRUN_GATE; else process.env.FASTRUN_GATE = env;
 });

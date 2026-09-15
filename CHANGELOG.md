@@ -33,6 +33,29 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast-runner gate mode: on | record | off (measure the model alone)
+- **What:** one gate mode per run: `FASTRUN_GATE` env, `--gate <mode>` (cli.mjs), `gate` arg on
+  `grok_run`. `on` (default) = the report_done gate as before. `record` = every check runs at the
+  first report_done exactly as `on` would, but the report is always accepted; when `on` would
+  have refused, the row gets `gateWouldRefuse:[{t, problems, evidence, result}]`. `off` = no checks,
+  no gate fields. Every runs.jsonl row / snapshot carries `gate`. The report_done decision moved
+  into an exported pure `reportDone(run, args, t)` (the loop only applies it); the row's gate
+  fields come from one `gateFields(run)`. The system prompt is identical in all modes.
+  Bench: `drive-runner.start()` passes `--gate` from `FASTRUN_GATE`; `bench/run.js` rows get `gate`
+  and a `gate=<mode>` note; `hvm-run.sh` logs the mode per pass; `hvm-report.js` shows
+  model/toolset/gate per pass and, for record runs, each would-refuse next to the cell's score
+  plus the overclaims.
+- **Why:** owner: "see how well 4.3 can get it done itself and why Grok doesn't check itself".
+  With the gate on, a run's score measures model+gate; record isolates the model and says, per
+  would-refuse, whether the gate was right (score short) or wrong (full score).
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/cli.mjs`, `fast-runner/caller-mcp.mjs`,
+  `fast-runner/README.md`, `fast-runner/test/gate.test.mjs`, `bench/drive-runner.js`,
+  `bench/run.js`, `bench/hvm-run.sh`, `bench/hvm-report.js`.
+- **Watch out:** `on` behaviour is unchanged (tests: refuses 3×, then accepts flagged
+  `gateOverridden`); a bad mode throws before any connect. `record` has exactly one report_done
+  per run, so at most one gateWouldRefuse entry. hvm-report reads a row without `gate` as `on`.
+- **Status:** committed; unit tests 38/38.
+
 ## 2026-09-15 — bench: the URL trail is read twice per cell (baseline + after exit), never polled mid-run
 - **What:** `bench/monitor.js` `TrailWatcher` has `baseline()` (before the run) and `collect()`
   (after it) and counts its `reads`; `watchRun` no longer takes a trail watcher or touches the
