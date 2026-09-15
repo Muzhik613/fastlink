@@ -193,16 +193,21 @@ const MAIN_WORLD_FILES = ['src/actions/page.js'];
 // outlive the broker/relay's 30s call timeout, or the NEXT call queues behind
 // it. A deadline, not a retry — the caller gets a structured "page busy".
 const BRIDGE_DEADLINE_MS = 20000;
+const BRIDGE_DEADLINE_MAX_MS = 28000;   // under the broker/relay 30s call limit
 async function runBridge(tabId, action, args) {
   const t0 = Date.now();
+  // fast_wait legitimately runs to its own timeoutMs; give it that plus slack.
+  const deadlineMs = action === 'fast_wait'
+    ? Math.min(BRIDGE_DEADLINE_MAX_MS, Math.max(BRIDGE_DEADLINE_MS, (Number(args?.timeoutMs) || 5000) + 3000))
+    : BRIDGE_DEADLINE_MS;
   try {
     const exec = chrome.scripting.executeScript({
       target: { tabId }, world: 'MAIN', func: pageBridge, args: [action, JSON.stringify(args || {})],
     });
-    const raced = await Promise.race([exec, new Promise((r) => setTimeout(() => r({ __deadline: true }), BRIDGE_DEADLINE_MS))]);
+    const raced = await Promise.race([exec, new Promise((r) => setTimeout(() => r({ __deadline: true }), deadlineMs))]);
     if (raced && raced.__deadline) {
       exec.catch(() => {});
-      return { error: 'page busy', phase: action, elapsedMs: Date.now() - t0, hint: `${action} did not return within ${BRIDGE_DEADLINE_MS / 1000}s — the page is re-rendering or frozen; fast_wait for text of the settled view, then retry` };
+      return { error: 'page busy', phase: action, elapsedMs: Date.now() - t0, hint: `${action} did not return within ${Math.round(deadlineMs / 1000)}s — the page is re-rendering or frozen; fast_wait for text of the settled view, then retry` };
     }
     const [{ result }] = raced;
     return typeof result === 'string' ? JSON.parse(result) : result;

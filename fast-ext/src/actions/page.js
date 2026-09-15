@@ -1799,17 +1799,19 @@ async function runPageAction(action, args) {
     const { el, input, index } = sug;
     const before = liveValueOf(input);
     const key = (target, k) => { const o = keyInit(k); target.dispatchEvent(new KeyboardEvent('keydown', o)); target.dispatchEvent(new KeyboardEvent('keyup', o)); };
+    const urlBefore = location.href;
+    const took = () => liveValueOf(input) !== before || location.href !== urlBefore || !openSuggestions(input);
     for (let i = 0; i <= index; i++) { key(input, 'ArrowDown'); await wait(40); }
     key(input, 'Enter');
     await wait(300);
-    if (liveValueOf(input) !== before || !openSuggestions(input)) return { via: 'keyboard' };
+    if (took()) return { via: 'keyboard', committed: true };
     flashEl(el, 'click');
     for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
       const Ev = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
       el.dispatchEvent(new Ev(type, { bubbles: true, cancelable: true, composed: true, button: 0 }));
     }
     await wait(300);
-    return { via: 'mouse' };
+    return { via: 'mouse', committed: took() };
   };
   // Bring an offscreen target into view before acting on it (a heavy page's
   // match pool now includes offscreen controls).
@@ -2615,8 +2617,15 @@ async function runPageAction(action, args) {
       const sOpt = suggestionByText(args.text);
       if (sOpt) {
         const urlBefore0 = location.href;
-        const clicked = { tag: sOpt.el.tagName.toLowerCase(), role: sOpt.el.getAttribute('role') || undefined, text: cleanLabel(sOpt.el.textContent).slice(0, 120) };
+        let sr; try { sr = sOpt.el.getBoundingClientRect(); } catch { sr = null; }
+        const off0 = offsetFor(sOpt.el);
+        const clicked = { tag: sOpt.el.tagName.toLowerCase(), role: sOpt.el.getAttribute('role') || undefined, text: cleanLabel(sOpt.el.textContent).slice(0, 120),
+          ...(sr ? { x: Math.round(sr.x + off0.ox + sr.width / 2), y: Math.round(sr.y + off0.oy + sr.height / 2), w: Math.round(sr.width), h: Math.round(sr.height) } : {}) };
         const how = await commitSuggestion(sOpt);
+        if (!how.committed) {
+          // Synthetic events did not take: say so (never a false "clicked") and hand over the trusted path.
+          return { error: `suggestion "${clicked.text}" is on screen but the control did not accept a synthetic pick (still open, value unchanged). Nothing changed.`, suggestion: clicked, hint: `fast_click_xy at x:${clicked.x}, y:${clicked.y} (trusted click) commits it; or press the control's own search/go button` };
+        }
         const out0 = await withSnap({ clicked, fromSuggestions: true }, snap);
         const head0 = { clicked, fromSuggestions: true, via: how.via, url: location.href, urlChanged: location.href !== urlBefore0, value: maskIfPassword(sOpt.input, String(liveValueOf(sOpt.input) || '').slice(0, 200)) };
         const still = openSuggestions(document.activeElement); if (still) Object.assign(head0, still);
