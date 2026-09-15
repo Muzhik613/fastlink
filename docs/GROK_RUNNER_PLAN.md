@@ -50,6 +50,22 @@ Claude (any session / frontdesk agent)
 | 3 | fold decisions land in `tools.js` itself (relay mirror too), toolset.json shrinks to overrides only | no dormant tool paths left |
 | 4 | hosted: runner beside the relay per user (container lane, frontdesk owns the box) | out of scope this pass |
 
+## Phase 3 tool optimisation order (owner-confirmed 2026-09-15 02:13)
+
+Model time is ~90% of wall → every item = fewer turns or smaller turns. Sequence: 1, 2, 4, 5 first
+(cheap, each removes turns), then 6 (correctness on dense pages), 3/7/8 alongside.
+
+| # | change | data behind it |
+|---|---|---|
+| 1 | `fast_nav {url, waitFor}` | 8/10 tab opens followed by a separate `fast_wait` |
+| 2 | `fast_wait {text, then:{click|fill}}` act-on-appear | 1/3 of waits were wait-then-click on the same target; also closes the stale-state window that tripped 4.3 on mapsdir |
+| 3 | auto-snapshot returns a DIFF since last read, not the page | fresh prefill per turn; 4.6 re-snapshot habit |
+| 4 | descriptions: fill/select readback is verified, don't re-read | 4.6 post-completion verification thrash 3–10 calls |
+| 5 | `fast_batch` with `ifFound` / `else` steps | batch aborts at step 0 on a miss; GCP form = 15 turns today |
+| 6 | store page index in the extension, `find {role, near, text}` query instead of dumps | overlay "Ocean" hits the Remove chip every run; extension-side processing idea |
+| 7 | bit-stable schema + system prompt for cache hits; per-run text (date) at the END | 72k warm cache TTFT 1.0s vs 5.4s cold |
+| 8 | delete the 19 hidden tools + Gemini tier from the server (folds land in tools.js + relay mirror) | schema shipped every turn; container review flagged evaluate/network_replay/tunnel |
+
 ## Phase 4 contract — FastLink inside frontdesk's per-user container (decided 2026-09-15)
 
 Owner decision: box 10 goes **local first**. Frontdesk DO ↔ container directly; identity = `usr_id`
