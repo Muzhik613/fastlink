@@ -17,7 +17,7 @@ TESTS=${TESTS:-"multipage staticform overlay extract flightsearch mapsdir"}
 DOC=${DOC:-docs/GROK_RUNNER_BENCH_hvm_$(date -u +%F).md}
 export GIT_AUTHOR_NAME=Turetsky GIT_AUTHOR_EMAIL=yjturetsky@gmail.com GIT_COMMITTER_NAME=Turetsky GIT_COMMITTER_EMAIL=yjturetsky@gmail.com
 . bench/hvm-rig.sh
-NOTES=""
+NOTES=${NOTES:-}   # seed with earlier passes when continuing a run
 fixer_check() {
   [ -f bench/FIXER_READY ] || return 0
   local msg; msg=$(tr '\n' ' ' < bench/FIXER_READY)
