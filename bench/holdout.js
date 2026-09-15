@@ -105,10 +105,17 @@ const FORMIO_GRID = `() => {
   const rows = (f.submission && f.submission.data && f.submission.data.children) || [];
   const r3 = rows[2] || {};
   const submitted = !!document.querySelector('#formio .alert-success');
+  // Seeded rows must be UNCHANGED in every field, not just by first name: the three
+  // "Gender" / "Birthdate" controls share one label, so an un-indexed write lands on
+  // Joe's row — a silent wrong-row write that a first-name check cannot see.
+  const j = rows[0] || {}, m = rows[1] || {};
+  const seedKept = rows.length === 3
+    && j.firstName === 'Joe' && j.lastName === 'Smith' && j.gender === 'male' && j.dependant === true && /^1982-05-18/.test(String(j.birthdate || ''))
+    && m.firstName === 'Mary' && m.lastName === 'Smith' && m.gender === 'female' && m.dependant === false;
   return {
     url: location.href,
     count: rows.length,
-    seedKept: rows.length === 3 && (rows[0] || {}).firstName === 'Joe' && (rows[1] || {}).firstName === 'Mary',
+    seedKept,
     first: r3.firstName || '',
     last: r3.lastName || '',
     gender: r3.gender || '',
