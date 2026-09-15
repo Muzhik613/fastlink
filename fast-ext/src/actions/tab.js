@@ -1,5 +1,6 @@
 import { getActiveTab } from '../util.js';
 import { setTargetTab, clearTargetTab, resolveTargetTab } from './targetTab.js';
+import { trailOf } from './trail.js';
 
 // ── SINGLE SOURCE OF TRUTH for "which tab does Claude act on?" ──────────────
 // Every action/snapshot/overlay must resolve its tab through these, NOT through
@@ -206,9 +207,15 @@ async function listTabs() {
   let tabs = await chrome.tabs.query({ currentWindow: true });
   if (tabs.length === 0) tabs = await chrome.tabs.query({ windowType: 'normal' });
   const pinnedId = (await resolveTargetTab())?.id;
-  return tabs.map(t => ({
-    id: t.id, url: t.url, title: t.title, active: t.active,
-    ...(t.id === pinnedId ? { targetTab: true } : {}),
+  // `trail`: the tab's timestamped URL changes (trail.js ring, ≤50) — a watcher
+  // polling every few seconds still sees a 2s stop.
+  return Promise.all(tabs.map(async t => {
+    const trail = await trailOf(t.id);
+    return {
+      id: t.id, url: t.url, title: t.title, active: t.active,
+      ...(t.id === pinnedId ? { targetTab: true } : {}),
+      ...(trail.length ? { trail } : {}),
+    };
   }));
 }
 

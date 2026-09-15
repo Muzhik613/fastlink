@@ -19,6 +19,29 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Passive URL trail: extension records tab URL changes, `fast_list` returns `trail`, bench polls 3s instead of 500ms
+- **What:** new `fast-ext/src/actions/trail.js`: `chrome.tabs.onUpdated` URL changes are
+  stamped `{t,url}` into a per-tab ring (≤50, deduped when unchanged, dropped on `onRemoved`,
+  persisted in `chrome.storage.session` so a service-worker restart keeps it); `installTrail()`
+  runs at `background.js` top level. `listTabs` (tab.js) adds `trail:[{t,url}]` to every tab
+  that has one. `bench/monitor.js`: `mergeTrail(list, events, seen)` (pure) reconstructs the
+  stops from the timestamps; `TrailWatcher` keeps a `(tabId,t,url)` seen-set, the first poll is
+  the baseline, `.trail` is the ordered URL list `score.js` already consumes; a tab without a
+  recorded change contributes its current URL. `DEFAULTS.trailPollMs` 500 → 3000. Tool
+  description updated in `fast-dxt/server/tools.js` + `fastlink-relay/tools.js`.
+- **Why:** the 500ms poll (entry "bench trail poll 3s → 0.5s") put a `fast_list` through the
+  same service worker every half second while GCP was storming — the "Listing tabs" flood in
+  the panel during the gcpform recording — and a sampled trail still could not prove a stop
+  shorter than the poll. Timestamps make the 3s poll lossless.
+- **Files:** `fast-ext/src/actions/trail.js` (new), `fast-ext/src/actions/tab.js`,
+  `fast-ext/background.js`, `bench/monitor.js`, `fast-dxt/server/tools.js`,
+  `fastlink-relay/tools.js`, `fast-runner/test/trail.test.mjs` (new).
+- **Watch out:** STUCK / NO_ACTIVITY / FINISHED still come from the tool trace, not the trail.
+  Entries are stamped with the browser's clock. Trails start when the service worker installs
+  the listener — tabs opened before that show only later changes.
+- **Status:** committed; unit tests (ring + reconstruction of a 2s stop between 3s polls).
+  Live multipage bench cell pending the extension reload (the lead ships the Windows copy).
+
 ## 2026-09-15 — fast_select_option: generic ARIA open chain (click → ArrowDown → Enter, observer-waited), control-only field lookup, readback-confirmed pick, `timing`
 - **What:** page.js `fast_select_option` generic branch, ARIA contract only (no framework
   selectors): (1) `findField` label/aria/placeholder passes consider only VISIBLE control-like

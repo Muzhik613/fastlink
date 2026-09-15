@@ -2,6 +2,7 @@ import { startConnection, sendEvent }           from './src/connection.js';
 import { startRelayConnection, sendRelayEvent, stopRelay }  from './src/relayClient.js';
 import { startBufferListeners }                  from './src/buffers.js';
 import { dispatchAction }                         from './src/actions/index.js';
+import { installTrail }                           from './src/actions/trail.js';
 import { isInjectableUrl }                        from './src/util.js';
 import { checkForUpdate }                         from './src/updateCheck.js';
 import { reloadSelf, SELF_RELOAD_LOG_KEY }        from './src/reloadSelf.js';
@@ -491,6 +492,7 @@ chrome.runtime.onInstalled.addListener(() => transports.forEach((t) => t.wake?.(
 // Tell every active transport when the active tab finishes loading, so the scout
 // can pre-warm its page map before Claude ever asks. Fires once per full load
 // (SPA route changes don't trigger onUpdated 'complete').
+installTrail();   // per-tab URL trail for fast_list (trail.js)
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return;
   if (!tab || !tab.active || !/^https?:/.test(tab.url || '')) return;

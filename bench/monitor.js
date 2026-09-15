@@ -17,9 +17,11 @@
 // rows. So we poll continuously and accumulate rows locally, deduped; the local
 // accumulator, not the relay, is the record of a run.
 //
-// SECOND SIGNAL: a URL trail sampled from the LOCAL connector. It answers "did the
+// SECOND SIGNAL: a URL trail read from the LOCAL connector. It answers "did the
 // run ever reach the Travel category page" for steps a final-state read can no
-// longer see, and it costs one cheap chrome.tabs.query per poll.
+// longer see. The extension records every tab's URL changes with timestamps
+// (fast_list → per-tab `trail`), so one fast_list every few seconds reconstructs
+// every stop — a 500ms poll used to flood the service worker mid-run.
 import { readFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
@@ -40,7 +42,7 @@ export const DEFAULTS = {
   quietMs: 25_000,      // no new tool call for this long → the run is FINISHED
   ceilingMs: 300_000,   // hard ceiling → STUCK
   pollMs: 3_000,
-  trailPollMs: 500,     // 3s missed a 2s stop on the Travel page once runs got fast (batch build)
+  trailPollMs: 3_000,   // the extension's timestamped trail catches stops shorter than the poll
 };
 
 /** Device token: env → --token → ~/fastlink-secrets.txt (the same KEY=VALUE file
@@ -182,19 +184,38 @@ export function renderTiming(rows, label = 'Chat') {
 }
 
 // ---------------------------------------------------------------------------
-// URL trail — cheap live sampling of what the browser actually visited.
+// URL trail — what the browser actually visited, from the extension's per-tab
+// timestamped trail (fast_list `trail:[{t,url}]`, last 50 per tab).
 // ---------------------------------------------------------------------------
+/** Merge one fast_list result into the event set: new (tabId, t, url) entries
+ *  are appended; a tab whose trail is missing (older extension) contributes its
+ *  current URL as a stop so scoring still has evidence. Pure: returns the
+ *  number of NEW events. */
+export function mergeTrail(list, events, seen) {
+  let added = 0;
+  for (const t of list) {
+    const entries = Array.isArray(t.trail) && t.trail.length ? t.trail : (t.url ? [{ t: 0, url: t.url }] : []);
+    for (const e of entries) {
+      const key = `${t.id}:${e.t}:${e.url}`;
+      if (!e.url || seen.has(key)) continue;
+      seen.add(key);
+      events.push({ t: e.t, tabId: t.id, url: e.url });
+      added++;
+    }
+  }
+  if (added) events.sort((a, b) => a.t - b.t);
+  return added;
+}
 export class TrailWatcher {
-  constructor({ install = null } = {}) { this.install = install; this.trail = []; this._last = new Map(); }
+  // The first poll is the BASELINE: entries already present are marked seen so
+  // pre-existing tabs are never read as navigation.
+  constructor({ install = null, list = tabs } = {}) { this.install = install; this._list = list; this.events = []; this._seen = new Set(); this._baselined = false; }
+  get trail() { return this.events.map((e) => e.url); }
   async poll() {
     let list;
-    try { list = await tabs(); } catch { return; }
-    for (const t of list) {
-      const url = t.url || '';
-      if (!url || this._last.get(t.id) === url) continue;
-      this._last.set(t.id, url);
-      this.trail.push(url);
-    }
+    try { list = await this._list(); } catch { return; }
+    if (!this._baselined) { mergeTrail(list, [], this._seen); this._baselined = true; return; }
+    mergeTrail(list, this.events, this._seen);
   }
 }
 

@@ -203,7 +203,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_list',
-    description: 'List all open tabs in the current Chrome window with id, url, title, and active state.',
+    description: 'List all open tabs in the current Chrome window with id, url, title, and active state. A tab whose URL changed while the extension was running also carries `trail:[{t,url}]` — its last 50 URL changes with ms-epoch timestamps, recorded passively — so a watcher polling every few seconds still sees every stop.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
