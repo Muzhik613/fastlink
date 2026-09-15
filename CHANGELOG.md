@@ -33,6 +33,24 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — holdout follow-up (first n=2 on 9d18d4d): repeated-row checkbox clicks refused; a no-href <a> answers to role "link"; a top-level verified:false write is an unresolved action for the gate
+- **What:** page.js fast_click: when the best match is a check-type control (checkbox/radio, native
+  or ARIA) whose label also names the same kind of control in ANOTHER row of the same repeated rows
+  and no index is given, nothing is clicked — `candidates` {index, label, checked, row, rows,
+  rowFirst}. A script-only `<a>` (no href) also matches role "link". `rowFirst` reads visible fields
+  only. runner.mjs `partialFailures`: a single (non-wrapper) call whose own result is
+  `verified:false` is a failed action on its target (a later verified call on it resolves it).
+- **Why:** holdout n=2 on 9d18d4d: h_repeat p1+p2 (5/7, overclaims) — `fast_click {text:"Dependant",
+  role:"checkbox"}` with no index unticked Joe's seeded row; the Birthdate fill read back
+  `verified:false` (the date widget never committed it) and was reported as set — the gate let it
+  through. h_datepicker p1 — `fast_click {text:"Next", role:"link"}` ×3 refused (implicit role
+  "generic") → runner stopped.
+- **Files:** `fast-ext/src/actions/page.js`, `fast-runner/runner.mjs`,
+  `fast-runner/test/holdout-replay.test.mjs`.
+- **Watch out:** a date/masked field that always reformats now costs one gate refusal per run
+  unless the model re-reads/explains it (the one-refusal rule still applies).
+- **Status:** committed; unit tests pass; live: see the second holdout n=2 in the report doc.
+
 ## 2026-09-15 — holdout gaps 1-4, 6: live proof (hvm rig, fixed build loaded unpacked, tools called in-process via bench/fastlink.js)
 Non-holdout sites marked (N). Every row is a before/after page read through fast_evaluate.
 | gap | site | call → result |

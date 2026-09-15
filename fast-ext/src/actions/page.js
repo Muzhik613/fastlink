@@ -1890,6 +1890,7 @@ async function runPageAction(action, args) {
     try {
       for (const f of row.querySelectorAll(FILLABLE_SEL)) {
         if (f.tagName === 'INPUT' && /^(checkbox|radio|button|submit|hidden)$/i.test(f.type || '')) continue;
+        if (typeof f.checkVisibility === 'function' && !f.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
         const v = cleanLabel(String(liveValueOf(f) || ''));
         if (v) return v.slice(0, 40);
       }
@@ -3303,6 +3304,7 @@ async function runPageAction(action, args) {
       const explicit = (m.role || '').toLowerCase();
       const implicit = m.clickable ? 'generic' : implicitRoleOf(m.tag, m.type);
       if (wantRole === 'label' && m.via === 'label') return true;
+      if (m.clickable && m.tag === 'a' && wantRole === 'link') return true;   // models call every <a> a link
       return explicit === wantRole || implicit === wantRole
         || m.tag === wantRole || (TAG_AS_ROLE[wantRole] && (explicit === TAG_AS_ROLE[wantRole] || implicit === TAG_AS_ROLE[wantRole]));
     };
@@ -3432,6 +3434,23 @@ async function runPageAction(action, args) {
               return o;
             }),
             hint: 'pass index:N (see candidates) or role:"<its role>" to click one; to choose a value use fast_select_option {field, option, index}',
+          };
+        }
+      }
+      // REPEATED-ROW CHECKBOX/RADIO: the best match is a check-type control whose
+      // label also names the same kind of control in another row of the same rows
+      // (Form.io's per-row "Dependant") — clicking the first would toggle row 0's
+      // (h_repeat unticked Joe's seeded row). Refuse and name each row.
+      const topEl = elById(matches[0].i);
+      if (!idxGiven && topEl && checkedOf(topEl) !== null) {
+        const key = fieldKey(topEl);
+        const byDoc = matches.slice().sort(docOrderCmp);
+        const same = byDoc.filter(m => { const e = elById(m.i); return e && checkedOf(e) !== null && fieldKey(e) === key; });
+        if (key && same.length > 1 && inOtherRow(topEl, same.map(m => elById(m.i)))) {
+          return {
+            error: `${same.length} ${JSON.stringify(key)} controls in repeated rows match ${JSON.stringify(args.text)} — nothing was clicked`,
+            candidates: same.slice(0, 12).map(m => { const e = elById(m.i); const o = { index: byDoc.indexOf(m), tag: m.tag, label: m.label || m.text || null, checked: checkedOf(e) }; const ri = rowInfoOf(e); if (ri) Object.assign(o, ri); return o; }),
+            hint: 'pass index:N (see each candidate\'s index and row) to click the one in the row you mean',
           };
         }
       }

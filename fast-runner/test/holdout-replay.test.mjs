@@ -88,7 +88,7 @@ const REPEAT_REPORT = {
   evidence: `Ada (value for data[children][2][firstName]) Lovelace (data[children][2][lastName]) 2015-12-10 __:__ __ (Birthdate) at ${FIO}`,
 };
 
-test('h_repeat baseline: the gate accepted it (batch "3/3 steps ok", wrapper verified:true over a verified:false pick, an unverified write to Joe\'s row)', () => {
+test('h_repeat baseline results: accepted by the gate as it was (recorded), refused by today\'s gate on the unverified Birthdate write alone', () => {
   const run = runOf(repeatCalls({
     batch: { summary: '3/3 steps ok', ok: 3, missed: 0, steps: 3, results: [
       { step: 0, name: 'fast_fill', ok: true, result: FILL_MISS },
@@ -100,7 +100,11 @@ test('h_repeat baseline: the gate accepted it (batch "3/3 steps ok", wrapper ver
     gender2: { verified: true, picked: 1, failed: 0, total: 1, results: { Gender: { verified: true, picked: 'Female' } } },
     birthdate: { verified: false, value: '2015-12-10 __:__ __', reason: 'the field now reads "2015-12-10 __:__ __" instead of the value written', filled: { tag: 'input', label: 'Birthdate' } },
   }));
-  assert.ok(reportDone(run, REPEAT_REPORT, 40000).finish, 'baseline passed the gate');
+  // the recorded run (ce062850) finished 'done' with no refusal; today's gate sees the
+  // top-level fast_fill "Birthdate" that read back verified:false as an unresolved action
+  const v = reportDone(run, REPEAT_REPORT, 40000);
+  assert.ok(v.refuse, 'refused');
+  assert.match(v.refuse.join(' | '), /fast_fill "Birthdate" failed and was never retried/);
 });
 
 test('h_repeat with the fixed tools: honest wrappers + refused row-ambiguous writes → the same report is refused', () => {

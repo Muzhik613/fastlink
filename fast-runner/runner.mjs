@@ -150,7 +150,8 @@ const stepTarget = (s) => String(s?.args?.text ?? s?.args?.field ?? s?.args?.mat
 // selections key / step target (a batch fill/select step reports its fields, not
 // itself). Stored on the toolLog entry as `partial` (the result is parsed once,
 // here). h_repeat: a selections pick verified:false under a wrapper saying
-// verified:true, and a batch saying "3/3 steps ok" over a 0/2 fill.
+// verified:true, and a batch saying "3/3 steps ok" over a 0/2 fill. A top-level
+// single write/click whose own result is verified:false counts the same way.
 export function partialFailures(name, args, text) {
   let o = null;
   try { o = JSON.parse(text); } catch { return []; }
@@ -160,7 +161,13 @@ export function partialFailures(name, args, text) {
     if (nm === 'fast_fill' || nm === 'fast_fill_form') notDone(res?.fields, 'fast_fill');
     else if (nm === 'fast_select_option') notDone(res?.results, 'fast_select_option');
   };
-  if (name !== 'fast_batch') children(name, o);
+  if (name !== 'fast_batch') {
+    children(name, o);
+    // a single write/click whose OWN read-back says verified:false did not do what
+    // it was called for (h_repeat: a Birthdate the date widget never committed,
+    // reported as set) — the same failed action as a missed field
+    if (!out.length && o?.verified === false && !o?.fields && !o?.results) out.push({ name, target: target({ args }) });
+  }
   else if (Array.isArray(o?.results)) {
     const steps = args?.actions || args?.steps || [];
     for (const r of o.results) {
