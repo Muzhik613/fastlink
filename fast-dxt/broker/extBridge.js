@@ -1,6 +1,6 @@
 import { WebSocketServer } from 'ws';
 import { state } from './state.js';
-import { EXT_PORTS } from './config.js';
+import { EXT_PORTS, EXT_BIND } from './config.js';
 import { log, onFatalListenError } from './lifecycle.js';
 import { onExtensionResponse, failPendingForSocket } from './router.js';
 import { mcpClientCount, broadcastToMcp } from './mcpBridge.js';
@@ -24,6 +24,7 @@ const extSockets = {
 };
 
 export function startExtBridge() {
+  log(`ext listeners bind ${EXT_BIND.host} — ${EXT_BIND.reason}`);
   startHeartbeatLoop(extSockets);
   for (const [defaultId, port] of Object.entries(EXT_PORTS)) {
     startOne(defaultId, port);
@@ -31,12 +32,10 @@ export function startExtBridge() {
 }
 
 function startOne(defaultId, port) {
-  // Bind all interfaces (not just 127.0.0.1): the extension dials localhost
-  // normally, but falls back to the WSL VM IP when WSL2 localhost-forwarding
-  // breaks (it dies after a host sleep until `wsl --shutdown`) — that fallback
-  // path needs the broker reachable on eth0. LAN exposure is acceptable: WSL2
-  // NAT means other machines can't reach this VM without an explicit portproxy.
-  const wss = new WebSocketServer({ port, host: '0.0.0.0' });
+  // Host per config.js EXT_BIND: 0.0.0.0 only under WSL (the extension falls
+  // back to the WSL VM IP when localhost-forwarding dies after a host sleep;
+  // WSL2 NAT keeps that off the LAN), loopback everywhere else.
+  const wss = new WebSocketServer({ port, host: EXT_BIND.host });
   wss.on('listening', () => log(`ext WS listening on ${port} (default install: ${defaultId})`));
   wss.on('error', (e) => onFatalListenError('ext', port, e));
   wss.on('connection', (ws, req) => {

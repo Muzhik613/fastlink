@@ -19,6 +19,21 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Broker: ext listeners bind 0.0.0.0 only under WSL (loopback elsewhere), `FASTLINK_BROKER_BIND` override
+- **What:** `broker/config.js` `resolveExtBind(env, procVersion)` → `FASTLINK_BROKER_BIND`
+  if set, else `0.0.0.0` when `/proc/version` mentions microsoft/WSL, else `127.0.0.1`;
+  `extBridge.js` binds `EXT_BIND.host` and logs `ext listeners bind <host> — <reason>`
+  at startup (mcp port 9870 was already loopback).
+- **Why:** 0.0.0.0 is needed only on WSL (Windows Chrome dials the VM IP when
+  localhost-forwarding breaks); on the hvm rig / a container it exposed an
+  unauthenticated browser bridge to the LAN — frontdesk found hvm's broker on
+  0.0.0.0:9876/9877.
+- **Files:** `fast-dxt/broker/config.js`, `extBridge.js`, `fast-dxt/test/broker.test.mjs`.
+- **Watch out:** a non-WSL host that genuinely needs remote extension access must set
+  `FASTLINK_BROKER_BIND=0.0.0.0` explicitly. Needs a broker restart on hvm after its
+  bench run (WSL broker pid 38706 is on the prior commits and stays 0.0.0.0 anyway).
+- **Status:** committed; unit test for the resolver + throwaway broker checked with `ss`.
+
 ## 2026-09-15 — `fast_profile` description: pin required on the local broker when >1 profile is connected
 - **What:** one sentence added to `fast_profile` in `fast-dxt/server/tools.js` and the
   `fastlink-relay/tools.js` mirror (kept byte-identical): with more than one local

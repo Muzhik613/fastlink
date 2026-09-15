@@ -13,9 +13,18 @@ process.env.FASTLINK_BROKER_PORT = '19870';
 process.env.FASTLINK_EXT_PORTS = '19876,19877';
 const { state } = await import('../broker/state.js');
 const { dispatchCall, onExtensionResponse } = await import('../broker/router.js');
-const { LOG_FILE, PID_FILE } = await import('../broker/config.js');
+const { LOG_FILE, PID_FILE, resolveExtBind } = await import('../broker/config.js');
 
 const fakeWs = () => ({ readyState: 1, sent: [], send(s) { this.sent.push(JSON.parse(s)); } });
+
+test('config: ext bind = env override → 0.0.0.0 under WSL → loopback elsewhere', () => {
+  const wsl = 'Linux version 6.6.87.2-microsoft-standard-WSL2 (root@x) #1 SMP';
+  assert.deepEqual(resolveExtBind({}, wsl), { host: '0.0.0.0', reason: 'WSL detected in /proc/version (Windows Chrome may dial the VM IP)' });
+  assert.equal(resolveExtBind({}, 'Linux version 6.8.0-45-generic (buildd@lcy02) #45-Ubuntu').host, '127.0.0.1');
+  assert.equal(resolveExtBind({}, '').host, '127.0.0.1', 'no /proc/version (macOS/Windows) → loopback');
+  assert.deepEqual(resolveExtBind({ FASTLINK_BROKER_BIND: '10.0.0.5' }, wsl), { host: '10.0.0.5', reason: 'FASTLINK_BROKER_BIND' });
+  assert.equal(resolveExtBind({ FASTLINK_BROKER_BIND: '' }, '').host, '127.0.0.1', 'empty override ignored');
+});
 
 test('state: per-slot recent ring keeps the last 20 events newest-first with reasons', () => {
   const ws = fakeWs();
