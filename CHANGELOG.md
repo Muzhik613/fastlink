@@ -33,6 +33,34 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — holdout gap 5: wrapper honesty — a batch step is ok only when its own result is clean; the gate sees child failures
+- **What:** `fast-dxt/server/batch.js` (mirror `fastlink-relay/src/batch.js`, identical): new exported
+  `notVerified(result)` — a successful call whose result says `verified:false`, or has `missed>0` /
+  `failed>0`, is NOT ok: the step is `ok:false` (its `result` kept), counted in `missed`, and the
+  summary names it `step N (…) not verified: <reason|summary>`. Batch still never aborts. A
+  selections step's label names its keys. `fast-runner/runner.mjs` `partialFailures`: every field of
+  a fields-mode fill and every `selections` entry that errored OR read back `verified:false` is a
+  failed action (top-level or inside a batch step — a batch fill/select step reports its children,
+  not itself). The extension side (selections wrapper `verified` = AND of its fields) is in the
+  extension commit below. fast_batch description updated identically in both tools.js.
+- **Why:** holdout h_repeat (ce062850): the batch said `"3/3 steps ok"` over a fields fill that
+  filled 0/2 ("section not found"), and a `selections` pick said `verified:true, picked:1` over its
+  only field's `verified:false` — both overclaims passed the report_done gate because the wrapper
+  said ok.
+- **Files:** `fast-dxt/server/batch.js`, `fastlink-relay/src/batch.js`, `fast-runner/runner.mjs`,
+  `fast-dxt/server/tools.js`, `fastlink-relay/tools.js`, `fast-runner/test/batch.test.mjs`,
+  `fast-runner/test/holdout-replay.test.mjs` (new).
+- **Watch out:** a batch fill whose page reformatted the value (verified:false) now reads "not
+  verified" — that is the point. A top-level single write with `verified:false` is still NOT a gate
+  failure (its own `reason` tells the model); only wrapper children are. The gate refuses once per
+  run for an unresolved child failure (existing one-refusal rule).
+- **Status:** committed; `node --test test/*.test.mjs` all pass, incl. the holdout replay: both
+  baseline logs (h_combobox 245d4c2b, h_repeat ce062850) pass the gate with the baseline tools'
+  results and are REFUSED with the fixed tools' results for the same calls (unresolved
+  fast_select_option "Single select boxes¶"; fast_select_option "Gender" + fast_fill "Birthdate").
+
+---
+
 ## 2026-09-15 — fast_text on a form control returns its live value; an empty read says empty:true
 - **What:** `extractText` (fast-ext/src/actions/text.js) uses `querySelectorAll`. When a match is
   input / textarea / select / [contenteditable] / role=combobox|textbox|searchbox, `text` is the

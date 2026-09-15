@@ -143,23 +143,33 @@ function quotes(c, f) {
 // What a call was aimed at; the same target under another tool still counts as a retry.
 const target = (e) => String(e.args?.text ?? e.args?.field ?? e.args?.match ?? '');
 const stepTarget = (s) => String(s?.args?.text ?? s?.args?.field ?? s?.args?.match ?? '');
-// Failures INSIDE an ok result: each missed field of a fast_fill {fields} and each
-// failed fast_batch step (incl. a batch fill step's missed fields) is its own
-// failed ACTION, target = the field label / step target. Stored on the toolLog
-// entry as `partial` (the result is parsed once, here).
+// Failures INSIDE an ok result: each field of a fast_fill {fields} and each entry
+// of a fast_select_option {selections} that errored OR read back verified:false,
+// and each failed fast_batch step (a step whose own result was not clean is
+// ok:false — batch.js), is its own failed ACTION, target = the field label /
+// selections key / step target (a batch fill/select step reports its fields, not
+// itself). Stored on the toolLog entry as `partial` (the result is parsed once,
+// here). h_repeat: a selections pick verified:false under a wrapper saying
+// verified:true, and a batch saying "3/3 steps ok" over a 0/2 fill.
 export function partialFailures(name, args, text) {
   let o = null;
   try { o = JSON.parse(text); } catch { return []; }
   const out = [];
-  const missedFields = (fields) => { if (fields && typeof fields === 'object') for (const [k, v] of Object.entries(fields)) if (v && typeof v.error === 'string') out.push({ name: 'fast_fill', target: k }); };
-  if (name === 'fast_fill') missedFields(o?.fields);
-  if (name === 'fast_batch' && Array.isArray(o?.results)) {
+  const notDone = (bag, tool) => { if (bag && typeof bag === 'object') for (const [k, v] of Object.entries(bag)) if (v && (typeof v.error === 'string' || v.verified === false)) out.push({ name: tool, target: k }); };
+  const children = (nm, res) => {
+    if (nm === 'fast_fill' || nm === 'fast_fill_form') notDone(res?.fields, 'fast_fill');
+    else if (nm === 'fast_select_option') notDone(res?.results, 'fast_select_option');
+  };
+  if (name !== 'fast_batch') children(name, o);
+  else if (Array.isArray(o?.results)) {
     const steps = args?.actions || args?.steps || [];
     for (const r of o.results) {
       if (!r) continue;
       const st = steps[r.step] || { name: r.name };
-      if (r.ok === false) out.push({ name: st.name || r.name, target: stepTarget(st) });
-      else if ((st.name || r.name) === 'fast_fill') missedFields(r.result?.fields);
+      const nm = st.name || r.name;
+      const before = out.length;
+      children(nm, r.result);
+      if (out.length === before && r.ok === false) out.push({ name: nm, target: stepTarget(st) });
     }
   }
   return out;

@@ -7,6 +7,11 @@
 //    miss (error + candidates/hint) and the batch result LEADS with a summary line
 //    ("5/6 steps ok; step 3 (fast_fill "Ocean") missed: …") so the model reads the
 //    outcome first and the details second.
+//  • a step is ok ONLY when its own result is clean: no error, not `verified:false`,
+//    nothing `missed`/`failed` inside it (a fields-mode fill that filled 0/2, a
+//    selections pick whose field did not take). Such a step is ok:false and named
+//    in the summary as "not verified: <its reason>" — the holdout h_repeat batch
+//    said "3/3 steps ok" over a fill that missed both fields.
 //  • intermediate steps are run with noSnapshot:true — only the LAST step returns
 //    the page snapshot (one page state per round-trip, not N copies of it); a step
 //    that sets noSnapshot itself keeps its own choice.
@@ -93,13 +98,19 @@ const stripSnapshot = (result) => {
   return rest;
 };
 
-const missText = (r) => {
-  const e = String(r?.error || 'failed').replace(/\s+/g, ' ');
-  return e.length > 140 ? e.slice(0, 140) + '…' : e;
+const clip = (s) => { const e = String(s).replace(/\s+/g, ' '); return e.length > 140 ? e.slice(0, 140) + '…' : e; };
+const missText = (r) => clip(r?.error || 'failed');
+// Why a SUCCESSFUL call's own result is not clean (null when it is): it says
+// verified:false, or it missed / failed some of its fields or selections.
+export const notVerified = (res) => {
+  if (!res || typeof res !== 'object') return null;
+  const n = (v) => (typeof v === 'number' ? v : 0);
+  if (res.verified !== false && n(res.missed) === 0 && n(res.failed) === 0) return null;
+  return clip(res.reason || res.summary || (n(res.missed) || n(res.failed) ? `${n(res.missed) || n(res.failed)} of ${res.total ?? '?'} not done` : 'verified:false'));
 };
 const stepLabel = (step) => {
   const a = step.args || {};
-  const key = a.match ?? a.text ?? a.field ?? a.url ?? a.key ?? (a.fields && Object.keys(a.fields).join(',')) ?? '';
+  const key = a.match ?? a.text ?? a.field ?? a.url ?? a.key ?? (a.fields && Object.keys(a.fields).join(',')) ?? (a.selections && Object.keys(a.selections).join(',')) ?? '';
   return key ? `${step.name} ${JSON.stringify(String(key).slice(0, 40))}` : step.name;
 };
 
@@ -134,9 +145,15 @@ export async function runBatch(args, io) {
       counts.missed++; misses.push({ label, error: missText(r) });
       return { step: index, name, ok: false, ...r };
     }
-    counts.ok++;
     if (navCandidate) await settleIfNavigated(call, name, urlBefore, r?.result && r.result.willNavigate);
-    return { step: index, name, ok: true, result: hasFollower ? stripSnapshot(r?.result) : r?.result };
+    const result = hasFollower ? stripSnapshot(r?.result) : r?.result;
+    const why = notVerified(r?.result);
+    if (why) {
+      counts.missed++; misses.push({ label, error: why, unverified: true });
+      return { step: index, name, ok: false, result };
+    }
+    counts.ok++;
+    return { step: index, name, ok: true, result };
   };
 
   const runList = async (list, parentHasFollower) => {
@@ -177,7 +194,7 @@ export async function runBatch(args, io) {
   const results = await runList(actions, false);
   const head = `${counts.ok}/${counts.steps} steps ok`;
   const summary = misses.length
-    ? `${head}; ${misses.map((m) => `${m.label} missed: ${m.error}`).join(' | ')}`
+    ? `${head}; ${misses.map((m) => `${m.label} ${m.unverified ? 'not verified' : 'missed'}: ${m.error}`).join(' | ')}`
     : head;
   return { summary, ok: counts.ok, missed: counts.missed, steps: counts.steps, results };
 }

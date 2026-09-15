@@ -1,7 +1,7 @@
 // node --test — fast_batch step semantics against a fake extension (no browser).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runBatch, isSelectorProbe } from '../../fast-dxt/server/batch.js';
+import { runBatch, isSelectorProbe, notVerified } from '../../fast-dxt/server/batch.js';
 import { readFileSync } from 'node:fs';
 
 const fake = (script) => {
@@ -74,6 +74,29 @@ test('an emptyContainer probe counts as not found; gate refusals are misses; nav
   assert.equal(r.results[0].results[0].error, 'diagnostic-only');
   assert.equal(r.ok, 2); assert.equal(r.missed, 1);
   assert.ok(io.calls.some(c => c.name === 'fast_list'), 'URL captured around the navigating click');
+});
+
+test('a step is ok only when its own result is clean: verified:false / missed / failed inside it make it ok:false, named in the summary', async () => {
+  const io = fake({
+    fast_fill: (a) => a.fields
+      ? { result: { verified: false, filled: 0, missed: 2, total: 2, summary: '0/2 filled; missed: First Name, Last Name', fields: { 'First Name': { error: 'section "Children" not found' }, 'Last Name': { error: 'section "Children" not found' } } } }
+      : { result: { verified: false, value: '2015-12-10 __:__ __', reason: 'the field now reads "2015-12-10 __:__ __"' } },
+    fast_select_option: () => ({ result: { verified: false, picked: 0, failed: 1, total: 1, results: { Gender: { error: '3 visible dropdown(s) match "Gender"' } } } }),
+    fast_click: () => ({ result: { clicked: { text: 'Add Another' } } }),
+  });
+  const r = await runBatch({ actions: [
+    { name: 'fast_click', args: { text: 'Add Another' } },
+    { name: 'fast_fill', args: { fields: { 'First Name': 'Ada', 'Last Name': 'Lovelace' }, section: 'Children' } },
+    { name: 'fast_select_option', args: { selections: { Gender: 'Female' } } },
+    { name: 'fast_fill', args: { match: 'Birthdate', value: '2015-12-10' } },
+  ] }, io);
+  assert.equal(r.ok, 1); assert.equal(r.missed, 3); assert.equal(r.steps, 4);
+  assert.match(r.summary, /^1\/4 steps ok; step 1 \(fast_fill "First Name,Last Name"\) not verified: 0\/2 filled; missed: First Name, Last Name \| step 2 \(fast_select_option "Gender"\) not verified: 1 of 1 not done \| step 3 \(fast_fill "Birthdate"\) not verified: the field now reads/);
+  assert.deepEqual(r.results.map(x => x.ok), [true, false, false, false]);
+  assert.equal(r.results[1].result.fields['First Name'].error, 'section "Children" not found', 'the unverified step keeps its result');
+  assert.equal(notVerified({ verified: true, filled: 2, missed: 0 }), null);
+  assert.equal(notVerified({ clicked: 1 }), null, 'a result with no verified field is clean');
+  assert.match(notVerified({ verified: false, checked: false, reason: 'the radio is still not selected' }), /radio is still not selected/);
 });
 
 test('relay mirror of batch.js is byte-identical', () => {
