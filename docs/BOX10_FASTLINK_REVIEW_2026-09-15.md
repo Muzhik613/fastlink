@@ -1,6 +1,6 @@
 # FastLink-side review of frontdesk's box10-contract-v0 (2026-09-15)
 
-Read-only review of the per-user container contract. Answers frontdesk's three questions and lists
+Read-only review of the per-user container contract (frontdesk copy, v1: `/home/yaakov/code/frontdesk/_docs/BOX10_BROWSER_CONTAINER_CONTRACT.md`). Answers frontdesk's three questions and lists
 what FastLink must build/change for phase 4. Paths are repo-relative.
 
 ## 1. `POST /tool {name,args}` vs today's dispatch
