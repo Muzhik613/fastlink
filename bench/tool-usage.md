@@ -1,6 +1,6 @@
 # fast-runner tool usage
 
-148 cell(s), ALL passes, one table per toolset × model, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
+214 cell(s), ALL passes, one table per toolset × model, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
 
 fumble columns: `retry` = call immediately followed by the same tool on the same target; `switch` = followed by a different tool on the same target; `fumble %` = (retry+switch)/calls.
 
@@ -55,22 +55,24 @@ Total: 66 calls across 18 distinct tools; 0 fumbles (0%).
 
 Total: 229 calls across 19 distinct tools; 17 fumbles (7%).
 
-## toolset `phase2 / grok-4.3` — 106 cell(s): multipage×18, staticform×17, overlay×17, flightsearch×17, mapsdir×20, extract×17
+## toolset `phase2 / grok-4.3` — 171 cell(s): multipage×23, staticform×22, overlay×22, flightsearch×22, mapsdir×25, extract×22, h_conditional×4, h_datepicker×4, h_combobox×4, h_table×4, h_repeat×4, h_spa×4, h2_wizard×2, h2_slider×1, h2_tree×2, h2_autocomplete×2, h2_modal×2, h2_infinite×2
 
 | tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
 |---|---:|---:|---:|---:|---:|---:|---|
-| fast_snapshot | 180 | 0 | 74 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
-| fast_tab | 106 | 0 | 337 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
-| fast_click | 98 | 25 | 428 | 10 | 4 | 14 | multipage, staticform, overlay, mapsdir |
-| fast_text | 50 | 2 | 26 | 2 | 0 | 4 | staticform, overlay, flightsearch, mapsdir, extract |
-| fast_fill | 43 | 4 | 309 | 1 | 0 | 2 | staticform, overlay, flightsearch, mapsdir |
-| fast_batch | 28 | 0 | 2582 | 0 | 0 | 0 | staticform, flightsearch |
-| fast_wait | 27 | 18 | 8111 | 0 | 0 | 0 | multipage, mapsdir |
-| fast_key_press | 24 | 0 | 74 | 0 | 0 | 0 | overlay, mapsdir |
-| fast_select_option | 23 | 1 | 770 | 0 | 0 | 0 | staticform, overlay, flightsearch, mapsdir |
+| fast_snapshot | 236 | 3 | 91 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract, h_conditional, h_datepicker, h_combobox, h_table, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
+| fast_click | 150 | 42 | 500 | 19 | 8 | 18 | multipage, staticform, overlay, mapsdir, h_conditional, h_datepicker, h_combobox, h_table, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
+| fast_tab | 136 | 0 | 321 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract, h_conditional, h_datepicker, h_combobox, h_table, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
+| fast_text | 65 | 2 | 27 | 2 | 1 | 5 | staticform, overlay, flightsearch, mapsdir, extract, h_conditional, h_datepicker, h_table, h2_wizard, h2_tree |
+| fast_fill | 64 | 8 | 510 | 5 | 0 | 8 | staticform, overlay, flightsearch, mapsdir, h_conditional, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
+| fast_wait | 35 | 23 | 7761 | 0 | 1 | 3 | multipage, mapsdir, h_spa, h2_wizard, h2_tree |
+| fast_batch | 34 | 0 | 2682 | 0 | 0 | 0 | staticform, flightsearch, h_repeat |
+| fast_select_option | 33 | 2 | 719 | 2 | 0 | 6 | staticform, overlay, flightsearch, mapsdir, h_combobox, h_repeat, h2_wizard |
+| fast_key_press | 28 | 0 | 84 | 0 | 0 | 0 | overlay, mapsdir, h_spa |
+| fast_scroll | 3 | 0 | 244 | 0 | 0 | 0 | h_repeat, h2_tree |
 | fast_click_xy | 2 | 0 | 67 | 0 | 0 | 0 | overlay |
+| fast_nav | 2 | 0 | 427 | 0 | 0 | 0 | flightsearch |
 
-Total: 581 calls across 10 distinct tools; 17 fumbles (3%).
+Total: 788 calls across 12 distinct tools; 38 fumbles (5%).
 
 ## toolset `phase2 / grok-4.6` — 12 cell(s): multipage×2, staticform×2, overlay×2, flightsearch×2, mapsdir×2, extract×2
 
@@ -105,3 +107,10 @@ Total: 95 calls across 11 distinct tools; 4 fumbles (4%).
 | fast_wait | 1 | 0 | 518 | 0 | 0 | 0 | mapsdir |
 
 Total: 44 calls across 9 distinct tools; 3 fumbles (7%).
+
+## toolset `phase2 / ?` — 1 cell(s): h2_slider×1
+
+| tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
+|---|---:|---:|---:|---:|---:|---:|---|
+
+Total: 0 calls across 0 distinct tools; 0 fumbles (0%).
