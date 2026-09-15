@@ -102,11 +102,13 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   `2b1465f5…`, committed as-is) reached the rig 9s INTO pass 2 cell 1 — my boundary
   watcher started after the pass-1 commit line had already been written — so
   **pass 2 `multipage` (06:16:48Z, score 0/6, 48 calls, marked valid) is a rig
-  restart artifact, exclude it**; pass 2 cells 2–6 ran on `2b1465f5…`. Pass 3 runs
-  on the final file (`cd7af46a…`), shipped by the watcher at the pass-2 → 3 boundary
-  (see the follow-up commit's Status). **Windows extension copy NOT synced tonight**
-  (the local bench stays on unfixed tools); `chrome://extensions` reload still needed
-  there later.
+  restart artifact, exclude it**; pass 2 cells 2–6 ran on `2b1465f5…` (= commit
+  `5ba6bd6`). Pass 3 (all 6 cells) runs on the final file (`cd7af46a…`, this commit),
+  shipped at the pass-2 → 3 boundary at 06:22:31Z: the watcher fired the instant the
+  pass-2 `mapsdir` run.js exited, before hvm-run.sh's `rig_up`, which relaunched the
+  rig Chrome on the new file for pass 3 cell 1 (06:22:32Z). **Windows extension copy
+  NOT synced tonight** (the local bench stays on unfixed tools); `chrome://extensions`
+  reload still needed there later.
 
 ## 2026-09-15 — fast-runner: per-model-turn instrumentation (`turns[]` in runs.jsonl)
 - **What:** every model call is logged to the run row as `turns[]`: `{turn, t, latencyMs,
@@ -131,6 +133,10 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   `retry` / `switch` / `fumble %` (next call on the same target), each usage row carrying a
   `target` per call (backfilled from the run store for older rows).
 - **Why:** plan phase 1 — the data phase 2's tool triage needs.
+  Pass 2 (default toolset again, per the lead's first plan): **70/70, 401.7s, 100 calls, 8/8
+  valid**. Plan then changed: passes 2–3 → the `phase2` toolset, so `run.js --toolset <name>`
+  now forwards to `cli.mjs --toolset`, the results row + usage rows carry `toolset`, and
+  `tool-usage.md` renders one histogram per toolset (`default` / `phase2`).
 - **Files:** `bench/{drive-runner,run}.js`, `bench/tool-usage.md`, `docs/GROK_RUNNER_BENCH_2026-09-15.md`.
 - **Watch out:** `fast_evaluate` is BLOCKED for the runner's relay account (`evalBlocked`);
   the runner still lists it, so Grok reaches for it and falls back to `fast_text`. Round-trips

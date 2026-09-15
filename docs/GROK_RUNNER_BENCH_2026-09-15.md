@@ -1,99 +1,120 @@
 # Grok runner bench — 2026-09-15 (plan phase 1)
 
-`fast-runner` (grok-4.6, effort `low`, via grokcode proxy :8790) drives the 8-test FastLink suite over the relay (`relay.ytx.app`, browser `yaakovschrome`), submitted by `bench/run.js --client grok_runner`. Scoring is unchanged: live page state read back through the LOCAL broker, never the model's claim. Baseline = the 2026-08-06 grok.com-via-relay row per test (70/70, 259.3s wall, 99 calls).
+`fast-runner` (grok-4.6, effort `low`, via grokcode proxy :8790) drives the 8-test FastLink suite over the relay (`relay.ytx.app`, browser `yaakovschrome`), submitted by `bench/run.js --client grok_runner --browser yaakovschrome [--toolset phase2]`. Scoring is unchanged: live page state read back through the LOCAL broker, never the model's claim. Baseline = the 2026-08-06 grok.com-via-relay row per test (70/70, 259.3s wall, 99 calls).
 
-Three full passes (n=3 per cell). Every cell resets before it runs (`reset.closeUrlPatterns` + aa.com `clearStorage`), so nothing is inherited between passes. Raw rows: `bench/results.jsonl` (`client:"grok_runner"`), tool logs: `bench/tool-usage.jsonl` + `~/.local/state/fastrun/runs.jsonl` (gitignored — measurements, not source).
+Passes: **d1, d2** = `default` toolset (all 45 tools + the server's instructions essay — what grok.com saw); **p1, p2** = `phase2` toolset (`fast-runner/toolset.phase2.json`: 13 raw tools + ask_caller/report_done, 2-sentence descriptions, no instructions essay). Every cell resets before it runs (`reset.closeUrlPatterns` + aa.com `clearStorage`), so nothing is inherited between passes. Raw rows: `bench/results.jsonl` (`client:"grok_runner"`, `toolset` per row), tool logs: `bench/tool-usage.jsonl` + `~/.local/state/fastrun/runs.jsonl` (gitignored — measurements, not source).
 
 ## Headline
 
-| | score | wall | calls | valid cells |
-|---|---:|---:|---:|---|
-| baseline grok.com via relay (08-06) | 70/70 | 259.3s | 99 | 8/8 |
-| runner pass 1 | 70/70 | 428.2s | 110 | 8/8 |
-| runner pass 2 | _pending_ | | | |
-| runner pass 3 | _pending_ | | | |
+| pass | toolset | score | wall | calls | reflex calls | valid |
+|---|---|---:|---:|---:|---:|---|
+| baseline grok.com via relay (08-06) | (site) | 70/70 | 259.3s | 99 | — | 8/8 |
+| d1 | default | 70/70 | 428.2s | 110 | 16 | 8/8 |
+| d2 | default | 70/70 | 401.7s | 100 | 16 | 8/8 |
+| p1 | phase2 | _pending_ | | | | |
+| p2 | phase2 | _pending_ | | | | |
 
-Same score, **1.65× slower** than grok.com on the same channel, with 11 more calls. Round-trips (model turns) are 80–96% of every cell's wall; action time is 12.7s of the 428s in pass 1. The runner's per-turn latency scales with context: ~1.8s/turn on multipage (26k input) vs ~5s/turn on overlay/cfworkers (50–110k input, 500k+ cache reads), where full snapshots are fed back every turn.
+reflex calls = `fast_status` + `fast_prewarm` + `fast_scout` (none of them can change the next action on this channel: the runner already proved the channel, prewarm is a no-op on the relay, scout with no intent returns a summary Grok never uses).
 
-## Per test — pass 1 vs baseline
+Default toolset: same score as grok.com, **1.55–1.65× slower**, same call count ±10%. Round-trips (model turns) are 80–96% of every cell's wall; action time is ~13s of 400+. Per-turn latency scales with context: ~1.8s/turn on multipage (26k input) vs ~5s/turn where full snapshots are fed back every turn (cfworkers d1: 111k input, 14 turns, 69s).
 
-wall = thinking + action from the run store's tool log (same definition as the baseline rows). Environment: all 8 cells ran first try; no IAM / login-wall / stale-localStorage retries were needed.
+## Per test, per pass
 
-| test | runner score | runner wall | runner calls | outcome | base score | base wall | base calls | Δ wall |
-|---|---:|---:|---:|---|---:|---:|---:|---:|
-| multipage | 6/6 | 14.3s | 7 | FINISHED, done | 6/6 | 16.9s | 8 | −2.6s |
-| gcpform | 6/6 | 41.6s | 16 | FINISHED, done | 6/6 | 54.3s | 17 | −12.7s |
-| staticform | 12/12 | 53.5s | 9 | FINISHED, done | 12/12 | 30.4s | 7 | +23.1s |
-| overlay | 3/3 | 124.7s | 24 | FINISHED, done | 3/3 | 66.0s | 30 | +58.7s |
-| extract | 22/22 | 9.7s | 4 | FINISHED, done | 22/22 | 5.7s | 3 | +4.0s |
-| flightsearch | 10/10 | 67.2s | 23 | FINISHED, done | 10/10 | 23.3s | 12 | +43.9s |
-| mapsdir | 6/6 | 48.1s | 14 | FINISHED, done | 6/6 | 41.9s | 15 | +6.2s |
-| cfworkers | 5/5 | 69.2s | 14 | FINISHED, done | 5/5 | 20.7s | 7 | +48.5s |
-| **total** | **70/70** | **428.2s** | **110** | 8/8 valid | **70/70** | **259.3s** | **99** | **+168.9s** |
+score / wall / calls / reflex per cell. wall = thinking + action from the run store's tool log (same definition as the baseline rows).
 
-Runner token usage, pass 1 (input / output / cache-read, turns): multipage 26k/0.6k/134k (8); gcpform 57k/1.5k/264k (13); staticform 25k/3.0k/182k (10); overlay 53k/2.9k/589k (24); extract 9k/1.1k/82k (5); flightsearch 59k/3.1k/542k (18); mapsdir 35k/1.6k/291k (14); cfworkers 111k/3.7k/511k (14).
+| test | d1 | d2 | best wall | median wall (default · phase2) | base wall / calls |
+|---|---|---|---:|---:|---:|
+| multipage | 6/6 / 14.3 / 7 / 1 | 6/6 / 11.9 / 8 / 2 | 11.9 | 13.1 · — | 16.9 / 8 |
+| gcpform | 6/6 / 41.6 / 16 / 3 | 6/6 / 160.7 / 14 / 2 | 41.6 | 101.2 · — | 54.3 / 17 |
+| staticform | 12/12 / 53.5 / 9 / 1 | 12/12 / 46.0 / 16 / 3 | 46.0 | 49.8 · — | 30.4 / 7 |
+| overlay | 3/3 / 124.7 / 24 / 3 | 3/3 / 44.8 / 16 / 2 | 44.8 | 84.8 · — | 66.0 / 30 |
+| extract | 22/22 / 9.7 / 4 / 0 | 22/22 / 7.8 / 4 / 0 | 7.8 | 8.7 · — | 5.7 / 3 |
+| flightsearch | 10/10 / 67.2 / 22 / 3 | 10/10 / 49.8 / 15 / 2 | 49.8 | 58.5 · — | 23.3 / 12 |
+| mapsdir | 6/6 / 48.1 / 14 / 2 | 6/6 / 55.7 / 18 / 3 | 48.1 | 51.9 · — | 41.9 / 15 |
+| cfworkers | 5/5 / 69.2 / 14 / 3 | 5/5 / 25.0 / 9 / 2 | 25.0 | 47.1 · — | 20.7 / 7 |
 
-## Per test across passes (n=3)
+_phase2 columns pending._
 
-_pending passes 2–3_
+Variance (default, n=2): wall spread max/min per test — multipage 1.2×, gcpform **3.9×** (d2 = one 124s model turn, see fumbles), staticform 1.2×, overlay **2.8×**, extract 1.2×, flightsearch 1.3×, mapsdir 1.2×, cfworkers **2.8×**. The three high-variance tests are the ones where Grok's path differs run to run (overlay: which widget it hits first; cfworkers: paginate vs scroll-to-bottom); the low-variance five are deterministic paths whose wall is pure turn latency.
 
-## Tool histogram
+Environment: all 16 default cells ran first try; no IAM / login-wall / stale-localStorage retries. Data note: d2 cfworkers was re-run (06:21, 5/5 / 25.0s / 9 calls) because my pruning of the aborted default-toolset pass-3 rows also caught the original d2 cfworkers row (06:18:22, 5/5 / 54.1s / 12 calls — visible in the run store as run `52bd8916` but no longer in results.jsonl). Both were clean passes; the re-run is the recorded one.
 
-Generated by the driver into `bench/tool-usage.md` (all passes aggregated). `retry` = the next call was the same tool on the same target; `switch` = the next call was a different tool on the same target (e.g. `fast_wait "X"` → `fast_click "X"`, the reflex wait-then-click).
+Token usage per run (input / output / cache-read, model turns):
+- d1: multipage 26k/0.6k/134k (8); gcpform 57k/1.5k/264k (13); staticform 25k/3.0k/182k (10); overlay 53k/2.9k/589k (24); extract 9k/1.1k/82k (5); flightsearch 59k/3.1k/542k (18); mapsdir 35k/1.6k/291k (14); cfworkers 111k/3.7k/511k (14).
+- d2: multipage 27k/0.6k/135k (8); gcpform 84k/1.6k/264k (14); staticform 13k/2.4k/224k (11); overlay 50k/1.7k/303k (16); extract 7k/1.4k/83k (5); flightsearch 32k/3.2k/337k (13); mapsdir 25k/2.2k/372k (16); cfworkers 19k/1.5k/185k (9).
 
-_pass 1 only — regenerated after pass 3_
+## Tool histogram (per toolset, all passes)
+
+Generated by the driver into `bench/tool-usage.md`. `retry` = the next call was the same tool on the same target; `switch` = the next call was a different tool on the same target (e.g. `fast_wait "X"` → `fast_click "X"`, the reflex wait-then-click); `fumble %` = (retry+switch)/calls.
+
+### default (d1 + d2, 16 cells)
 
 | tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
 |---|---:|---:|---:|---:|---:|---:|---|
-| fast_click | 23 | 2 | 196 | 0 | 1 | 4 | multipage, gcpform, overlay, flightsearch, mapsdir, cfworkers |
-| fast_snapshot | 18 | 0 | 146 | 0 | 0 | 0 | gcpform, staticform, overlay, flightsearch, mapsdir, extract, cfworkers |
-| fast_wait | 13 | 1 | 751 | 0 | 4 | 31 | multipage, gcpform, overlay, flightsearch, mapsdir, extract, cfworkers |
-| fast_tab | 8 | 0 | 1032 | 0 | 0 | 0 | all 8 |
-| fast_status | 7 | 0 | 159 | 0 | 0 | 0 | 7 of 8 |
-| fast_fill | 7 | 0 | 202 | 0 | 0 | 0 | gcpform, flightsearch, mapsdir |
-| fast_scroll | 6 | 0 | 214 | 0 | 0 | 0 | gcpform, overlay, flightsearch |
-| fast_prewarm | 5 | 0 | 85 | 0 | 0 | 0 | gcpform, overlay, flightsearch, mapsdir, cfworkers |
-| fast_click_xy | 4 | 0 | 208 | 0 | 0 | 0 | overlay |
-| fast_key_press | 4 | 0 | 171 | 0 | 0 | 0 | staticform, overlay, flightsearch, mapsdir |
-| fast_scout | 4 | 0 | 1727 | 0 | 0 | 0 | gcpform, overlay, flightsearch, cfworkers |
-| fast_text | 3 | 0 | 113 | 0 | 0 | 0 | staticform, flightsearch, extract |
+| fast_click | 41 | 5 | 179 | 0 | 4 | 10 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, cfworkers |
+| fast_wait | 30 | 2 | 886 | 0 | 10 | 33 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, extract, cfworkers |
+| fast_snapshot | 27 | 0 | 148 | 0 | 0 | 0 | gcpform, staticform, overlay, flightsearch, mapsdir, cfworkers |
+| fast_fill | 16 | 0 | 187 | 0 | 0 | 0 | gcpform, flightsearch, mapsdir |
+| fast_tab | 16 | 0 | 679 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, extract, cfworkers |
+| fast_status | 14 | 0 | 158 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, cfworkers |
+| fast_prewarm | 12 | 0 | 87 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, cfworkers |
+| fast_scroll | 9 | 0 | 193 | 0 | 0 | 0 | gcpform, overlay, flightsearch, cfworkers |
+| fast_click_xy | 7 | 0 | 198 | 0 | 0 | 0 | overlay |
+| fast_text | 7 | 0 | 125 | 0 | 0 | 0 | staticform, flightsearch, mapsdir, extract |
+| fast_key_press | 6 | 0 | 152 | 0 | 0 | 0 | staticform, overlay, flightsearch, mapsdir |
+| fast_scout | 6 | 0 | 1566 | 0 | 0 | 0 | gcpform, staticform, overlay, flightsearch, mapsdir, cfworkers |
+| fast_select_option | 6 | 3 | 1138 | 0 | 1 | 17 | gcpform, staticform, overlay, flightsearch |
+| fast_evaluate | 5 | 5 | 132 | 0 | 0 | 0 | staticform, flightsearch, extract |
 | fast_batch | 3 | 0 | 2976 | 0 | 0 | 0 | gcpform, staticform |
-| fast_evaluate | 2 | 2 | 154 | 0 | 0 | 0 | staticform, extract |
-| fast_select_option | 2 | 1 | 124 | 0 | 0 | 0 | overlay, flightsearch |
+| fast_screenshot | 2 | 0 | 461 | 0 | 0 | 0 | staticform |
+| fast_type | 2 | 0 | 209 | 0 | 1 | 50 | overlay |
 | fast_do | 1 | 0 | 3600 | 0 | 0 | 0 | overlay |
-| fast_screenshot | 1 | 0 | 440 | 0 | 0 | 0 | staticform |
-| fast_type | 1 | 0 | 192 | 0 | 0 | 0 | overlay |
+| fast_fill_form | 1 | 0 | 231 | 0 | 0 | 0 | staticform |
 
-18 of the 45 tools listed were used at all in pass 1.
+211 calls across 19 distinct tools; 16 fumbles (8%); 19 of 45 listed tools were ever used. (Exact figures: `bench/tool-usage.md`, regenerated per cell.)
 
-## Fumbles — pass 1
+### phase2 (p1 + p2)
+
+_pending_
+
+## Fumbles
 
 Read from the run store's tool log (args + result preview per call). "reflex" = a call whose result could not change the next action.
 
-Cross-cutting (every test):
-- **`fast_status` as the first call** — 7 of 8 runs (+1 turn, ~1–3s each). Reflex; the runner already proved the channel.
-- **`fast_prewarm` as call #2** — 5 of 8 runs. On the relay it returns `{"prewarm":"on-demand"}`, a no-op. Reflex.
-- **`fast_evaluate` is BLOCKED on this relay account** (`evalBlocked`, "enable it in relay settings") — staticform + extract both reached for it first and had to fall back to `fast_text`. The runner lists a tool the account cannot use; either drop it from `toolset.json` or enable it for the runner's account. (Whether the 08-06 grok.com account had it enabled is unknown — that connector was authorized under a different Google account.)
-- **reflex wait-then-click** — `fast_wait "X"` immediately followed by `fast_click "X"` (multipage ×2, flightsearch ×1, cfworkers ×1). The click alone would have waited/failed identically; each costs a full model turn.
+### Cross-cutting (default toolset)
 
-Per test:
-- **multipage** — clean apart from the reflex waits; 3 of 7 calls were `fast_wait`.
-- **gcpform** — `fast_batch [fast_select_option "Application type", fast_fill Name]` aborted at step 0 ("no listbox detected" — `<cfc-select>` is not a listbox), so the batch bought nothing and cost 7s + 2 recovery clicks (open combobox, click option); `fast_snapshot` right after `fast_fill Name` (the fill result already carried a snapshot); `fast_scout` (0.9s) whose plan was the failing select_option. Section targeting was right: `Add URI` index 0/1 + `URIs 1` index 1.
-- **staticform** — 94% of 53.5s was model turns on 9 calls: 8s to compose the `fast_batch` (fill_form 5 fields + select), 20s before a stray `fast_key_press Escape`, 8s before a `fast_screenshot {fresh}` used for "visual confirmation" that changed nothing. `fast_evaluate` blocked → `fast_text form html` (fine as a fallback).
-- **overlay** — the worst cell. `fast_select_option field:"Single"` → "field not found" (react-select has no label); `fast_click "Ocean"` hit the **Remove Ocean** chip of a different (multi) demo at y=1881 — a dead-end click that mutated another widget; three blind `fast_click_xy` (500,445 / 500,312 / 608,607) + overlay snapshots; then, after `fast_click "Forest" role:option` had ALREADY set the value at t=62s, another 10 calls / 65s re-verifying and re-selecting it (`fast_do` 3.6s whose own plan read "Dropdown with current value Forest", `fast_type Forest` + Enter). It never trusted the read-back. grok.com took 30 calls here too — this widget is hard for Grok, not just for the runner.
-- **extract** — `fast_evaluate` blocked → `fast_text` body 57k chars; otherwise 4 calls, fastest possible shape.
-- **flightsearch** — 23 calls vs 12. `fast_wait "From"` was satisfied by "Offers **from** our partners" (substring false positive, so the wait proved nothing); `fast_scout {}` with no intent; scroll 500 → fill "Leaving from" → scroll top (scroll thrash — the fill works off-viewport); `fast_text body maxLen:50` (pointless 50-char read); `fast_key_press Escape` after the calendar's Done. The three below-fold selects went in ONE `fast_select_option {selections}` — the right shape.
-- **mapsdir** — `fast_wait "Choose starting point"` timed out (6.8s; the text is a placeholder, not content); after `fast_click Search` had already requested the route, two dead-end clicks on autocomplete text that was not in the DOM (`"Destination Times Square, New York"`, `"Times Square, New York"`, both ERR) plus an Enter in between.
-- **cfworkers** — 14 calls vs 7: after `fast_scout` (3.4s, no intent) + full snapshot, it paged the 26-app list (`Next page` → snapshot → `Next page` → snapshot → `First page`, 5 calls) to enumerate "other Workers", then opened fastlink-relay. Defensible reading of the prompt, but 4.9s/turn on 110k input tokens — the full-page snapshots are what made this cell 3.3× the baseline.
+- **`fast_status` as call #1, `fast_prewarm` as call #2** — 14 + 12 of 16 cells. Each is a full model turn (1–3s). Reflex; toolset-fixable (both are outside phase2).
+- **`fast_evaluate` is BLOCKED on this relay account** (`evalBlocked`, "enable it in relay settings") — 6 calls, 6 errors; Grok reaches for it to read forms/tables (staticform, extract) and even to get today's date (flightsearch d2: `() => new Date().toISOString()`), then falls back to `fast_text`. The runner lists a tool the account cannot use. Whether the 08-06 grok.com account had it enabled is unknown (that connector was authorized under a different Google account).
+- **reflex wait-then-click** — `fast_wait "X"` immediately followed by `fast_click "X"` (8 of 30 waits). The click would have waited/failed identically; each is a model turn.
+- **`fast_select_option` on a non-native control** — 3 of 6 calls failed (`<cfc-select>` "no listbox detected", react-select "field not found"), each followed by a manual click-combobox + click-option recovery. The one success shape: `selections:{…}` on aa.com's three native selects (both passes).
+- **post-completion verification thrash** — after the task is visibly done Grok spends 3–10 more calls "confirming": screenshots, `fast_text` html dumps, `Escape`, `fast_scout {}`, blind `fast_click_xy`. staticform d2: 7 of 16 calls after the form was complete at t=13.5s; overlay d1: 10 of 24 calls after Forest was selected at t=62s.
 
-## Driver notes (fixed this pass, `bench/` only — `fast-runner/` untouched)
+### Per test (d1 → d2)
 
-- results rows for runner cells re-derive wall/calls from the run store's tool log after exit (the streamed stderr rows lagged by one call: flightsearch 22 vs 23).
-- `ms < 0` in the run store (one `fast_wait` at −859ms: `Date.now()` went backwards inside the runner — WSL clock skew) is clamped to 0 by the driver.
-- `tool-usage.md` aggregates ALL cells (n=3) instead of latest-per-test, and carries `retry` / `switch` / `fumble %` per tool; rows record a `target` per call (derived from the run store for older rows).
+- **multipage** — clean both passes; 3 of 7–8 calls are reflex waits.
+- **gcpform** — d1: `fast_batch [select_option, fill]` aborted at step 0 (7s + 2 recovery clicks), redundant `fast_snapshot` after `fast_fill`. d2: **one model turn took 124s** (t=8.7s → 133.3s, between the full snapshot and `fast_select_option`) — nothing in the proxy log, run predates the turn instrumentation; then the same select_option failure (6.2s) + recovery. Excluding that turn d2 was ~37s. Section targeting (`Add URI` index 0/1, `URIs 1` index 1) was right both times.
+- **staticform** — d1: 94% of 53.5s was model turns on 9 calls (8s to compose the batch, 20s before a stray `Escape`, 8s before a `fast_screenshot`). d2: the right shape in 4 calls (`fast_fill_form` 5 fields + `fast_select_option` + 2 clicks, done at 13.5s), then 7 verification calls: `fast_text`, blocked `fast_evaluate`, `fast_text html`, `fast_screenshot`, `Escape`, `fast_snapshot screenshot`, `fast_scout {}`, and a final `fast_click "Web form"` ERR (clicking the heading).
+- **overlay** — d1 (24 calls): `fast_select_option field:"Single"` ERR; `fast_click "Ocean"` hit the **Remove Ocean** chip of the multi-select demo at y=1881 (dead-end that mutated another widget); 3 blind `fast_click_xy`; Forest selected at t=62s via `fast_click role:option`, then 10 calls / 65s re-verifying (`fast_do` 3.6s whose own plan read "Dropdown with current value Forest", `fast_type Forest` + Enter). d2 (16 calls, 44.8s): same opening (select_option ERR → click Ocean → scroll → click_xy), Forest selected at t=26s, then 6 more calls (2 blind xy clicks, `fast_type`, 3 waits on "Forest"). It never trusts the read-back. grok.com took 30 calls here too.
+- **extract** — both passes: `fast_evaluate` blocked → `fast_text`; 4 calls, fastest shape available without evaluate.
+- **flightsearch** — d1 (22 calls): `fast_wait "From"` satisfied by "Offers **from** our partners"; `fast_scout {}`; scroll 500 → fill → scroll top thrash; `fast_text body maxLen:50`; calendar via 5 clicks (open, snapshot overlay, 14, 21, Done) + `Escape`. d2 (15 calls): blocked `fast_evaluate` for today's date, 13s gap, then **typed the dates straight into the inputs** (`fast_fill "Departure date" 10/15/2026`) — no calendar at all — and the three selects in one `fast_select_option {selections}`. Same score, 17s faster.
+- **mapsdir** — d1: `fast_wait "Choose starting point"` timed out (6.8s; placeholder text, not content); after `Search` had already requested the route, 2 dead-end clicks on autocomplete text not in the DOM. d2 (18 calls): `fast_wait "fastest route"` timed out **13s**; 2 dead-end clicks (`"Times Square" index:1`, `"Times Square, New York"`) + `fast_scout` (2.3s) to find a suggestion that was not there; the route had loaded anyway (`fast_wait "min"` found it).
+- **cfworkers** — d1 (14 calls, 69s): `fast_scout` 3.4s + full snapshot, then paged the 26-app list (`Next page` → snapshot → `Next page` → snapshot → `First page`) before opening fastlink-relay; 4.9s/turn on 111k input. d2 (9 calls, 25s): full snapshot → `scroll to bottom` → click fastlink-relay; reported only 3 "other" names (Pages projects). Same score, 2.8× faster — the prompt's "names of the other Workers you saw" is under-specified and the two runs read it differently.
+
+### phase2 passes
+
+_pending_
+
+## Driver notes (`bench/` only — `fast-runner/` untouched by this pass)
+
+- results rows for runner cells re-derive wall/calls from the run store's tool log after exit (the streamed stderr rows lagged by one call: flightsearch d1 22 vs 23).
+- `ms < 0` in the run store (`fast_wait` −859ms d1 flightsearch, `fast_tab` −1424ms d2 mapsdir: `Date.now()` went backwards inside the runner — WSL clock skew) is clamped to 0 by the driver.
+- `--toolset <name>` on `run.js` → `cli.mjs --toolset`; recorded on the results row and each usage row (backfilled from the run store for older rows).
+- `tool-usage.md` aggregates ALL cells, one table per toolset, with `retry` / `switch` / `fumble %` per tool; each usage row records a `target` per call.
+- Concurrency caveat: `fast-runner/` gained explicit toolset selection (commit f3d8b20) and per-turn instrumentation (801b4c7) between d1 and d2; `default` resolves to the same `toolset.json` (all tools + instructions), so d1/d2 are the same configuration. d2 rows from 06:13 on carry `toolset:"default"` in the run store; the 3 earlier d2 rows predate the field.
 
 ## Open items
 
-- `fast_evaluate` blocked for the runner's relay account — decide: enable in relay settings for this account, or drop from `toolset.json` (phase 2 triage input).
-- Reflex `fast_status` / `fast_prewarm` openers and wait-then-click pairs are toolset/description fixes (phase 2).
-- Per-turn latency, not tool count, is the gap vs grok.com: full snapshots on heavy pages (cfworkers, overlay) push 50–110k input per run. Candidates: `fast_snapshot` viewport/limit defaults in the runner's description overrides, or effort `medium` if it trades fewer turns for slower ones (open decision 2 in the plan).
+- `fast_evaluate` blocked for the runner's relay account — decide: enable in relay settings for this account, or drop from the toolset (it is IN phase2 with a "may be disabled" note, so p1/p2 will show whether the note stops the reach).
+- One unexplained 124s model turn (gcpform d2) — turn instrumentation now records `latencyMs`/`attempts` per turn; if it recurs in p1/p2 the numbers will say whether it is the proxy, xAI, or a retry.
+- Per-turn latency, not tool count, is the gap vs grok.com: full snapshots on heavy pages push 50–110k input per run. Candidates: snapshot `viewport`/`limit` defaults in the runner's description overrides, or effort `medium` (plan open decision 2).
+- Post-completion verification thrash is the single biggest call sink after reflex openers; the system prompt's "never claim success without reading it back" is being over-applied (3–10 calls of confirmation after one clean read-back).
