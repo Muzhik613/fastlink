@@ -256,6 +256,68 @@ const collapseRepeat = (s) => {
   return s;
 };
 
+// ─────────────────────── live (never-cached) field values ───────────────────
+// A form control's VALUE can never be cached in the index. Setting .value
+// through the property setter (what fillItem does, and what React/Angular do)
+// mutates NO attribute at all, and the observer's attributeFilter deliberately
+// excludes `value`/characterData — so a filled field generates ZERO
+// MutationRecords and indexElement is never re-run for it. Caching the value
+// therefore froze it at index time forever: a snapshot taken right after a
+// successful fast_fill still reported the page's pre-fill default (confirmed on
+// GCP's "Create OAuth client ID": entry.text stayed "Web client 2" while the DOM
+// held "FastLink Bench", with the observer connected and the storm breaker NOT
+// tripped). The value is now READ FROM THE DOM at serialize/scan time instead —
+// a property read, no layout — for the handful of entries that carry one.
+const liveKindOf = (el) => {
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return 'value';
+  if (tag === 'SELECT') return 'select';
+  const ce = el.getAttribute && el.getAttribute('contenteditable');
+  if (ce === '' || ce === 'true') return 'text';
+  if (((el.getAttribute && el.getAttribute('role')) || '').toLowerCase() === 'textbox') return 'text';
+  return null;
+};
+
+// Re-read `el`'s current value and re-derive the value-dependent fields of its
+// entry. THE single place value→text derivation happens: makeClickEntry calls it
+// at index time and serializeSnapshot / fast_wait call it again on every read, so
+// there is exactly one rule and no cached copy that can drift.
+const refreshLiveEntry = (el, entry) => {
+  if (!entry || !entry.live) return entry;
+  try {
+    if (entry.live === 'select') {
+      // A <select>'s `text` stays the option list (matching depends on it); only
+      // the selected option is live.
+      const o = el.selectedOptions ? el.selectedOptions[0] : (el.options && el.options[el.selectedIndex]);
+      entry.value = o ? cleanLabel(o.text || o.value || '') : '';
+      return entry;
+    }
+    let v;
+    if (entry.live === 'value') {
+      v = el.value == null ? '' : String(el.value);
+      // An <input>/<textarea> has no meaningful inner text — a textarea's
+      // textContent is only its DEFAULT value, which goes stale the moment it is
+      // typed into. Its content IS its value, carried by value/text below.
+      entry.innerText = null;
+      // A password's live value must never reach the model. Report only that it
+      // is filled, and how long — enough to confirm a fill landed, nothing more.
+      if (el.type === 'password') {
+        entry.value = v ? '•'.repeat(Math.min(v.length, 32)) : '';
+        entry.text = (entry.ariaLabel || entry.label || entry.placeholder || entry.title || '').trim().slice(0, 120);
+        return entry;
+      }
+    } else {
+      const raw = (el.textContent || '').trim();
+      const isCustom = (el.tagName && el.tagName.includes('-')) || !!el.shadowRoot;
+      v = isCustom ? collapseRepeat(raw) : raw;
+      entry.innerText = v ? v.slice(0, 120) : null;
+    }
+    entry.value = v;
+    entry.text = (v || entry.ariaLabel || entry.label || entry.placeholder || entry.title || '').trim().slice(0, 120);
+  } catch {}
+  return entry;
+};
+
 // Build a click entry. Uses textContent (does NOT force layout) — that's
 // critical for letting the MutationObserver re-index on every attribute
 // change without thrashing layout. The minor accuracy loss vs innerText
@@ -271,8 +333,10 @@ const makeClickEntry = (el) => {
   const innerText = (isCustom ? collapseRepeat(rawText) : rawText).slice(0, 120);
   const titleAttr = el.getAttribute('title') || null;
   const describedBy = resolveIdRefs(el, 'aria-describedby');
-  const text = (innerText || el.value || el.getAttribute('aria-label') || lbl || el.getAttribute('placeholder') || titleAttr || '').trim().slice(0, 120);
-  return {
+  // NOTE: el.value is deliberately NOT part of this chain — a live value is never
+  // baked into the entry; refreshLiveEntry re-reads it below (and on every read).
+  const text = (innerText || el.getAttribute('aria-label') || lbl || el.getAttribute('placeholder') || titleAttr || '').trim().slice(0, 120);
+  const entry = {
     kind: 'click',
     tag: el.tagName.toLowerCase(),
     role: el.getAttribute('role') || null,
@@ -286,7 +350,10 @@ const makeClickEntry = (el) => {
     title: titleAttr,
     type: el.getAttribute('type') || null,
     name: el.getAttribute('name') || null,
+    live: liveKindOf(el),
+    value: null,
   };
+  return refreshLiveEntry(el, entry);
 };
 
 const makeContentEntry = (el) => {
@@ -850,12 +917,20 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     const w = Math.round(rect.width);
     const h = Math.round(rect.height);
     if (entry.kind === 'click') {
+      // LIVE VALUE: re-read form controls straight from the DOM. Costs one
+      // property read on the handful of entries that carry a value, and only for
+      // items this snapshot actually RETURNS (we are already past the visibility /
+      // viewport filters) — so it stays O(items returned), not a re-walk. Without
+      // it a filled field reports its pre-fill default forever (no mutation record
+      // is ever produced for a .value write).
+      if (entry.live) refreshLiveEntry(el, entry);
       // Emit only keys that carry a meaningful value — null/undefined/empty-string
       // fields are dropped entirely (roughly halves the payload with zero info
       // loss; every consumer reads `it.X && …` / `(it.X || '')`, so absent and
       // null are equivalent to them). i, tag, text and geometry are always kept.
       const item = { i: entry.id, tag: entry.tag, text: entry.text, x, y, w, h };
       if (entry.role)        item.role = entry.role;
+      if (entry.value)       item.value = entry.value;   // live DOM value, never cached
       if (entry.innerText)   item.innerText = entry.innerText;
       if (entry.label)       item.label = entry.label;
       if (entry.href)        item.href = entry.href;
@@ -1204,37 +1279,108 @@ async function runPageAction(action, args) {
     (it.ariaLabel   && it.ariaLabel.toLowerCase() === m) ||
     (it.placeholder && it.placeholder.toLowerCase() === m) ||
     (it.name        && it.name.toLowerCase() === m);
-  // Restrict candidate fields to those under a heading/legend whose text matches
-  // `nearLo` — i.e. the nearest preceding section anchor IS the requested one.
-  // Lets callers disambiguate repeated fields by section ("URIs 1" under
-  // "Authorized redirect URIs" vs under "Authorized JavaScript origins") without
-  // guessing an occurrence index. Bounded scans; returns [] when no anchor matches.
-  const scopeItemsToSection = (poolItems, nearLo) => {
-    let headings;
-    try { headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,legend,[role="heading"]')).slice(0, 400); }
-    catch { return []; }
-    if (!headings.length) return [];
-    const matchH = headings.filter(h => ((h.textContent || '').trim().toLowerCase()).includes(nearLo));
-    if (!matchH.length) return [];
-    const precedes = (a, b) => { // a strictly before b in document order
-      try { return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING); } catch { return false; }
-    };
-    const inSection = (el) => {
-      let nearest = null;   // nearest heading at-or-before el
-      for (const h of headings) {
-        if (h === el) continue;
-        if (h.contains(el) || precedes(h, el)) {
-          if (!nearest || precedes(nearest, h)) nearest = h;
-        }
-      }
-      return !!nearest && matchH.includes(nearest);
-    };
-    const out = [];
-    for (const it of poolItems) {
-      const el = elById(it.i);
-      if (el && inSection(el)) out.push(it);
+  // ─────────────────────────── section scoping ───────────────────────────
+  // `section` (alias `near`) restricts candidate fields to one titled group, so a
+  // repeated label ("URIs 1" under BOTH "Authorized JavaScript origins" and
+  // "Authorized redirect URIs" on GCP's Create-OAuth-client form) can be targeted
+  // by section instead of a guessed occurrence index.
+  //
+  // Sections are resolved by DOCUMENT OUTLINE, never by ancestry:
+  //  • closest() cannot work — on Angular Material / GCP's cfc-form-stack the
+  //    <fieldset> that holds the <legend> contains ZERO inputs; the fields render
+  //    outside it.
+  //  • "nearest preceding heading" alone cannot work either — GCP emits an
+  //    <h3>"Item 1" per URI row directly above each input, so the nearest heading
+  //    is that sub-heading and NO field ever resolved into the requested section.
+  // A section therefore spans from its anchor until the next anchor of the SAME OR
+  // HIGHER level (an <h2> ends an <h2> section; a nested <h3> does not), which is
+  // the standard outline rule and puts each "Item 1" row in its parent section.
+  const SECTION_ANCHORS = 'h1,h2,h3,h4,h5,h6,legend,[role="heading"]';
+  const MAX_ANCHORS = 400;
+  const anchorLevel = (el) => {
+    const tag = el.tagName.toLowerCase();
+    if (tag.length === 2 && tag[0] === 'h' && tag[1] >= '1' && tag[1] <= '6') return +tag[1];
+    const lvl = parseInt(el.getAttribute('aria-level') || '', 10);
+    if (lvl >= 1 && lvl <= 6) return lvl;
+    return 2;   // <legend> / [role=heading] with no level: section-level
+  };
+  const follows = (a, b) => {   // b strictly after a in document order
+    try { return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING); } catch { return false; }
+  };
+  // Fillable controls, resolved from the LIVE DOM rather than filtered out of the
+  // snapshot: a heavy page (GCP) forces snapshots viewport-only, so a section
+  // below the fold would otherwise look empty. Main document only — section
+  // membership is a document-order test, and compareDocumentPosition across a
+  // shadow root / iframe boundary returns DISCONNECTED with an ARBITRARY
+  // ordering bit, which could place a field in the wrong section. One selector
+  // query, no '*' walk.
+  const FILLABLE_SEL = 'input:not([type="hidden"]),textarea,select,[contenteditable="true"],[contenteditable=""],[role="textbox"]';
+  const MAX_SECTION_FIELDS = 500;
+  // Resolve a section request. ALWAYS returns a report — callers must NOT fall
+  // back to the unscoped pool on a miss (a silent wrong-field write is worse than
+  // an error), which is exactly what the old `if (scoped.length)` guard did.
+  //   { matched: n, sections: [every section title on the page], items: [scoped] }
+  const resolveSection = (wantLo) => {
+    let anchors;
+    try { anchors = Array.from(document.querySelectorAll(SECTION_ANCHORS)).slice(0, MAX_ANCHORS); }
+    catch { anchors = []; }
+    const sections = [];
+    for (const a of anchors) {
+      const t = cleanLabel(a.textContent).slice(0, 80);
+      if (t && !sections.includes(t)) sections.push(t);
     }
-    return out;
+    const matched = anchors.filter(a => cleanLabel(a.textContent).toLowerCase().includes(wantLo));
+    if (!matched.length) return { matched: 0, sections, items: [] };
+    // Span end = the first LATER anchor at the same-or-higher level that is not
+    // nested inside this one. The nested test merges GCP's <h2> rendered INSIDE
+    // its own <legend> (same title, twice) instead of yielding a zero-width span.
+    // querySelectorAll order is document order, so index order is span order.
+    const spans = matched.map((a) => {
+      const lvl = anchorLevel(a);
+      let end = null;
+      for (let j = anchors.indexOf(a) + 1; j < anchors.length; j++) {
+        const b = anchors[j];
+        if (a.contains(b) || anchorLevel(b) > lvl) continue;
+        end = b; break;
+      }
+      return { start: a, end };
+    });
+    const inAnySpan = (el) => (el.getRootNode ? el.getRootNode() === document : true)
+      && spans.some(({ start, end }) =>
+        (start.contains(el) || follows(start, el)) && (!end || follows(el, end)));
+    let fillable;
+    try { fillable = Array.from(document.querySelectorAll(FILLABLE_SEL)).slice(0, MAX_SECTION_FIELDS); }
+    catch { fillable = []; }
+    const items = [];
+    for (const el of fillable) {
+      if (!inAnySpan(el)) continue;
+      let rect; try { rect = el.getBoundingClientRect(); } catch { continue; }
+      if (!visible(el, rect)) continue;          // hidden fields are not fillable targets
+      indexElement(el);                           // stable id + a fresh (live-value) entry
+      const entry = INDEX.byEl.get(el);
+      if (!entry || entry.kind !== 'click') continue;
+      const off = offsetFor(el);
+      items.push({
+        i: entry.id, tag: entry.tag, role: entry.role, text: entry.text,
+        label: entry.label, placeholder: entry.placeholder, ariaLabel: entry.ariaLabel,
+        name: entry.name, value: entry.value,
+        x: Math.round(rect.x + off.ox), y: Math.round(rect.y + off.oy),
+        w: Math.round(rect.width), h: Math.round(rect.height),
+      });
+    }
+    return { matched: matched.length, sections, items };
+  };
+  // Apply `section`/`near`. Returns { pool } or { error, … } — never a silent
+  // fallback to the page-wide pool.
+  const applySectionScope = (sectionArg) => {
+    const sec = resolveSection(sectionArg.toLowerCase());
+    if (!sec.matched) {
+      return { error: `section "${sectionArg}" not found — no heading/legend/[role=heading] on this page matches it, so the field was NOT filled (refusing to fall back to a page-wide match, which would silently write the wrong field). Use one of the section titles listed in \`sections\`, or target the field positionally with index:N.`, sections: sec.sections.slice(0, 40) };
+    }
+    if (!sec.items.length) {
+      return { error: `section "${sectionArg}" was found but holds no visible fillable field, so nothing was filled (refusing to fall back to a page-wide match). The field may still be collapsed/unrendered (open the section first), or it may live in a shadow root / iframe, which section scoping cannot order reliably — use index:N there.`, sections: sec.sections.slice(0, 40) };
+    }
+    return { pool: sec.items };
   };
   const fillItem = (found, value, append) => {
     const el = elAt(found);
@@ -1397,6 +1543,9 @@ async function runPageAction(action, args) {
         if ((++scanned & 511) === 0 && (nowMs() - start) > 20) break;
         if (scanned > 12000) break;
         if (entry.kind === 'click') {
+          // Same live re-read as the serializer: waiting on a field's CURRENT
+          // value must not be answered from a cached pre-fill one.
+          if (entry.live) refreshLiveEntry(el, entry);
           if (entry.text && entry.text.toLowerCase().includes(t)) return { el, content: false };
         } else if (entry.kind === 'content') {
           // Remember the first content hit but keep scanning — a clickable hit
@@ -1944,20 +2093,26 @@ async function runPageAction(action, args) {
     const m = (args.match || '').toLowerCase();
     const snap = await serializeSnapshot(false);
     let pool = snap.items.filter(it => isFillable(it));
-    // Optional section scoping: restrict to fields under the nearest heading /
-    // legend matching args.near (alias args.section). Lets callers disambiguate
-    // repeated fields ("URIs 1" in two cards) deterministically by section.
-    const near = String(args.near || args.section || '').toLowerCase();
-    if (near) {
-      const scoped = scopeItemsToSection(pool, near);
-      if (scoped.length) pool = scoped;
+    // Optional section scoping (`section`, or its alias `near`): restrict to the
+    // fields inside that titled group. An unresolvable section is a HARD ERROR —
+    // it must never degrade into a page-wide match, which used to overwrite the
+    // first same-labelled field in a DIFFERENT section and report success.
+    const sectionArg = String(args.section ?? args.near ?? '').trim();
+    if (sectionArg) {
+      const scoped = applySectionScope(sectionArg);
+      if (scoped.error) return scoped;
+      pool = scoped.pool;   // REPLACES the snapshot pool — one source of candidates
     }
     // Prefer an EXACT field-label/name match over a loose substring, so "URIs 1"
     // doesn't grab "URIs 10" / a sibling section's "URIs". Substring is the
     // fallback when nothing matches exactly.
     const exact = pool.filter(it => fieldMatchesExact(it, m));
     const ranked = exact.length ? exact : pool.filter(it => fieldMatchesText(it, m));
-    if (!ranked.length) return { error: `No fillable element matching "${args.match}"` };
+    if (!ranked.length) {
+      return sectionArg
+        ? { error: `No fillable element matching "${args.match}" inside section "${sectionArg}" — the section resolved but none of its ${pool.length} fillable field(s) carry that label. Nothing was filled.`, fieldsInSection: pool.slice(0, 12).map(it => ({ tag: it.tag, label: it.label, placeholder: it.placeholder, name: it.name })) }
+        : { error: `No fillable element matching "${args.match}"` };
+    }
     // Optional occurrence index among the matches in STABLE DOM order.
     const ordered = ranked.slice().sort(docOrderCmp);
     const idx = (typeof args.index === 'number' && args.index >= 0) ? args.index : 0;
@@ -1983,6 +2138,8 @@ async function runPageAction(action, args) {
     const verify = !!args.verify;
     const snap = await serializeSnapshot(false);
     const items = snap.items;
+    // Form-wide section default; a per-field { section } overrides it.
+    const formSection = String(args.section ?? args.near ?? '').trim();
     const usedI = new Set();
     const results = {};
     // Verify targets are COLLECTED here and re-read in a SEPARATE bounded pass
@@ -2016,7 +2173,18 @@ async function runPageAction(action, args) {
       const exactName = (spec.name != null) ? String(spec.name).toLowerCase()
         : (spec.exact ? String(match).toLowerCase() : null);
       const m = String(match).toLowerCase();
-      const matches = items.filter(it => !usedI.has(it.i) && isFillable(it) && (
+      // Section scoping, per field ({ value, section }) or for the whole form
+      // (args.section / args.near). Same resolver and same HARD-ERROR rule as
+      // fast_fill: an unresolvable section fails THIS field loudly instead of
+      // silently writing a same-labelled field in another section.
+      const sectionArg = String(spec.section ?? spec.near ?? formSection).trim();
+      let pool = items;
+      if (sectionArg) {
+        const scoped = applySectionScope(sectionArg);
+        if (scoped.error) { results[match] = scoped; missed++; if (stopOnError) break; continue; }
+        pool = scoped.pool;   // REPLACES the snapshot pool for this field
+      }
+      const matches = pool.filter(it => !usedI.has(it.i) && isFillable(it) && (
         exactName != null ? (it.name && it.name.toLowerCase() === exactName)
                           : fieldMatchesText(it, m)));
       // occurrence index picks the N-th candidate when labels/names collide.
