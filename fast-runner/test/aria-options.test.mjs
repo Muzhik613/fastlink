@@ -22,6 +22,6 @@ test('cfc/mat-select: aria-controls / aria-owns on the field, its inner combobox
 
 test('page.js keeps the ARIA branch wall-clock capped and panel-first', () => {
   assert.match(src, /for \(const id of ariaPanelIds\(field\)\)/, 'options resolve from the aria-controls panel first');
-  assert.match(src, /if \(nowMs\(\) - tStart >= budgetMs\) break;/, 'budget is wall clock, checked after every wake');
+  assert.match(src, /if \(!opened || nowMs\(\) - tStart >= budgetMs\) break;/, 'budget is wall clock, checked after every wake; nothing opened → no poll');
   assert.match(src, /starved = true/, 'a starved timer is reported');
 });
