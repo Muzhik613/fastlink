@@ -868,3 +868,10 @@ accidentally revert them:
 - **Files:** none (remote D1 data). Revert: same UPDATE with 0/0.
 - **Watch out:** allow_all is honored only because the row is `is_operator=1`; other relay users still need per-origin allowlisting. The box10 container profile excludes fast_evaluate regardless (cookie reach).
 - **Status:** applied remote / verified via the runner over the relay (see next entry or bench doc).
+
+## 2026-09-15 — hvm rig: clear the whole Service Worker dir, not just ScriptCache
+- **What:** `bench/hvm-rig.sh` removes `Default/Service Worker` (registration DB + cache) before launching Chrome.
+- **Why:** c12716f deleted only `ScriptCache`; the registration DB still referenced the cached script and every SW start failed (`DidStartWorkerFail ockcja…: 5` in chrome.log), so the extension never connected and the overnight queue (4.3 feedback pass, 4.6 control, evaluate A/B) ran zero cells.
+- **Files:** `bench/hvm-rig.sh`.
+- **Watch out:** rig-only. Any container start script that wipes SW cache must wipe the registration with it.
+- **Status:** in code / pushed / applied on hvm via git pull.
