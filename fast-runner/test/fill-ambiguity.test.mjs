@@ -49,8 +49,8 @@ test('candidates whose paths are identical fall back to the nearest title', () =
   assert.deepEqual(distinguishingSections([[], ['A']]), [null, 'A']);
 });
 
-test('page.js refuses an ambiguous fill unless section/index picks one', () => {
-  assert.match(src, /if \(ordered\.length > 1 && !idxGiven && !sp\.section\)/, 'refusal gate');
-  assert.match(src, /visible fields match \$\{JSON\.stringify\(sp\.match\)\} — nothing was filled/, 'error text');
+test('page.js refuses an ambiguous fill unless index picks one (a section still holding several does not)', () => {
+  assert.match(src, /if \(!idxGiven && \(ordered\.length > 1 \|\| hiddenInRows\.length\)\)/, 'refusal gate: 2+ visible, or 1 visible with hidden copies in other rows');
+  assert.match(src, /visible field\(s\) match \$\{JSON\.stringify\(sp\.match\)\}/, 'error text');
   assert.match(src, /index: spec\.index \?\? args\.index/, 'top-level index is the fields-form default');
 });

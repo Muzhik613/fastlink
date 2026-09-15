@@ -17,7 +17,9 @@
 
 // ───────────────────────────── module helpers ─────────────────────────────
 
-const SELECTOR = 'a[href],button,input:not([type="hidden"]),select,textarea,[contenteditable="true"],[contenteditable=""],[role="button"],[role="link"],[role="checkbox"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="switch"],[role="option"],[role="radio"],[onclick],[tabindex]:not([tabindex="-1"])';
+// `a:not([href])` = a script-driven click target (jQuery UI's datepicker Prev/Next,
+// old paginators): indexed as a WEAK entry — ranked below every real control.
+const SELECTOR = 'a[href],a:not([href]),button,input:not([type="hidden"]),select,textarea,[contenteditable="true"],[contenteditable=""],[role="button"],[role="link"],[role="checkbox"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="switch"],[role="option"],[role="radio"],[onclick],[tabindex]:not([tabindex="-1"])';
 
 const SKIP_SUBTREE = new Set([
   'script','style','noscript','template','head','title','meta','link','svg',
@@ -63,6 +65,117 @@ const visible = (el, rect) => {
   if (rect.width < 2 || rect.height < 2) return false;
   const cs = getComputedStyle(el);
   return !(cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0');
+};
+
+// LABEL-PROXIED CONTROL: a native radio/checkbox whose input is visually hidden
+// (opacity 0, clipped / 1px, display:none) while its <label> (for= or wrapping) is
+// what the user sees and clicks — GOV.UK radios, Bootstrap btn-check, CSS-only
+// toggles. It is a visible control: geometry = its visible label box(es), plus the
+// input's own box when that sits on/next to the label (GOV.UK's 44px hit area).
+// Returns a rect-like object, or null when no label is visible.
+const labelProxyRect = (el) => {
+  if (!el || el.tagName !== 'INPUT' || !/^(radio|checkbox)$/i.test(el.type || '')) return null;
+  let labels = null; try { labels = el.labels; } catch {}
+  if (!labels || !labels.length) return null;
+  let b = null;
+  const add = (r) => { b = b ? { l: Math.min(b.l, r.left), t: Math.min(b.t, r.top), r: Math.max(b.r, r.right), btm: Math.max(b.btm, r.bottom) } : { l: r.left, t: r.top, r: r.right, btm: r.bottom }; };
+  for (const l of labels) { let r; try { r = l.getBoundingClientRect(); } catch { continue; } if (visible(l, r)) add(r); }
+  if (!b) return null;
+  let own = null; try { own = el.getBoundingClientRect(); } catch {}
+  const near = 48;
+  if (own && own.width >= 2 && own.height >= 2 && own.right >= b.l - near && own.left <= b.r + near && own.bottom >= b.t - near && own.top <= b.btm + near) add(own);
+  return { x: b.l, y: b.t, left: b.l, top: b.t, right: b.r, bottom: b.btm, width: b.r - b.l, height: b.btm - b.t };
+};
+
+// Checked state of a check-type control (native radio/checkbox, or an ARIA
+// radio/checkbox/switch carrying aria-checked); null for anything else.
+const CHECK_ROLES = /^(radio|checkbox|switch|menuitemradio|menuitemcheckbox)$/;
+const checkedOf = (el) => {
+  try {
+    if (el.tagName === 'INPUT' && /^(radio|checkbox)$/i.test(el.type || '')) return !!el.checked;
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const ac = el.getAttribute('aria-checked');
+    if (CHECK_ROLES.test(role) && ac != null) return ac === 'true';
+  } catch {}
+  return null;
+};
+
+// A widget's typing input and its BOX: a widget's own typing input is often
+// drawn invisible inside the widget's visible box (react-select's 1px opacity-0
+// "dummy input", Tom Select's opacity-0 combobox input). For such an input the
+// field's box is the nearest ancestor with a real box that holds no OTHER form
+// control — the widget itself, never the surrounding form. null when none.
+const WIDGET_INPUT_SEL = 'input[role="combobox"],input[id^="react-select-"]';
+const hiddenInputBox = (el) => {
+  if (!(el && el.matches && el.matches(WIDGET_INPUT_SEL))) return null;
+  let p = el.parentElement;
+  for (let hops = 0; p && hops < 6; hops++, p = p.parentElement) {
+    let r; try { r = p.getBoundingClientRect(); } catch { return null; }
+    if (r.width < 2 || r.height < 2) continue;
+    let others = 0;
+    try { for (const c of p.querySelectorAll('input:not([type="hidden"]),select,textarea')) if (c !== el) others++; } catch {}
+    return !others && visible(p, r) ? p : null;
+  }
+  return null;
+};
+
+// What a control SHOWS: native select → the selected option's text; a visible
+// input → its value; an invisible widget input → its widget box; any other
+// widget → its visible text, minus buttons inside it ("Remove item", clear ×),
+// hidden descendants (a backing <select>'s option list), popup containers that
+// carry their own aria-expanded (an open dropdown inside the widget) and icon
+// glyphs. Bounded walk. This is the read-back `verified` compares against.
+const shownValueOf = (el) => {
+  try {
+    if (!el || el.nodeType !== 1) return '';
+    if (el.tagName === 'SELECT') { const o = el.selectedOptions ? el.selectedOptions[0] : el.options[el.selectedIndex]; return o ? cleanLabel(o.text || o.value || '') : ''; }
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      // A widget's typing input (invisible, or visible but empty after a pick —
+      // Tom Select draws the chosen item BESIDE its search input) shows nothing
+      // itself: its widget box does.
+      let r; try { r = el.getBoundingClientRect(); } catch {}
+      const box = r && (!visible(el, r) || !el.value) ? hiddenInputBox(el) : null;
+      if (!box) return String(el.value || '');
+      el = box;
+    }
+    const parts = []; let n = 0;
+    const walk = (node) => {
+      for (const c of node.childNodes) {
+        if (++n > 600) return;
+        if (c.nodeType === 3) { if (c.data.trim()) parts.push(c.data); continue; }
+        if (c.nodeType !== 1) continue;
+        const tag = c.tagName;
+        if (/^(SELECT|OPTION|SCRIPT|STYLE|TEMPLATE|BUTTON|SVG)$/i.test(tag) || c.getAttribute('role') === 'button') continue;
+        if (c.getAttribute('aria-hidden') === 'true' || c.hasAttribute('aria-expanded')) continue;
+        if (typeof c.checkVisibility === 'function' && !c.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
+        if (tag === 'INPUT') { if (c.value && !/^(hidden|checkbox|radio)$/i.test(c.type || '')) parts.push(c.value); continue; }
+        walk(c);
+      }
+    };
+    walk(el);
+    return cleanLabel(parts.join(' ').replace(/[​-]/g, '')).slice(0, 200);
+  } catch { return ''; }
+};
+// Does a control's shown text SHOW `want`? Equal, or `want` as whole words in it
+// ("Female" must not pass for "Male"; multi-value chips "A, B" contain "B").
+const showsValue = (shown, want) => {
+  const s = cleanLabel(shown).toLowerCase(), w = cleanLabel(want).toLowerCase();
+  if (!s || !w) return false;
+  if (s === w) return true;
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:$|[^\\p{L}\\p{N}])`, 'u').test(s);
+};
+
+// A text-bearing non-control the page made clickable by script: computed
+// cursor:pointer, not inside an indexed control (a <span> in a <button> inherits
+// the button's pointer — that one is the button's). The days of a calendar drawn
+// as <td>/<span>, a "Next" <div>. Listed and matchable as a WEAK click target.
+const pointerContent = (el) => {
+  try {
+    if (getComputedStyle(el).cursor !== 'pointer') return false;
+    const lbl = el.closest('label');
+    if (lbl && lbl.control) return false;   // a label's text belongs to its control (listed as the control)
+    return !(el.parentElement && el.parentElement.closest(SELECTOR));
+  } catch { return false; }
 };
 
 const lookupId = (el, id) => {
@@ -283,7 +396,12 @@ const liveKindOf = (el) => {
   if (tag === 'SELECT') return 'select';
   const ce = el.getAttribute && el.getAttribute('contenteditable');
   if (ce === '' || ce === 'true') return 'text';
-  if (((el.getAttribute && el.getAttribute('role')) || '').toLowerCase() === 'textbox') return 'text';
+  const role = ((el.getAttribute && el.getAttribute('role')) || '').toLowerCase();
+  if (role === 'textbox') return 'text';
+  // a custom combobox (Select2's span, Choices' div, MUI's div): its text is the
+  // value it SHOWS — textContent also holds its hidden option list, and a cached
+  // copy froze on the value it had at index time
+  if (role === 'combobox') return 'shown';
   return null;
 };
 
@@ -302,7 +420,16 @@ const refreshLiveEntry = (el, entry) => {
       return entry;
     }
     let v;
-    if (entry.live === 'value') {
+    if (entry.live === 'shown') {
+      v = shownValueOf(el);
+      entry.innerText = v ? v.slice(0, 120) : null;
+    } else if (entry.live === 'value' && el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(el.type || '')) {
+      // its state is `checked`; its NAME is its label — never the value attribute ("on", "text")
+      entry.value = null;
+      entry.innerText = null;
+      entry.text = (entry.ariaLabel || entry.label || entry.title || '').trim().slice(0, 120);
+      return entry;
+    } else if (entry.live === 'value') {
       v = el.value == null ? '' : String(el.value);
       // An <input>/<textarea> has no meaningful inner text — a textarea's
       // textContent is only its DEFAULT value, which goes stale the moment it is
@@ -361,6 +488,9 @@ const makeClickEntry = (el) => {
     name: el.getAttribute('name') || null,
     live: liveKindOf(el),
     value: null,
+    // an <a> with no href, role, onclick or tab stop: clickable only by script
+    weak: (el.tagName === 'A' && !el.hasAttribute('href') && !el.getAttribute('role') && !el.hasAttribute('onclick')
+      && !(el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1')) || null,
   };
   return refreshLiveEntry(el, entry);
 };
@@ -961,9 +1091,15 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       if ((t - sliceStart) > SNAP_SLICE_MS) { await yieldControl(); sliceStart = nowMs(); }
     }
     if (!el.isConnected) { detached.push(el); continue; }
+    if (entry.weak && !entry.text) continue;   // a script target with no text/title/label: nothing to name it by
     let rect;
     try { rect = el.getBoundingClientRect(); } catch { continue; }
-    if (!visible(el, rect)) continue;
+    let proxied = false;
+    if (!visible(el, rect)) {
+      const pr = entry.kind === 'click' ? labelProxyRect(el) : null;
+      if (!pr) continue;
+      rect = pr; proxied = true;
+    }
     const isOverlayEl = overlayEls && overlayEls.has(el);
     const outOfView = !isOverlayEl && (rect.bottom < 0 || rect.top > vh || rect.right < 0 || rect.left > vw);
     const offscreen = outOfView && entry.kind === 'click' && (matchAll || viewportOnly);
@@ -1003,10 +1139,16 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       if (off.inFrame)       item.inFrame = true;
       if (overlayEls && overlayEls.has(el)) item.inOverlay = true;
       if (offscreen)         item.offscreen = true;
+      if (entry.weak)        item.clickable = 'script';
+      if (proxied)           item.via = 'label';   // the input is hidden; its <label> is what is drawn
+      const chk = checkedOf(el);
+      if (chk !== null) { item.checked = chk; if (!item.role) item.role = implicitRoleOf(entry.tag, entry.type); }
       if (!offscreen && isEmptyFillable(el, entry)) fillable++;
       items.push(item);
     } else {
       content.push({ tag: entry.tag, text: entry.text, x, y, w, h, inFrame: off.inFrame || undefined });
+      // cursor:pointer text is ALSO a (weak) click target; identical content text is deduped below
+      if (entry.text && pointerContent(el)) items.push({ i: entry.id, tag: entry.tag, text: entry.text.slice(0, 120), x, y, w, h, clickable: 'script', ...(off.inFrame ? { inFrame: true } : {}) });
     }
   }
   for (const el of detached) unindexElement(el);
@@ -1176,7 +1318,8 @@ const RANK_INTERACTIVE_ROLES = new Set([
 const rankItemScore = (it, vh, vw) => {
   let r = 0;
   if (it.inOverlay) r += 1000;                              // open menu/dropdown items: always first
-  if (RANK_INTERACTIVE_TAGS.has(it.tag)) r += 100;
+  if (it.clickable) r -= 10;                                 // script-only target: after real controls/links
+  else if (RANK_INTERACTIVE_TAGS.has(it.tag)) r += 100;
   else if (it.tag === 'a' && it.text) r += 40;
   if (RANK_INTERACTIVE_ROLES.has((it.role || '').toLowerCase())) r += 50;
   const onScreen = it.y >= 0 && it.y <= vh && it.x >= 0 && it.x <= vw;
@@ -1323,6 +1466,10 @@ async function runPageAction(action, args) {
     // outranks the radio whose name "External" comes from a <label> (label=3).
     // Additive (CONTROL_BONUS crosses ~one tier), never a hard override.
     if (score > 0 && isControlItem(it)) score += CONTROL_BONUS;
+    // A script-only target (no-href <a>, cursor:pointer text) always ranks BELOW
+    // every real control/link match (min real score 0.25 > max weak 0.04), but is
+    // still a candidate — never "nothing to click" when it carries the text.
+    if (it.clickable) score *= 0.01;
     return score;
   };
   const matchItems = (items, text) => {
@@ -1599,6 +1746,12 @@ async function runPageAction(action, args) {
   // the standard outline rule and puts each "Item 1" row in its parent section.
   const SECTION_ANCHORS = 'h1,h2,h3,h4,h5,h6,legend,[role="heading"]';
   const MAX_ANCHORS = 400;
+  // A heading's text as a section NAME: the permalink glyph docs generators append
+  // (Sphinx/MkDocs "¶", "§", "🔗", "⚓", a spaced or zero-width-joined "#") is not
+  // part of it — select2.org's "Single select boxes¶" came back as the field name.
+  const PERMALINK_TAIL = /(?:[\s​]*[¶§🔗⚓])+$|[\s​]+#$/u;
+  const stripPermalink = (s) => String(s || '').replace(PERMALINK_TAIL, '').replace(/​/g, '').trim();
+  const headingTitle = (a) => stripPermalink(cleanLabel(a.textContent)).slice(0, 80);
   const anchorLevel = (el) => {
     const tag = el.tagName.toLowerCase();
     if (tag.length === 2 && tag[0] === 'h' && tag[1] >= '1' && tag[1] <= '6') return +tag[1];
@@ -1620,37 +1773,27 @@ async function runPageAction(action, args) {
   // Dropdown-ish controls, for fast_select_option's titled-section lookup.
   const DROPDOWN_SEL = 'select,[role="combobox"],[role="listbox"],input[id^="react-select-"],[aria-haspopup="listbox"],[aria-haspopup="menu"],[aria-haspopup="true"]';
   const MAX_SECTION_FIELDS = 500;
-  // Visibility of a FIELD, not its input: a non-searchable react-select renders a
-  // 1px opacity-0 "dummy input", so measuring the input alone hides the whole
-  // control. Measure the nearest ancestor whose class token ends in "control"
-  // (react-select's own naming, prefixed or emotion-hashed) for those.
-  const fieldVisible = (el, rect) => {
-    if (visible(el, rect)) return true;
-    if (!(el.matches && el.matches('input[id^="react-select-"]'))) return false;
-    let p = el.parentElement;
-    for (let hops = 0; p && hops < 6; hops++, p = p.parentElement) {
-      if (/(?:^|\s)[\w-]*control(?:\s|$)/i.test(String(p.className || ''))) {
-        let r; try { r = p.getBoundingClientRect(); } catch { return false; }
-        return visible(p, r);
-      }
-    }
-    return false;
-  };
+  // Visibility of a FIELD, not its input: a widget's invisible typing input is
+  // visible when its widget box is (hiddenInputBox).
+  const fieldVisible = (el, rect) => visible(el, rect) || !!hiddenInputBox(el);
   // Resolve a section request. ALWAYS returns a report — callers must NOT fall
   // back to the unscoped pool on a miss (a silent wrong-field write is worse than
   // an error), which is exactly what the old `if (scoped.length)` guard did.
-  //   { matched: n, sections: [every section title on the page], items: [scoped] }
-  const resolveSection = (wantLo, sel = FILLABLE_SEL) => {
+  //   { matched: n, sections: [every section title on the page], items: [scoped
+  //     VISIBLE controls, indexed], els: [every `sel` element in the span, hidden
+  //     ones included — only with opts.hidden], inSpan(el) }
+  const resolveSection = (wantRaw, sel = FILLABLE_SEL, opts = {}) => {
+    const wantLo = stripPermalink(String(wantRaw || '').toLowerCase());
     let anchors;
     try { anchors = Array.from(document.querySelectorAll(SECTION_ANCHORS)).slice(0, MAX_ANCHORS); }
     catch { anchors = []; }
     const sections = [];
     for (const a of anchors) {
-      const t = cleanLabel(a.textContent).slice(0, 80);
+      const t = headingTitle(a);
       if (t && !sections.includes(t)) sections.push(t);
     }
-    const matched = anchors.filter(a => cleanLabel(a.textContent).toLowerCase().includes(wantLo));
-    if (!matched.length) return { matched: 0, sections, items: [] };
+    const matched = wantLo ? anchors.filter(a => headingTitle(a).toLowerCase().includes(wantLo)) : [];
+    if (!matched.length) return { matched: 0, sections, items: [], els: [], inSpan: () => false };
     // Span end = the first LATER anchor at the same-or-higher level that is not
     // nested inside this one. The nested test merges GCP's <h2> rendered INSIDE
     // its own <legend> (same title, twice) instead of yielding a zero-width span.
@@ -1671,9 +1814,10 @@ async function runPageAction(action, args) {
     let fillable;
     try { fillable = Array.from(document.querySelectorAll(sel)).slice(0, MAX_SECTION_FIELDS); }
     catch { fillable = []; }
-    const items = [];
+    const items = [], els = [];
     for (const el of fillable) {
       if (!inAnySpan(el)) continue;
+      if (opts.hidden) els.push(el);
       let rect; try { rect = el.getBoundingClientRect(); } catch { continue; }
       if (!fieldVisible(el, rect)) continue;     // hidden fields are not fillable targets
       indexElement(el);                           // stable id + a fresh (live-value) entry
@@ -1688,21 +1832,78 @@ async function runPageAction(action, args) {
         w: Math.round(rect.width), h: Math.round(rect.height),
       });
     }
-    return { matched: matched.length, sections, items };
+    return { matched: matched.length, sections, items, els, inSpan: inAnySpan };
   };
   // A heading/legend whose text IS `name` (a trailing ":" / "*" / "(…)" ignored):
   // the name belongs to an outline section, not to a field still mounting.
   // Returns that heading's title, else null. One selector query.
-  const normHeading = (s) => cleanLabel(s).toLowerCase().replace(/\s*\([^)]*\)$/, '').replace(/[\s:*]+$/, '');
+  const normHeading = (s) => stripPermalink(cleanLabel(s)).toLowerCase().replace(/\s*\([^)]*\)$/, '').replace(/[\s:*]+$/, '');
   const sectionTitleFor = (name) => {
     let anchors; try { anchors = document.querySelectorAll(SECTION_ANCHORS); } catch { return null; }
     const want = normHeading(name);
     if (!want) return null;
     for (let i = 0; i < anchors.length && i < MAX_ANCHORS; i++) {
-      const t = cleanLabel(anchors[i].textContent);
-      if (t && normHeading(t) === want) return t.slice(0, 80);
+      const t = headingTitle(anchors[i]);
+      if (t && normHeading(t) === want) return t;
     }
     return null;
+  };
+  // ─────────────────────────── repeated row groups ───────────────────────────
+  // A data grid / repeatable section: the SAME field labels repeat once per row
+  // (Form.io "Children": First Name / Gender / Birthdate per row). The row of `el`
+  // = its nearest ancestor whose same-shaped siblings (tag + class tokens, state
+  // and numbered tokens ignored) hold a form field sharing a label with it. A form's
+  // field groups never qualify (each holds a DIFFERENT label). null when not in rows.
+  const ROW_STATE_TOKEN = /^(?:is-|has-)|hidden|none|active|selected|open|show|collapse|visible|invisible|disabled|error|invalid|valid|focus|hover|even|odd|first|last/i;
+  const rowSig = (el) => el.tagName + '|' + Array.from(el.classList || []).filter(c => !ROW_STATE_TOKEN.test(c)).map(c => c.replace(/\d+/g, '#')).sort().join(' ');
+  const fieldKey = (el) => {
+    try {
+      const l = cleanLabel(labelFor(el) || el.getAttribute('aria-label') || '').toLowerCase();
+      return l || String(el.getAttribute('name') || '').replace(/\d+/g, '#').toLowerCase();
+    } catch { return ''; }
+  };
+  const fieldKeys = (root, cap = 40) => {
+    const keys = new Set();
+    try { for (const f of root.querySelectorAll(FILLABLE_SEL)) { const k = fieldKey(f); if (k) keys.add(k); if (keys.size >= cap) break; } } catch {}
+    return keys;
+  };
+  const rowContextOf = (el) => {
+    if (!el) return null;
+    let a = el;
+    for (let hops = 0; a && a.parentElement && hops < 16; hops++, a = a.parentElement) {
+      const p = a.parentElement;
+      if (p === document.body || p === document.documentElement) break;
+      const sig = rowSig(a);
+      const rows = [];
+      for (const c of p.children) { if (c === a || rowSig(c) === sig) rows.push(c); if (rows.length > 80) break; }
+      if (rows.length < 2) continue;
+      const keys = fieldKeys(a);
+      if (!keys.size) continue;
+      const shares = (r) => { try { let n = 0; for (const f of r.querySelectorAll(FILLABLE_SEL)) { if (keys.has(fieldKey(f))) return true; if (++n >= 40) break; } } catch {} return false; };
+      if (rows.slice(0, 20).some(r => r !== a && shares(r))) return { row: a, rows, index: rows.indexOf(a) };
+    }
+    return null;
+  };
+  // What tells a row apart for a person: its first non-empty field value (first
+  // name, an id), else the start of its text.
+  const rowFirstValue = (row) => {
+    try {
+      for (const f of row.querySelectorAll(FILLABLE_SEL)) {
+        if (f.tagName === 'INPUT' && /^(checkbox|radio|button|submit|hidden)$/i.test(f.type || '')) continue;
+        const v = cleanLabel(String(liveValueOf(f) || ''));
+        if (v) return v.slice(0, 40);
+      }
+      return shownValueOf(row).slice(0, 40) || '(empty row)';
+    } catch { return ''; }
+  };
+  const rowInfoOf = (el) => {
+    const ctx = rowContextOf(el);
+    return ctx ? { row: ctx.index, rows: ctx.rows.length, rowFirst: rowFirstValue(ctx.row) } : null;
+  };
+  // Does any of `others` sit in ANOTHER row of `el`'s row group?
+  const inOtherRow = (el, others) => {
+    const ctx = rowContextOf(el);
+    return !!ctx && others.some(o => o !== el && ctx.rows.some(r => r !== ctx.row && r.contains(o)));
   };
   // Apply `section`/`near`. Returns { pool } or { error, … } — never a silent
   // fallback to the page-wide pool.
@@ -1730,6 +1931,26 @@ async function runPageAction(action, args) {
     if (it.name) o.name = it.name;
     if (it.type) o.type = it.type;
     return o;
+  };
+  // Fields carrying the same label/name as `m` that are NOT visible (another
+  // row's copy, a collapsed panel's). Main document, one selector query, ≤12.
+  const hiddenCopiesOf = (m, exact, visibleEls) => {
+    const out = [];
+    try {
+      const forMap = new Map();
+      for (const l of document.querySelectorAll('label[for]')) if (!forMap.has(l.htmlFor)) forMap.set(l.htmlFor, cleanLabel(l.textContent));
+      const all = Array.from(document.querySelectorAll(FILLABLE_SEL)).slice(0, MAX_SECTION_FIELDS);
+      for (const el of all) {
+        if (out.length >= 12) break;
+        if (visibleEls.includes(el)) continue;
+        const it = { label: labelFor(el, (e) => forMap.get(e.id) ?? null), ariaLabel: el.getAttribute('aria-label'), placeholder: el.getAttribute('placeholder'), name: el.getAttribute('name') };
+        if (!(exact ? fieldMatchesExact(it, m) : fieldMatchesText(it, m))) continue;
+        let r; try { r = el.getBoundingClientRect(); } catch { continue; }
+        if (visible(el, r) || labelProxyRect(el)) continue;   // visible ones are in the match pool
+        out.push(el);
+      }
+    } catch {}
+    return out;
   };
   const fillMissReport = (m, pool) => {
     const report = { candidates: pool.slice(0, 12).map(fieldBrief) };
@@ -1771,7 +1992,7 @@ async function runPageAction(action, args) {
   const headingAbove = (el) => {
     try {
       const hs = document.querySelectorAll(SECTION_ANCHORS);
-      for (let i = hs.length - 1; i >= 0; i--) { if (follows(hs[i], el)) { const h = cleanLabel(hs[i].textContent).slice(0, 80); if (h) return h; } }
+      for (let i = hs.length - 1; i >= 0; i--) { if (follows(hs[i], el)) { const h = headingTitle(hs[i]); if (h) return h; } }
     } catch {}
     return null;
   };
@@ -1780,8 +2001,27 @@ async function runPageAction(action, args) {
     if (!el) return [];
     try {
       const anchors = Array.from(document.querySelectorAll(SECTION_ANCHORS)).slice(0, MAX_ANCHORS);
-      return outlineTitles(anchors, el, anchorLevel, (a, b) => a.contains(b), follows, (a) => cleanLabel(a.textContent).slice(0, 80));
+      return outlineTitles(anchors, el, anchorLevel, (a, b) => a.contains(b), follows, headingTitle);
     } catch { return []; }
+  };
+  // The full pointer sequence a person's click produces (over → down → up →
+  // click), at the element's centre. Widgets that act on mousedown (Select2,
+  // Choices, react-select) or mouseup (Select2 options) respond to it; bare
+  // el.click() fires only the last event. Stops when a handler detached the node.
+  const pointerSeq = (el) => {
+    let r = null; try { r = el.getBoundingClientRect(); } catch {}
+    const base = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, clientX: r ? r.x + r.width / 2 : 0, clientY: r ? r.y + r.height / 2 : 0 };
+    const P = typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+    const ptr = { pointerId: 1, isPrimary: true, pointerType: 'mouse' };
+    el.dispatchEvent(new P('pointerover', { ...base, ...ptr }));
+    el.dispatchEvent(new MouseEvent('mouseover', base));
+    el.dispatchEvent(new P('pointerdown', { ...base, ...ptr, buttons: 1 }));
+    el.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1 }));
+    if (!el.isConnected) return;
+    el.dispatchEvent(new P('pointerup', { ...base, ...ptr }));
+    el.dispatchEvent(new MouseEvent('mouseup', base));
+    if (!el.isConnected) return;
+    el.dispatchEvent(new MouseEvent('click', { ...base, detail: 1 }));
   };
   // Which control a pick/fill acted on — label / aria / name / id / the heading
   // above it — so an ambiguous target is visibly attributed, never silent.
@@ -1989,10 +2229,7 @@ async function runPageAction(action, args) {
     await wait(300);
     if (took()) { acSettle(input); return { via: 'keyboard', committed: true }; }
     flashEl(el, 'click');
-    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-      const Ev = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
-      el.dispatchEvent(new Ev(type, { bubbles: true, cancelable: true, composed: true, button: 0 }));
-    }
+    pointerSeq(el);
     await wait(300);
     const ok = took();
     if (ok) acSettle(input);
@@ -2024,6 +2261,18 @@ async function runPageAction(action, args) {
     if (value == null) return { error: "fast_fill: no value provided — pass value (use value:'' to clear the field)" };
     const v = String(value); // safe now: value is present (may be "")
     flashEl(el, 'fill');
+    // Checkbox / radio: the value is a STATE (true → ticked), set the way a person
+    // does (a click, so the page's handlers run) — writing "true" into .value
+    // ticked nothing while the result read back "true" (h_repeat "Dependant").
+    if (el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(el.type || '')) {
+      const s = v.trim().toLowerCase();
+      const want = /^(true|yes|on|1|checked|check|tick|ticked|x|✓|✔)$/.test(s) ? true : /^(false|no|off|0|unchecked|uncheck|untick|)$/.test(s) ? false : null;
+      const name = found.label || found.name || el.type;
+      if (want === null) return { error: `${JSON.stringify(name)} is a ${el.type}: pass value:true to tick it or value:false to clear it (or fast_click its label) — nothing was changed` };
+      if (el.type === 'radio' && !want) return { error: `${JSON.stringify(name)} is a radio: it cannot be cleared by value — pick another option of the group (fast_click its label); nothing was changed` };
+      if (el.checked !== want) el.click();
+      return { filled: { tag: found.tag, type: el.type, label: found.label, name: found.name }, valueSet: want, kind: el.type };
+    }
     el.focus();
     // Native <select>: don't type into it — match the value against option TEXT
     // or VALUE (exact > startsWith > substring on text, then exact value), set
@@ -2072,6 +2321,27 @@ async function runPageAction(action, args) {
   //   • layout reads (style/rect/closest) run on at most a handful of the best
   //     interactive candidates AFTER the scan;
   //   • over budget → degrade to a cheap count-only answer.
+  // fast_click's last resort before "nothing to click": a VISIBLE element whose
+  // own text / aria-label / title / alt IS the query and whose computed cursor is
+  // pointer — something the page made clickable by script without any control
+  // semantics (an icon <div aria-label="Next">, an <img alt>). Bounded walk.
+  const pointerTargetByText = (queryText) => {
+    const q = cleanLabel(queryText).toLowerCase();
+    if (!q) return null;
+    const start = nowMs();
+    let n = 0, hit = null;
+    walkDeep(document, '*', (el) => {
+      if (hit || n > 4000 || ((++n & 63) === 0 && nowMs() - start > 120)) return;
+      let own = '';
+      for (const c of el.childNodes) if (c.nodeType === 3) own += c.data;
+      const names = [own, el.getAttribute('aria-label'), el.getAttribute('title'), el.tagName === 'IMG' ? el.getAttribute('alt') : null];
+      if (!names.some(s => s && cleanLabel(s).toLowerCase() === q)) return;
+      let r; try { r = el.getBoundingClientRect(); } catch { return; }
+      if (!visible(el, r)) return;
+      try { if (getComputedStyle(el).cursor === 'pointer') hit = el; } catch {}
+    });
+    return hit;
+  };
   const DIAG_MAX_EXAMINE = 1500;
   const DIAG_BUDGET_MS = 150;
   const DIAG_LAYOUT_CAP = 24;
@@ -2418,26 +2688,57 @@ async function runPageAction(action, args) {
     // [aria-label] div once won "Application type" over the real combobox.
     const CONTROLISH = 'select,input,textarea,[role="combobox"],[role="listbox"],[role="textbox"],[role="searchbox"],[aria-haspopup],[contenteditable="true"],[contenteditable=""]';
     const LANDMARK_ROLES = /^(banner|complementary|contentinfo|main|navigation|region|form|group|dialog|alertdialog|search|toolbar|tabpanel|presentation|none|heading|list|table|grid)$/;
-    const usableField = (el) => {
-      let r; try { r = el.getBoundingClientRect(); } catch { return false; }
-      if (!fieldVisible(el, r)) return false;
-      const role = el.getAttribute('role');
-      return !(role && LANDMARK_ROLES.test(role));
-    };
     // Cost model (a heavy SPA under a render storm: thousands of [aria-label]
     // elements, every layout read forced): ONE composed-tree walk that also
     // collects the <label>s; label text computed from that set, never per
-    // candidate by document-wide query; layout (usableField) read only for a
-    // candidate whose TEXT already matches. Same pass order and the same answer
-    // as matching over the visible candidates first — the first text match in
-    // order that is usable. (GCP "Application type": resolve 5.6s before.)
-    const findField = (fieldRaw, fieldLo) => {
+    // candidate by document-wide query; layout (toControls) read only for a
+    // candidate whose TEXT already matches. (GCP "Application type": resolve 5.6s before.)
+    // A hidden native <select> that a visible widget enhances (Select2 / Tom Select
+    // right after it, Choices around it) is that widget's BACKING STORE: the widget
+    // is the control a person sets, and its shown value is the read-back. Returns
+    // the one visible widget, else null (two candidates next to it = not ours to guess).
+    const widgetFor = (sel) => {
+      const vis = (w) => { let r; try { r = w.getBoundingClientRect(); } catch { return false; } return fieldVisible(w, r); };
+      const around = sel.parentElement && sel.parentElement.closest('[role="combobox"],[aria-haspopup="listbox"]');
+      if (around && vis(around)) return around;
+      const next = sel.nextElementSibling;
+      if (!next) return null;
+      const found = [];
+      for (const w of [next, ...next.querySelectorAll(DROPDOWN_SEL)]) {
+        if (w.tagName === 'SELECT' || !w.matches(DROPDOWN_SEL) || !vis(w)) continue;
+        if (!found.some(o => o.contains(w) || w.contains(o))) found.push(w);
+      }
+      return found.length === 1 ? found[0] : null;
+    };
+    // Matches → one candidate per CONTROL, document order: { el, visible, backing? }.
+    // A wrapper and the control inside it are one control (the earlier-listed wins:
+    // controls are listed first); a landmark/container is never a candidate.
+    const toControls = (els) => {
+      const out = [];
+      for (const el of els) {
+        const role = el.getAttribute && el.getAttribute('role');
+        if (role && LANDMARK_ROLES.test(role)) continue;
+        if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'hidden') continue;
+        let r; try { r = el.getBoundingClientRect(); } catch { continue; }
+        let c = { el, visible: fieldVisible(el, r) };
+        if (!c.visible && el.tagName === 'SELECT') { const w = widgetFor(el); if (w) c = { el: w, visible: true, backing: el }; }
+        if (out.some(o => o.el === c.el || o.el.contains(c.el) || c.el.contains(o.el))) continue;
+        out.push(c);
+      }
+      return out.sort((a, b) => (follows(a.el, b.el) ? -1 : follows(b.el, a.el) ? 1 : 0));
+    };
+    // EVERY control the name could mean, not the first: name/id (explicit) → the
+    // first name tier (label, aria-label, placeholder) with a visible match (an
+    // EXACT name beats a substring: "Country" is not "Country code") → a titled
+    // section's dropdowns (hidden ones included, so a backing select maps to its
+    // widget). Hidden-only matches are kept for the miss report.
+    const findFields = (fieldRaw, fieldLo) => {
       const nameSel = `[name="${CSS.escape(fieldRaw)}" i]`;
       const all = queryAllDeep(document, `${nameSel},${CONTROLISH},[aria-labelledby],[aria-label],[placeholder],label`);
       const byName = all.find(el => el.matches && el.matches(nameSel));
-      if (byName) return byName;
+      if (byName) return toControls([byName]);
       const byId = lookupId(document.documentElement, fieldRaw);
-      if (byId) return byId;
+      if (byId) return toControls([byId]);
       const forText = new Map();   // root → (for-id → text of the FIRST such label, as querySelector found it)
       const hitLabels = [];        // labels whose text holds the wanted name
       const pool = [];
@@ -2462,33 +2763,57 @@ async function runPageAction(action, args) {
       const nearHit = (el) => { let a = el; for (let i = 0; i < 5 && a.parentElement; i++) a = a.parentElement; return hitLabels.some(l => a.contains(l)); };
       const isCtl = (el) => el.matches && el.matches(CONTROLISH);
       const ordered = pool.filter(isCtl).concat(pool.filter(el => !isCtl(el)));
-      // Wired label (for=/wrapping/aria-labelledby) OR a sibling <label> in the
-      // same field group — the latter rescues react-select inputs whose only
-      // aria-label is an opaque internal id (Greenhouse dropdowns).
-      for (const el of ordered) {
-        const lbl = labelFor(el, forLookup) || (hitLabels.length && nearHit(el) ? containerLabel(el) : '');
-        if (lbl && lbl.toLowerCase().includes(fieldLo) && usableField(el)) return el;
+      // Tiers: wired label (for=/wrapping/aria-labelledby) OR a sibling <label> in
+      // the same field group (rescues react-select inputs whose only aria-label is
+      // an opaque internal id — Greenhouse), then aria-label, then placeholder.
+      const tiers = [
+        (el) => labelFor(el, forLookup) || (hitLabels.length && nearHit(el) ? containerLabel(el) : ''),
+        (el) => el.getAttribute && el.getAttribute('aria-label'),
+        (el) => el.getAttribute && el.getAttribute('placeholder'),
+      ];
+      const wantNorm = normHeading(fieldLo);
+      let hiddenOnly = null;
+      for (const nameOf of tiers) {
+        const hits = [], exact = [];
+        for (const el of ordered) {
+          const n = nameOf(el);
+          if (!n || !n.toLowerCase().includes(fieldLo)) continue;
+          hits.push(el);
+          if (normHeading(n) === wantNorm) exact.push(el);
+        }
+        let c = toControls(exact.length ? exact : hits);
+        if (!c.some(x => x.visible) && exact.length) c = toControls(hits);
+        if (c.some(x => x.visible)) return c;
+        if (c.length && !hiddenOnly) hiddenOnly = c;
       }
-      for (const el of ordered) {
-        const al = el.getAttribute && el.getAttribute('aria-label');
-        if (al && al.toLowerCase().includes(fieldLo) && usableField(el)) return el;
-      }
-      for (const el of ordered) {
-        const ph = el.getAttribute && el.getAttribute('placeholder');
-        if (ph && ph.toLowerCase().includes(fieldLo) && usableField(el)) return el;
-      }
-      // HEADING-TITLED dropdown: no label/aria/placeholder carries the name, but a
+      // HEADING-TITLED dropdowns: no label/aria/placeholder carries the name, but a
       // heading does (react-select.com's demo: <h4>Single</h4> above an unlabelled
-      // combobox; docs/demo pages and card-per-field forms do the same). Resolve
-      // the name as a document-outline section and take its first dropdown-ish
-      // control — same resolver + same "never a page-wide guess" rule as
-      // fast_fill's `section`.
-      const sec = resolveSection(fieldLo, DROPDOWN_SEL);
-      if (sec.matched && sec.items.length) {
-        const el = elById(sec.items[0].i);
-        if (el) return el;
-      }
-      return null;
+      // combobox; select2.org's "Single select boxes¶"). Every dropdown-ish control
+      // in that outline section — same resolver + same "never a page-wide guess"
+      // rule as fast_fill's `section`.
+      const sec = resolveSection(fieldLo, DROPDOWN_SEL, { hidden: true });
+      if (sec.matched && sec.els.length) { const c = toControls(sec.els); if (c.length) return c; }
+      return hiddenOnly || [];
+    };
+    // A candidate as the model sees it in an ambiguity / out-of-range report.
+    // `index` = its position among the VISIBLE candidates (what index:N picks).
+    const listCands = (cands) => {
+      let vi = 0;
+      return cands.slice(0, 12).map((c) => {
+        const f = describeField(c.el);
+        const o = { tag: f.tag };
+        if (f.role) o.role = f.role;
+        o.label = f.label || f.ariaLabel || f.placeholder || f.name || null;
+        if (f.name && f.name !== o.label) o.name = f.name;
+        if (f.section) o.section = f.section;
+        o.visible = c.visible;
+        o.value = shownValueOf(!c.visible || !c.el.isConnected ? (c.backing || c.el) : c.el);
+        if (c.visible) o.index = vi++;
+        if (c.backing) o.backing = 'hidden <select> behind this widget';
+        const ri = rowInfoOf(c.el);
+        if (ri) Object.assign(o, ri);
+        return o;
+      });
     };
     // What a miss could have meant: every visible dropdown-ish control with the
     // name it WOULD match on (label / aria / placeholder / titled section), so the
@@ -2508,11 +2833,7 @@ async function runPageAction(action, args) {
           const nm = el.getAttribute('name'); if (nm) c.name = nm;
           if (el.id) c.id = el.id;
           // Nearest preceding heading = the name a titled-section lookup accepts.
-          let h = null;
-          try {
-            const hs = document.querySelectorAll(SECTION_ANCHORS);
-            for (let i = hs.length - 1; i >= 0; i--) { if (follows(hs[i], el)) { h = cleanLabel(hs[i].textContent).slice(0, 80); break; } }
-          } catch {}
+          const h = headingAbove(el);
           if (h) c.section = h;
           out.push(c);
         }
@@ -2523,39 +2844,37 @@ async function runPageAction(action, args) {
     const optText = (o) => (o.textContent || '').trim().toLowerCase();
 
     // What the control DISPLAYS after the pick — the read-back that `verified`
-    // compares against `picked`.
+    // compares against `picked`. The VISIBLE control is read, never a backing
+    // <select> behind a widget (it can hold a value the widget does not show).
     const readShown = (el, kind, ctrl) => {
-      try {
-        if (kind === 'native-select') { const o = el.selectedOptions ? el.selectedOptions[0] : el.options[el.selectedIndex]; return o ? cleanLabel(o.text || o.value || '') : ''; }
-        if (kind === 'react-select' && ctrl) {
+      if (kind === 'react-select' && ctrl) {
+        try {
           const vals = Array.from(ctrl.querySelectorAll('[class*="singleValue"],[class*="single-value"],[class*="multiValue__label"],[class*="multi-value__label"]'))
             .map(v => cleanLabel(v.textContent)).filter(Boolean);
           if (vals.length) return vals.join(', ');
-          return cleanLabel(ctrl.textContent).slice(0, 200);
-        }
-        if (el.value != null && String(el.value)) return String(el.value).slice(0, 200);
-        const ad = el.getAttribute && el.getAttribute('aria-activedescendant');
-        const adEl = ad ? lookupId(el, ad) : null;
-        if (adEl) return cleanLabel(adEl.textContent).slice(0, 200);
-        return cleanLabel(el.textContent).slice(0, 200);
-      } catch { return ''; }
+        } catch {}
+        return shownValueOf(ctrl);
+      }
+      return shownValueOf(el);
     };
-    // Returns as soon as the control's read-back shows the pick (polled every
-    // 30ms), else at the cap — never a fixed DOM-quiet wait, which on a storming
-    // page (GCP) always ran to SETTLE_MAX_MS.
-    const withReadback = async (res, el, ctrl, timing = {}) => {
+    // Returns as soon as the control's read-back shows the pick and its popup is
+    // closed (polled every 30ms), else at the cap — never a fixed DOM-quiet wait,
+    // which on a storming page (GCP) always ran to SETTLE_MAX_MS.
+    const withReadback = async (res, el, ctrl, timing = {}, pre = {}) => {
       const t0 = nowMs();
-      const want = String(res.picked).toLowerCase();
+      const open = () => { try { return el.getAttribute('aria-expanded') === 'true'; } catch { return false; } };
       let value = '';
       for (;;) {
         value = readShown(el, res.kind, ctrl);
-        if (value && value.toLowerCase().includes(want)) break;
+        if (showsValue(value, res.picked) && !open()) break;
         if (nowMs() - t0 >= SETTLE_MAX_MS) break;
         await wait(30);
       }
       timing.readbackMs = Math.round(nowMs() - t0);
-      const verified = !!value && value.toLowerCase().includes(want);
+      const verified = showsValue(value, res.picked);
       const head = { verified, picked: res.picked, value, field: describeField(el) };
+      if (pre.row) head.row = pre.row;
+      if (pre.backing) head.backingValue = shownValueOf(pre.backing);
       if (!verified) head.reason = `the dropdown now shows ${JSON.stringify(value)}, not "${res.picked}" — the pick did not take (or landed on another control: see field); do not report it as selected`;
       return frontload({ ...res, timing }, head);
     };
@@ -2564,21 +2883,59 @@ async function runPageAction(action, args) {
     // looped for batch mode. Success { verified, picked, value, field, kind },
     // miss { error, ... }. Shared by both forms. The field lookup is retried
     // until AUTO_WAIT_MS so a control still mounting is not a false miss.
-    const setOne = async (fieldRaw, optionRaw) => {
-      const fieldLo = String(fieldRaw == null ? '' : fieldRaw).toLowerCase();
+    // Resolve ONE field to ONE visible control, or refuse — never a silent first
+    // pick. `section` restricts to one outline section; `index` = N-th VISIBLE
+    // candidate in document order. Without either: exactly one visible candidate
+    // is taken (a hidden backing select behind a visible widget IS the widget), 2+
+    // is an ambiguity error listing each, and a single visible one whose label also
+    // exists (hidden) in ANOTHER row of the same repeated row group is refused too.
+    const setOne = async (fieldRaw, optionRaw, pick = {}) => {
+      const fieldLo = stripPermalink(String(fieldRaw == null ? '' : fieldRaw).toLowerCase());
       const optionText = String(optionRaw == null ? '' : optionRaw);
       if (!fieldLo || !optionText) return { error: 'field and option required' };
+      const sectionRaw = String(pick.section ?? '').trim();
+      const idxGiven = typeof pick.index === 'number' && pick.index >= 0;
 
       const t0 = nowMs();
       const timing = {};   // performance.now() marks per phase, reported on every result
-      let field = findField(fieldRaw, fieldLo);
-      while (!field && nowMs() - t0 < AUTO_WAIT_MS) { await wait(150); field = findField(fieldRaw, fieldLo); }
+      let cands = [], secErr = null;
+      const resolve = () => {
+        cands = findFields(fieldRaw, fieldLo);
+        if (!sectionRaw) return;
+        const sec = resolveSection(sectionRaw, DROPDOWN_SEL);
+        if (!sec.matched) { secErr = { error: `section "${sectionRaw}" not found — no heading/legend/[role=heading] matches it, so nothing was selected (refusing a page-wide match). Use one of \`sections\`, or index:N.`, sections: sec.sections.slice(0, 40) }; cands = []; return; }
+        cands = cands.filter(c => sec.inSpan(c.el) || (c.backing && sec.inSpan(c.backing)));
+      };
+      resolve();
+      while (!secErr && !cands.some(c => c.visible) && nowMs() - t0 < AUTO_WAIT_MS) { await wait(150); resolve(); }
       timing.resolveMs = Math.round(nowMs() - t0);
-      if (field) { try { const r = field.getBoundingClientRect(); if (r.bottom < 0 || r.top > window.innerHeight) field.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {} }
-      if (!field) {
-        const act = pageActivity();
-        return { error: `field "${fieldRaw}" not found — no dropdown/combobox/select carries that label, aria-label, placeholder, name, id, or titled section. Nothing was changed. Retry with one of the names in \`candidates\`.`, waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing — the control may not be rendered yet: fast_wait for text that identifies its view, then retry' } : {}), candidates: dropdownCandidates() };
+      if (secErr) return secErr;
+      // a hidden candidate in a row (or widget) that already has a VISIBLE one is that
+      // row's widget internals (Choices' search input), not another copy of the field
+      {
+        const visRows = cands.filter(c => c.visible).map(c => (rowContextOf(c.el) || {}).row || c.el.parentElement);
+        cands = cands.filter(c => c.visible || !visRows.some(r => r && r.contains(c.backing || c.el)));
       }
+      const vis = cands.filter(c => c.visible);
+      const where = sectionRaw ? ` in section "${sectionRaw}"` : '';
+      if (!vis.length) {
+        const act = pageActivity();
+        return { error: `field "${fieldRaw}" not found${where} — no visible dropdown/combobox/select carries that label, aria-label, placeholder, name, id, or titled section. Nothing was changed. Retry with one of the names in \`candidates\`.`, waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing — the control may not be rendered yet: fast_wait for text that identifies its view, then retry' } : {}), ...(cands.length ? { hiddenMatches: listCands(cands) } : {}), candidates: dropdownCandidates() };
+      }
+      const hiddenRows = (c) => cands.filter(o => !o.visible && o.el !== c.el && inOtherRow(c.el, [o.backing || o.el]));
+      let chosen = null;
+      if (idxGiven) {
+        if (pick.index >= vis.length) return { error: `Only ${vis.length} visible dropdown(s) match ${JSON.stringify(fieldRaw)}${where}, index ${pick.index} out of range — nothing was selected`, candidates: listCands(cands), hint: 'index counts the VISIBLE candidates in document order (see each candidate\'s index / row); a hidden one appears only after another step in its row' };
+        chosen = vis[pick.index];
+      } else if (vis.length > 1 || (!sectionRaw && hiddenRows(vis[0]).length)) {
+        const list = listCands(cands);
+        const hidden = list.filter(c => !c.visible && c.row != null).map(c => c.row);
+        return { error: `${vis.length} visible dropdown(s) match ${JSON.stringify(fieldRaw)}${where}${hidden.length ? ` and it also exists (hidden) in row(s) ${hidden.join(', ')}` : ''} — nothing was selected`, candidates: list, hint: `pass index:N (0..${vis.length - 1}, the VISIBLE candidates in document order — each candidate names its row/section) or section:"<heading>" to pick one${hidden.length ? '; a hidden row\'s dropdown appears only after another step in that row' : ''}` };
+      } else chosen = vis[0];
+      let field = chosen.el;
+      const backing = chosen.backing || null;
+      const pre = { backing, row: rowInfoOf(field) };   // before the pick: a re-render can detach the field
+      try { const r = field.getBoundingClientRect(); if (r.bottom < 0 || r.top > window.innerHeight) field.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
 
       if (field.tagName === 'SELECT') {
         const all = Array.from(field.options);
@@ -2592,7 +2949,7 @@ async function runPageAction(action, args) {
         // non-composed change does not cross the shadow boundary (GitHub #1).
         field.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         timing.pickMs = Math.round(nowMs() - tp);
-        return withReadback({ picked: target.text, kind: 'native-select' }, field, null, timing);
+        return withReadback({ picked: target.text, kind: 'native-select' }, field, null, timing, pre);
       }
 
       // react-select detection must be CLASS-PREFIX-AGNOSTIC. The classNamePrefix
@@ -2625,11 +2982,7 @@ async function runPageAction(action, args) {
         // react-select opens on the control's MOUSEDOWN (onControlMouseDown), not
         // on click — a bare .click() only ever worked when the typed filter text
         // opened the menu, which a non-searchable (dummy-input) select never does.
-        if (!menuOpen) {
-          ctrl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true, button: 0 }));
-          ctrl.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true, button: 0 }));
-          ctrl.click();
-        }
+        if (!menuOpen) pointerSeq(ctrl);
         await wait(250);
         const input = rsInput || ctrl.querySelector('input[id^="react-select-"]') || (field.tagName === 'INPUT' ? field : null);
         if (input) {
@@ -2660,11 +3013,9 @@ async function runPageAction(action, args) {
           return { error: 'no matching option in react-select', tried: optionText, kind: 'react-select', field: describeField(field), instance: instId || undefined, available: opts.slice(0, 10).map(o => (o.textContent || '').trim()), timing };
         }
         const tp = nowMs();
-        target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
-        target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
-        target.click();
+        pointerSeq(target);
         timing.pickMs = Math.round(nowMs() - tp);
-        return withReadback({ picked: (target.textContent || '').trim(), kind: 'react-select', opened: menuOpen ? 'already' : 'mousedown' }, field, ctrl, timing);
+        return withReadback({ picked: (target.textContent || '').trim(), kind: 'react-select', opened: menuOpen ? 'already' : 'mousedown' }, field, ctrl, timing, pre);
       }
 
       // Generic ARIA listbox / menu (the ARIA contract only: role=combobox|button
@@ -2677,7 +3028,7 @@ async function runPageAction(action, args) {
       // each followed by a MutationObserver wait for the panel (no timer loop);
       // `opened` says which step worked, `opened:false` + `tried` when none did.
       const optTextLo = optionText.toLowerCase();
-      const OPTION_SEL = '[role="option"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],li[data-value],[data-option-value]';
+      const OPTION_SEL = '[role="option"],[role="treeitem"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],li[data-value],[data-option-value]';
       const visibleOnly = (els) => {
         const out = [];
         for (let i = 0; i < els.length && i < 400; i++) { let r; try { r = els[i].getBoundingClientRect(); } catch { continue; } if (visible(els[i], r)) out.push(els[i]); }
@@ -2693,16 +3044,21 @@ async function runPageAction(action, args) {
         }
         return null;
       };
-      // Expensive: document-wide overlay sweep (walk + indexing), then the index's options.
+      // Expensive: document-wide overlay sweep (walk + indexing), then the index's
+      // options. Never ANOTHER widget's options: an option inside a different
+      // combobox (Choices draws each widget's selected value as a role=listbox of
+      // role=option — Form.io's rows then offered Mary's "Female" to Ada's field).
+      const ownFirst = (els) => els.filter(o => field.contains(o)).concat(els.filter(o => !field.contains(o)));
+      const ownOption = (o) => { const c = o.closest && o.closest('[role="combobox"]'); return !c || c === field || c === trigger || c.contains(field) || field.contains(c); };
       const sweptOptionEls = () => {
         let swept = null; try { swept = collectOverlayEls(); } catch {}
         if (swept && swept.size) {
-          const els = visibleOnly([...swept].filter(el => el.matches && el.matches(OPTION_SEL)));
+          const els = ownFirst(visibleOnly([...swept].filter(el => el.matches && el.matches(OPTION_SEL) && ownOption(el))));
           if (els.length) return { els, via: 'overlay' };
         }
         const els = [];
-        for (const el of INDEX.options) if (el.isConnected) els.push(el);
-        return { els: visibleOnly(els), via: 'index' };
+        for (const el of INDEX.options) if (el.isConnected && ownOption(el)) els.push(el);
+        return { els: ownFirst(visibleOnly(els)), via: 'index' };
       };
       const optionEls = () => ariaOptionEls() || sweptOptionEls();
       // The element that opens the list: the field itself when it is the
@@ -2716,10 +3072,18 @@ async function runPageAction(action, args) {
           return !!(field.querySelector && field.querySelector('[aria-expanded="true"]'));
         } catch { return false; }
       };
-      // "Open" = visible options in a panel this field names / an overlay, or
-      // index options while the trigger claims aria-expanded — never bare index
+      // "Open" = visible options in a panel this field names, or swept options
+      // while the control says aria-expanded="true" when it declares that state at
+      // all (its own always-visible selected-value list is not its popup: Choices
+      // draws it as role=listbox/option), else overlay options — never bare index
       // options (another widget's).
-      const sweptOpen = () => { const f = sweptOptionEls(); return f.els.length && (f.via !== 'index' || expanded()) ? f : null; };
+      const declaresExpanded = () => { try { return trigger.hasAttribute('aria-expanded') || field.hasAttribute('aria-expanded'); } catch { return false; } };
+      const sweptOpen = () => {
+        const f = sweptOptionEls();
+        if (!f.els.length) return null;
+        if (declaresExpanded()) return expanded() ? f : null;
+        return f.via !== 'index' ? f : null;
+      };
       const panelOpen = () => ariaOptionEls() || sweptOpen();
       // Mutations only SCHEDULE a probe (one pending macrotask, ≥30ms out): a
       // probe inside the MutationObserver callback reads layout in the middle of
@@ -2748,12 +3112,6 @@ async function runPageAction(action, args) {
         try { mo = new MutationObserver(() => schedule(30)); mo.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded', 'aria-controls', 'aria-owns', 'hidden', 'style', 'class'] }); } catch {}
         schedule(0);
       });
-      const fire = (el, types) => {
-        for (const type of types) {
-          const Ev = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
-          el.dispatchEvent(new Ev(type, { bubbles: true, cancelable: true, composed: true, button: 0, ...(type.startsWith('pointer') ? { pointerId: 1, isPrimary: true, pointerType: 'mouse' } : {}) }));
-        }
-      };
       const key = (el, k) => { const o = keyInit(k); el.dispatchEvent(new KeyboardEvent('keydown', o)); el.dispatchEvent(new KeyboardEvent('keyup', o)); };
       const tOpen = nowMs();
       const tried = [];
@@ -2762,7 +3120,7 @@ async function runPageAction(action, args) {
       if (!panel) {
         tried.push('click'); opened = 'click';
         try { trigger.focus(); } catch {}
-        fire(trigger, ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']);
+        pointerSeq(trigger);
         panel = await waitForPanel(1500);
       }
       if (!panel) {
@@ -2807,9 +3165,9 @@ async function runPageAction(action, args) {
       }
       if (target) {
         const tp = nowMs();
-        target.click();
+        pointerSeq(target);   // Select2 commits on mouseup, Choices on mousedown — a bare click() on neither
         timing.pickMs = Math.round(nowMs() - tp);
-        return withReadback({ picked: (target.textContent || '').trim(), kind: 'aria-listbox', via, opened }, field, null, timing);
+        return withReadback({ picked: cleanLabel(target.textContent), kind: 'aria-listbox', via, opened }, field, null, timing, pre);
       }
       const available = found ? found.els.slice(0, 10).map(el => (el.textContent || '').trim()).filter(Boolean) : [];
       const base = { tried: optionText, field: describeField(field), opened, elapsedMs: Math.round(nowMs() - t0), timing, panelIds: ariaPanelIds(field), available };
@@ -2823,26 +3181,34 @@ async function runPageAction(action, args) {
     // key collision). Returns a per-field results map (like fast_fill_form).
     const selections = (args.selections && typeof args.selections === 'object' && !Array.isArray(args.selections))
       ? args.selections : null;
+    const topPick = { index: args.index, section: args.section ?? args.near };
     if (selections) {
       const combined = { ...selections };
       if (args.field != null && args.option != null && !(args.field in combined)) {
-        combined[args.field] = args.option;
+        combined[args.field] = { option: args.option, ...topPick };
       }
+      // `picked` counts only picks whose read-back VERIFIED; the wrapper's
+      // verified is the AND of its fields (h_repeat: a field with verified:false
+      // under a wrapper saying verified:true, picked:1 passed the report gate).
       const results = {};
       let picked = 0, failed = 0;
-      for (const [fieldKey, opt] of Object.entries(combined)) {
-        const r = await setOne(fieldKey, opt);
+      for (const [fieldKey, raw] of Object.entries(combined)) {
+        const spec = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : { option: raw };
+        const r = await setOne(fieldKey, spec.option ?? spec.value, { index: spec.index, section: spec.section ?? spec.near });
         results[fieldKey] = r;
-        if (r && !r.error) picked++; else failed++;
+        if (r && !r.error && r.verified === true) picked++; else failed++;
       }
-      const out = await withSnap({ verified: picked === Object.keys(combined).length && failed === 0, picked, failed, total: Object.keys(combined).length, results });
-      return calmIfVerified(out);
+      const total = Object.keys(combined).length;
+      const head = { verified: failed === 0 && picked === total, picked, failed, total };
+      if (failed) head.summary = `${picked}/${total} selected; not done: ${Object.keys(results).filter(k => !(results[k] && !results[k].error && results[k].verified === true)).join(', ')}`;
+      const out = await withSnap({ ...head, results });
+      return calmIfVerified(frontload(out, head));
     }
 
     // Single form: success wrapped with a fresh snapshot, misses returned plain.
     // A verified pick is settled by definition: the snapshot waits one short
     // quiet window, not the full SETTLE_MAX_MS (1s on a storming page).
-    const r = await setOne(args.field, args.option);
+    const r = await setOne(args.field, args.option, topPick);
     if (!r || r.error) return r;
     const ts = nowMs();
     const out = await withSnap(r, undefined, { settleMs: r.verified ? 150 : SETTLE_MAX_MS });
@@ -2930,12 +3296,24 @@ async function runPageAction(action, args) {
     // refuse the very links it listed under `available`.
     const TAG_AS_ROLE = { a: 'link' };
     const wantRole = args.role ? String(args.role).toLowerCase() : null;
+    // A script-only target's implicit role is "generic" (an <a> without href is one,
+    // per HTML-AAM); a label-proxied radio/checkbox also answers to "label".
     const roleOk = (m) => {
       if (!wantRole) return true;
       const explicit = (m.role || '').toLowerCase();
-      return explicit === wantRole || implicitRoleOf(m.tag, m.type) === wantRole
-        || m.tag === wantRole || (TAG_AS_ROLE[wantRole] && (explicit === TAG_AS_ROLE[wantRole] || implicitRoleOf(m.tag, m.type) === TAG_AS_ROLE[wantRole]));
+      const implicit = m.clickable ? 'generic' : implicitRoleOf(m.tag, m.type);
+      if (wantRole === 'label' && m.via === 'label') return true;
+      return explicit === wantRole || implicit === wantRole
+        || m.tag === wantRole || (TAG_AS_ROLE[wantRole] && (explicit === TAG_AS_ROLE[wantRole] || implicit === TAG_AS_ROLE[wantRole]));
     };
+    // The element's OWN role attribute: an explicit role:"combobox" means the
+    // [role=combobox] widget, not a native <select> whose IMPLICIT role is also
+    // combobox (select2.org: the call clicked the un-enhanced twin select).
+    const attrRole = (m) => { const e = elById(m.i); return !!e && (e.getAttribute('role') || '').toLowerCase() === wantRole; };
+    const pointerOk = (!wantRole || wantRole === 'generic') && !args.tag;
+    let pointerHit = null, pointerTried = false;
+    const NATIVE_CLICK = /^(A|BUTTON|INPUT|SELECT|TEXTAREA|LABEL|SUMMARY|OPTION|AREA)$/;
+    const OPTIONISH = '[role="option"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="treeitem"]';
     for (;;) {
       snap = await serializeSnapshot(false, { matchAll: true });
       // Filter by role/tag BEFORE ranking. Previously the wrong-TYPE top text match
@@ -2947,13 +3325,15 @@ async function runPageAction(action, args) {
       if (wantRole) pool = pool.filter(roleOk);
       if (args.tag) {
         const wantTag = String(args.tag).toLowerCase();
-        pool = pool.filter(m => m.tag === wantTag);
+        pool = pool.filter(m => m.tag === wantTag || (wantTag === 'label' && m.via === 'label'));
       }
       matches = matchItems(pool, args.text);
       // Prefer an ancestor control over a matched descendant / label-wrapped link
       // competing for the same text (radio named by its <label>; checkbox beside
       // "I agree to the <a>Policy</a>").
       matches = dropRedundantDescendantLinks(matches);
+      // An explicit role attribute beats an implicit match of the same role.
+      if (wantRole && matches.length > 1) { const own = matches.filter(attrRole); if (own.length) matches = own; }
       if (matches.length) break;
       // Not an index entry: an entry of the OPEN suggestion list (autocomplete
       // rows on Google Maps) — commit it with a real mousedown/click sequence.
@@ -2973,6 +3353,13 @@ async function runPageAction(action, args) {
         const head0 = { clicked, fromSuggestions: true, via: how.via, url: location.href, urlChanged: location.href !== urlBefore0, value: maskIfPassword(sOpt.input, String(liveValueOf(sOpt.input) || '').slice(0, 200)) };
         const still = openSuggestions(document.activeElement); if (still) Object.assign(head0, still);
         return frontload(out0, head0);
+      }
+      // Not an index entry either: a visible pointer-cursor element that carries
+      // exactly this text is a (weak) click target — never "nothing to click".
+      if (pointerOk && (!pointerTried || nowMs() - t0 >= AUTO_WAIT_MS)) {
+        pointerTried = true;
+        pointerHit = pointerTargetByText(args.text);
+        if (pointerHit) break;
       }
       if (nowMs() - t0 >= AUTO_WAIT_MS) {
         const act = pageActivity();
@@ -3007,15 +3394,51 @@ async function runPageAction(action, args) {
     // different element across calls. Default (no index) still takes the best-
     // RANKED match. role/tag narrowing already applied to the pool above.
     const idxGiven = typeof args.index === 'number';
-    const ordered = idxGiven ? matches.slice().sort(docOrderCmp) : matches;
-    const idx = idxGiven ? args.index : 0;
-    if (idx >= ordered.length) {
-      const off = ordered.filter(m => m.offscreen).length;
-      return { error: `Only ${ordered.length} matches for "${args.text}" (${ordered.length - off} visible, ${off} offscreen), index ${idx} out of range`, matches: ordered.map(matchBrief) };
+    let ordered, idx, item, el;
+    if (pointerHit) {
+      el = pointerHit;
+      let pr = null; try { pr = el.getBoundingClientRect(); } catch {}
+      const po = offsetFor(el);
+      item = { tag: el.tagName.toLowerCase(), text: cleanLabel(args.text).slice(0, 120), clickable: 'script', via: 'pointer-cursor',
+        ...(pr ? { x: Math.round(pr.x + po.ox), y: Math.round(pr.y + po.oy), w: Math.round(pr.width), h: Math.round(pr.height) } : {}) };
+      ordered = [item]; idx = 0;
+    } else {
+      ordered = idxGiven ? matches.slice().sort(docOrderCmp) : matches;
+      idx = idxGiven ? args.index : 0;
+      if (idx >= ordered.length) {
+        const off = ordered.filter(m => m.offscreen).length;
+        return { error: `Only ${ordered.length} matches for "${args.text}" (${ordered.length - off} visible, ${off} offscreen), index ${idx} out of range`, matches: ordered.map(matchBrief) };
+      }
+      // AMBIGUOUS DROPDOWNS: the best match is a select-like control (its trigger,
+      // not an option in an open list) and another distinct one also matches — a
+      // native <select> and the widget that shadows it, or one per row. Refuse and
+      // list them rather than open/pick in whichever ranked first.
+      const trig = (m) => { const e = elById(m.i); if (!e || (e.closest && e.closest(OPTIONISH))) return null; return selectControlOf(e); };
+      if (!idxGiven && !wantRole && trig(matches[0])) {
+        const byDoc = matches.slice().sort(docOrderCmp);
+        const ctrls = [];
+        byDoc.forEach((m, k) => { const c = trig(m); if (c && !ctrls.some(x => x.c === c)) ctrls.push({ c, k }); });
+        if (ctrls.length > 1) {
+          return {
+            error: `${ctrls.length} dropdowns match ${JSON.stringify(args.text)} — nothing was clicked`,
+            candidates: ctrls.slice(0, 12).map(({ c, k }) => {
+              const f = describeField(c);
+              const o = { index: k, tag: f.tag };
+              if (f.role) o.role = f.role;
+              o.label = f.label || f.ariaLabel || f.placeholder || f.name || null;
+              if (f.section) o.section = f.section;
+              o.value = shownValueOf(c);
+              const ri = rowInfoOf(c); if (ri) Object.assign(o, ri);
+              return o;
+            }),
+            hint: 'pass index:N (see candidates) or role:"<its role>" to click one; to choose a value use fast_select_option {field, option, index}',
+          };
+        }
+      }
+      item = ordered[idx];
+      el = elAt(item);
+      if (!el) return { error: 'Element not at expected coords' };
     }
-    const item = ordered[idx];
-    const el = elAt(item);
-    if (!el) return { error: 'Element not at expected coords' };
     const scrolledIntoView = revealIfOffscreen(item, el);
     const sel = selectHintFor(el);
     // willNavigate is a best-effort HINT (the batch re-bind keys off ACTUAL
@@ -3039,12 +3462,25 @@ async function runPageAction(action, args) {
     const willNavigate = linkNav || formSubmitNav;
     const urlBefore = location.href;
     const dialogsBefore = countDialogs();
+    const checkedBefore = checkedOf(el);
     flashEl(el, 'click');
-    el.click();
+    // Native controls keep el.click() (their activation behaviour: a label-proxied
+    // radio's input is checked by it); a script-only target or a custom widget gets
+    // the full pointer sequence a person's click produces.
+    if (item.clickable || !NATIVE_CLICK.test(el.tagName)) pointerSeq(el); else el.click();
     const out = await withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
     // What the click DID leads the result: where the page is now, whether the URL
     // moved, whether a dialog opened/closed, and what holds focus.
     const head = { clicked: item, url: location.href, urlChanged: location.href !== urlBefore };
+    // A check-type control reports its state AFTER the click: a radio is verified
+    // when it is now selected, a checkbox when the click toggled it.
+    const checkedNow = checkedOf(el);
+    if (checkedNow !== null) {
+      const isRadio = (el.type || '').toLowerCase() === 'radio' || /radio/.test((el.getAttribute('role') || '').toLowerCase());
+      head.checked = checkedNow;
+      head.verified = isRadio ? checkedNow === true : checkedNow !== checkedBefore;
+      if (!head.verified) head.reason = isRadio ? 'the radio is still not selected after the click — the page ignored it; do not report it as chosen' : `the checkbox is still ${checkedNow ? 'checked' : 'unchecked'} — the click did not toggle it; do not report it as changed`;
+    }
     if (sel) { head.hint = sel.hint; head.selectField = sel.selectField; }
     if (scrolledIntoView) head.scrolledIntoView = true;
     const dNow = countDialogs();
@@ -3191,12 +3627,13 @@ async function runPageAction(action, args) {
           if (scoped.error) { misses.set(sp, scoped); continue; }
           pool = scoped.pool.filter(it => !usedI.has(it.i));   // REPLACES the pool — never a page-wide fallback
         }
-        let ranked;
+        let ranked, exactHit = true;
         if (sp.exactName != null) ranked = pool.filter(it => it.name && it.name.toLowerCase() === sp.exactName);
         else {
           // Exact label/name beats a substring ("URIs 1" must not grab "URIs 10").
           const exact = pool.filter(it => fieldMatchesExact(it, sp.m));
-          ranked = exact.length ? exact : pool.filter(it => fieldMatchesText(it, sp.m));
+          exactHit = exact.length > 0;
+          ranked = exactHit ? exact : pool.filter(it => fieldMatchesText(it, sp.m));
         }
         if (!ranked.length) {
           misses.set(sp, sp.section
@@ -3206,26 +3643,52 @@ async function runPageAction(action, args) {
         }
         const ordered = ranked.slice().sort(docOrderCmp);
         const idxGiven = typeof sp.index === 'number' && sp.index >= 0;
-        // AMBIGUOUS: several fields carry this name and nothing (section/index)
-        // picks one — refuse and list them. Writing the first would be a silent
-        // wrong-field write (GCP: two "URIs 1" rows under two headings).
-        if (ordered.length > 1 && !idxGiven && !sp.section) {
+        const visEls = ordered.map(it => elById(it.i));
+        // Hidden copies of the same label (another row's field, shown only after a
+        // step in THAT row). Without an index they can only make the call refuse.
+        const visRows = visEls.map(e => (rowContextOf(e) || {}).row).filter(Boolean);
+        const hidden = sp.exactName != null ? [] : hiddenCopiesOf(sp.m, exactHit, visEls).filter(h => !visRows.some(r => r.contains(h)));
+        const hiddenRowsOf = (el) => hidden.filter(h => inOtherRow(el, [h]));
+        // AMBIGUOUS: several fields carry this name and no index picks one (a
+        // section that still holds several does not either) — refuse and list them.
+        // Writing the first would be a silent wrong-field write (GCP: two "URIs 1"
+        // rows under two headings; Form.io: every grid row's "Birthdate"). So is a
+        // single visible match whose label ALSO exists, hidden, in another row of
+        // the same repeated row group (h_repeat wrote Joe's seeded row).
+        const hiddenInRows = !idxGiven && !sp.section && ordered.length === 1 && visEls[0] ? hiddenRowsOf(visEls[0]) : [];
+        if (!idxGiven && (ordered.length > 1 || hiddenInRows.length)) {
           const paths = ordered.map(it => sectionPathOf(elById(it.i)));
           const secs = distinguishingSections(paths);
           const candidates = ordered.map((it, i) => {
             const el = elById(it.i); const v = el ? liveValueOf(el) : it.value;
-            const c = { label: it.label || it.ariaLabel || it.placeholder || it.name || it.text || null, section: secs[i], value: v == null ? '' : String(v).slice(0, 120), empty: !String(v ?? '').trim(), index: i };
+            const c = { label: it.label || it.ariaLabel || it.placeholder || it.name || it.text || null, section: secs[i], value: v == null ? '' : String(v).slice(0, 120), empty: !String(v ?? '').trim(), index: i, visible: true };
+            if (it.name && it.name !== c.label) c.name = it.name;
             if (it.offscreen) c.offscreen = true;
+            const ri = rowInfoOf(el); if (ri) Object.assign(c, ri);
             return c;
           });
-          const secList = [...new Set(secs.filter(Boolean))].map(s => JSON.stringify(s)).join(' | ');
-          misses.set(sp, { error: `${ordered.length} visible fields match ${JSON.stringify(sp.match)} — nothing was filled`, candidates, hint: `pass section:${secList || '"<heading above the field>"'} or index:N (0..${ordered.length - 1}, document order) to pick one` });
+          for (const h of (ordered.length > 1 ? hidden : hiddenInRows).slice(0, 8)) {
+            const c = { label: labelFor(h) || h.getAttribute('aria-label') || h.getAttribute('placeholder') || h.getAttribute('name') || null, section: headingAbove(h), value: String(liveValueOf(h) ?? '').slice(0, 120), visible: false };
+            const ri = rowInfoOf(h); if (ri) Object.assign(c, ri);
+            candidates.push(c);
+          }
+          const hiddenRowNums = candidates.filter(c => !c.visible && c.row != null).map(c => c.row);
+          const distinct = [...new Set(secs.filter(Boolean))];
+          const secList = distinct.length > 1 ? distinct.map(s => JSON.stringify(s)).join(' | ') : '';
+          misses.set(sp, {
+            error: `${ordered.length} visible field(s) match ${JSON.stringify(sp.match)}${sp.section ? ` in section "${sp.section}"` : ''}${hiddenRowNums.length ? ` and it also exists (hidden) in row(s) ${hiddenRowNums.join(', ')}` : ''} — nothing was filled`,
+            candidates,
+            hint: `pass ${sp.section || !secList ? '' : `section:${secList} or `}index:N (0..${ordered.length - 1}, the VISIBLE candidates in document order — each names its row/section) to pick one${hiddenRowNums.length ? '; a hidden row\'s field appears only after another step in that row (a toggle or choice there)' : ''}`,
+          });
           continue;
         }
         const idx = idxGiven ? sp.index : 0;
         if (idx >= ordered.length) {
           const off = ordered.filter(it => it.offscreen).length;
-          misses.set(sp, { error: `Only ${ordered.length} fillable match(es) for "${sp.match}" (${ordered.length - off} visible, ${off} offscreen), index ${idx} out of range`, matches: ordered.map(matchBrief) });
+          const withRow = (el, o) => { const ri = rowInfoOf(el); return ri ? { ...o, ...ri } : o; };
+          const hid = hiddenCopiesOf(sp.m, exactHit, visEls);
+          misses.set(sp, { error: `Only ${ordered.length} fillable match(es) for "${sp.match}" (${ordered.length - off} visible, ${off} offscreen), index ${idx} out of range`, matches: ordered.map(it => withRow(elById(it.i), matchBrief(it))),
+            ...(hid.length ? { hiddenMatches: hid.slice(0, 8).map(h => withRow(h, { tag: h.tagName.toLowerCase(), label: labelFor(h) || null, visible: false })), hint: 'index counts the VISIBLE matches in document order (see each one\'s row); a hidden copy appears only after another step in its row' } : {}) });
           continue;
         }
         found.set(sp, ordered[idx]);
@@ -3316,9 +3779,11 @@ async function runPageAction(action, args) {
     for (const [sp, it] of res.found) {
       const el = elAt(it);
       revealIfOffscreen(it, el);
+      const ri = rowInfoOf(el);   // read BEFORE the write: a re-render can detach the written node
       const r = fillItem(it, sp.value, sp.append);
       if (r.error) { res.misses.set(sp, r); continue; }
       if (it.ariaLabel && !r.filled.label) r.filled.ariaLabel = it.ariaLabel;
+      if (ri) r.filled.row = ri;   // a write into a repeated row names the row it landed in
       const sel = (el && el.matches && el.matches(RS_INPUT_SEL)) ? selectHintFor(el) : null;
       if (sel) { r.hint = sel.hint; r.selectField = sel.selectField; }
       // Autocomplete: capture ITS list before the next field's write moves focus
@@ -3330,6 +3795,12 @@ async function runPageAction(action, args) {
     // Verified state: each field's LIVE value after the page settled, compared
     // with what was written (native select: the selected option's text/value).
     const verifyOne = (sp, el, r) => {
+      if (r.kind === 'checkbox' || r.kind === 'radio') {
+        const on = !!el.checked;
+        const head = { verified: on === r.valueSet, value: on ? 'checked' : 'unchecked', checked: on };
+        if (!head.verified) head.reason = `the ${r.kind} is ${head.value} after the click — the page reverted or ignored it; do not report it as ${r.valueSet ? 'ticked' : 'cleared'}`;
+        return head;
+      }
       const live = liveValueOf(el);
       const expected = r.kind === 'native-select' ? String(r.valueSet) : String(sp.value);
       const holds = live == null ? false

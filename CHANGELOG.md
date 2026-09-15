@@ -33,6 +33,112 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — holdout gaps 1-4, 6: live proof (hvm rig, fixed build loaded unpacked, tools called in-process via bench/fastlink.js)
+Non-holdout sites marked (N). Every row is a before/after page read through fast_evaluate.
+| gap | site | call → result |
+|---|---|---|
+| 1 | GOV.UK conditional radios | snapshot lists `input radio "Text message" via:label checked:false`; fast_click "Text message" → checked:true verified; panel revealed; fast_fill Mobile phone number verified; fast_text on that input → "07700 900982" (9179f44 through the extension) |
+| 1 | (N) getbootstrap.com btn-check | fast_click "Single toggle" (clipped checkbox) → checked:true verified; page reads checked |
+| 1 | (N) mui.com Checkbox | fast_click "Required" role:checkbox (opacity-0 input) → checked:true; page reads checked |
+| 1 | (N) SurveyJS dynamic matrix | its visually-hidden radios listed `via:label`; fast_fill "Yes" true index:1 → exactly that radio checked |
+| 2 | jQuery UI inline datepicker | snapshot lists Prev/Next `clickable:"script"`; fast_click "Next" role:generic ×2 → Sept → November 2026 |
+| 2 | (N) bootstrap-datepicker (inline) | `th "»"` (cursor:pointer) listed; fast_click "»" → September → October 2026 |
+| 3 | select2.org | fast_click "Alaska" → refused, 2 dropdowns listed; fast_select_option "Single select boxes¶" → refused, candidates; index:1 → Select2 set, verified on the widget (code OR / shown Oregon / twin still AK); fast_click "Oregon" role:combobox → the [role=combobox] widget |
+| 3 | (N) tom-select.js.org | fast_select_option field = the hidden select's id → its widget set, verified on shown value, backingValue "Nikola Tesla" (select value 3) |
+| 3/4 | (N) choices-js.github.io | "Default" (two widgets) → refused with sections; section:"Single select input" → that widget set (value + shown "Choice 2") |
+| 4/6 | Form.io data grid | Gender no index → refused, rows Joe/Mary/Ada; index:2 → row 2 set (`row` named), other rows unchanged; index:1 Other → Mary only |
+| 4/6 | (N) SurveyJS dynamic panel | 3× "Select a country" → refused; index:1 → only panel 2 = France |
+| 5 | Form.io | batch with a missed section + an ambiguous selections pick → "1/3 steps ok; step 0 … not verified … step 1 … not verified", selections wrapper verified:false |
+| 6 | Form.io | fast_fill "First Name" → refused (rows 0-2, rowFirst Joe/Mary/empty); fields index:2 → `filled.row` {row:2, rowFirst:"Ada"}; "Dependant" true index:2 → checkbox checked (was: value "true" written, nothing ticked); "Birthdate" no index → refused (Joe's + Ada's) |
+| 6 | (N) SurveyJS dynamic matrix | fast_fill "Yes" → refused (11 visible, each with row + name); index:2 → `filled.row` {row:3} |
+Not fixed: Choices' grouped single select ("Option groups", index:1) opens but its grouped choices are not found — honest "no matching option", nothing changed.
+
+## 2026-09-15 — holdout gap 6: repeated rows — a row-ambiguous write is refused with each row named; a landed write names its row
+- **What:** page.js row groups: `rowContextOf(el)` = the nearest ancestor whose same-shaped siblings
+  (tag + class tokens; state/numbered tokens ignored) hold a field sharing a label/aria-label/name
+  with it (a form's field groups never qualify — each holds a DIFFERENT label; a shared placeholder
+  does not count). `rowInfoOf` → `{row, rows, rowFirst}` (rowFirst = the row's first non-empty field
+  value, else its visible text). fast_fill: a label matching 2+ visible fields is refused even when
+  `section` still holds several (it used to write the first in the section); ONE visible match whose
+  label also exists HIDDEN in another row of the same group (`hiddenCopiesOf`) is refused too;
+  candidates carry row info + `visible`; the index-out-of-range miss lists row info and
+  `hiddenMatches`; a write into a row names it (`filled.row`); the section hint is offered only when
+  it tells candidates apart. fast_select_option uses the same rule (below). Checkbox/radio fill:
+  value true/false is a STATE set by a click and read back as `checked` (writing "true" into
+  `.value` ticked nothing while the result read back "true").
+- **Why:** holdout h_repeat (ce062850): `fast_fill {match:"Birthdate"}` with no index wrote Joe's
+  seeded row (1982-05-18 → 2015-12-10); `fast_select_option {field:"Gender"}` opened Joe's widget;
+  `fast_fill {match:"Dependant", value:"true", index:2}` "verified" a value, ticked nothing.
+- **Files:** `fast-ext/src/actions/page.js`, both `tools.js`, `fast-runner/test/fill-ambiguity.test.mjs`.
+- **Watch out:** `index` still counts VISIBLE matches in document order (not rows) — every listing
+  names each candidate's row. A hidden copy inside a row that already has a visible match is that
+  row's widget internals, never a second copy. Two same-shaped blocks sharing a LABEL (billing /
+  shipping "Address") are rows by this rule — correct: that label is ambiguous.
+- **Status:** committed; live proof in the entry above.
+
+## 2026-09-15 — holdout gaps 3+4: ambiguous dropdowns refused; fast_select_option gets index + section; a hidden backing select IS its widget
+- **What:** fast_select_option resolves EVERY candidate (`findFields`: name/id → first name tier
+  with a visible match, exact name beating substring → titled section incl. hidden controls) into
+  one entry per control (`toControls`: a wrapper and its inner control are one; a hidden native
+  <select> with ONE visible enhancing widget next to/around it — `widgetFor` — becomes that widget,
+  `backing` kept). New `index` (N-th VISIBLE candidate, document order) and `section` args (same
+  outline resolver as fast_fill; no page-wide fallback); `selections` values may be
+  {option, index, section}. 2+ visible candidates → error `N visible dropdown(s) match …` with
+  `candidates` {index, tag, role, label, section, visible, value (shown), backing, row…}. Read-back
+  = the VISIBLE control's shown value (`shownValueOf`: selected option / input value / widget's
+  visible text minus buttons, hidden option lists and nested popups; `showsValue` whole-word match,
+  "Female" never passes for "Male"), `backingValue` reports the hidden select. Generic ARIA path:
+  a control saying aria-expanded="false" is closed whatever option rows are visible; options inside
+  ANOTHER combobox are never offered (Choices draws each widget's value as role=listbox/option);
+  trigger and option get the full pointer sequence (Select2 commits on mouseup, Choices on
+  mousedown). fast_click: an explicit `role` prefers elements whose OWN role attribute matches; when
+  the best match is a dropdown trigger and another distinct dropdown also matches, nothing is
+  clicked — `candidates` {index, tag, role, label, section, value, row}. Section names drop a
+  trailing permalink glyph (¶ § 🔗 ⚓, spaced/zero-width "#") everywhere they are read or listed.
+  Custom [role=combobox] snapshot entries are live (text = shown value, not a stale/option-list
+  textContent). `fieldVisible`: a widget's invisible typing input (react-select dummy, Tom Select)
+  is visible when its widget box is (no more react-select class sniffing).
+- **Why:** holdout h_combobox (245d4c2b): `fast_click {text:"Alaska", role:"combobox"}` clicked
+  select2.org's plain native twin (implicit combobox), then `fast_select_option {field:"Single select
+  boxes¶"}` set the twin `verified:true` while the Select2 widget still showed Alaska. h_repeat:
+  `fast_select_option` had no index, and its option sweep offered Mary's selected "Female" item.
+- **Files:** `fast-ext/src/actions/page.js`, both `tools.js`.
+- **Watch out:** a label that used to resolve to its first match now errors when it matches 2+
+  visible dropdowns — pass index/section. `usableField` and the old single-answer `findField` are
+  gone (replaced).
+- **Status:** committed; live proof in the entry above.
+
+## 2026-09-15 — holdout gap 2: script-driven click targets (no-href <a>, cursor:pointer text) are clickable, ranked below real controls
+- **What:** `a:not([href])` joins SELECTOR as a WEAK entry (no role/onclick/tab stop) and a
+  text-bearing content element with computed `cursor:pointer` (not inside a control, not a label's
+  text) is also listed — both as `clickable:"script"`, implicit role "generic", matchScore ×0.01 (always
+  below any real control/link, still a candidate), rank −10. fast_click's last resort before "No
+  element matching": `pointerTargetByText` — a visible pointer-cursor element whose own text /
+  aria-label / title / alt IS the text. Script targets and custom (non-native) elements get the full
+  pointer sequence (`pointerSeq`: pointerover/mouseover → pointerdown/mousedown → pointerup/mouseup
+  → click, at the element centre, stopping if a handler detached it); native controls keep
+  el.click(). `pointerSeq` replaces the three ad-hoc event loops (react-select open/pick, ARIA open,
+  suggestion fallback).
+- **Why:** holdout h_datepicker: jQuery UI's Prev/Next are `<a>` with no href — not in any
+  snapshot, and `fast_click {text:"Next", role:"generic"}` ×3 → "non-interactive match" → run stopped.
+- **Files:** `fast-ext/src/actions/page.js`, both `tools.js`.
+- **Watch out:** snapshots list more items on pages that put cursor:pointer on text (ranked last).
+- **Status:** committed; live proof in the entry above.
+
+## 2026-09-15 — holdout gap 1: a radio/checkbox drawn by its <label> is a visible control
+- **What:** serializeSnapshot: a native radio/checkbox that fails `visible()` (opacity 0, clipped,
+  1px, display:none) but has a visible `<label>` (for= or wrapping; `el.labels`) is listed AS the
+  control — geometry = the label box(es) plus the input's own box when it sits by the label,
+  `via:"label"`. Every radio/checkbox item carries `checked` (+ its role); its `text` is its label,
+  never the value attribute ("on"). ARIA radio/checkbox/switch carry `checked` from aria-checked.
+  fast_click: role/tag "label" also matches a label-proxied control; a check-type target's result
+  carries `checked` + `verified` (radio: selected now; checkbox: toggled) + `reason`.
+- **Why:** holdout h_conditional: GOV.UK radios are opacity-0 inputs under visible labels —
+  `fast_snapshot` listed 0 controls and seven fast_click variants on "Text message" missed.
+- **Files:** `fast-ext/src/actions/page.js`, both `tools.js`.
+- **Watch out:** the label's own text is not listed separately (it is the control's name).
+- **Status:** committed; live proof in the entry above.
+
 ## 2026-09-15 — holdout gap 5: wrapper honesty — a batch step is ok only when its own result is clean; the gate sees child failures
 - **What:** `fast-dxt/server/batch.js` (mirror `fastlink-relay/src/batch.js`, identical): new exported
   `notVerified(result)` — a successful call whose result says `verified:false`, or has `missed>0` /
