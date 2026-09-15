@@ -3,9 +3,16 @@
   "private": true,
   "type": "module",
   "description": "Grok (grok-4.6) drives the browser end to end through FastLink's MCP tools; a caller (Claude) dispatches tasks and answers questions.",
-  "bin": { "fastrun": "./cli.mjs" },
-  "scripts": { "test": "node --test test/*.test.mjs" },
+  "bin": {
+    "fastrun": "./cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1"
   }
 }

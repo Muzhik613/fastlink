@@ -1856,33 +1856,89 @@ async function runPageAction(action, args) {
   // field groups never qualify (each holds a DIFFERENT label). null when not in rows.
   const ROW_STATE_TOKEN = /^(?:is-|has-)|hidden|none|active|selected|open|show|collapse|visible|invisible|disabled|error|invalid|valid|focus|hover|even|odd|first|last/i;
   const rowSig = (el) => el.tagName + '|' + Array.from(el.classList || []).filter(c => !ROW_STATE_TOKEN.test(c)).map(c => c.replace(/\d+/g, '#')).sort().join(' ');
+  // BOUNDED + MEMOIZED, per page action. A row scan must cost more only as a ROW
+  // grows, never as the PAGE does. Before these bounds rowContextOf re-walked
+  // ancestor subtrees that grew toward the whole document, and resolved every
+  // field's label with two document-wide querySelector('label[for=…]') calls, so
+  // its cost was O(fields × document) and it ran 3-6× per element per action —
+  // on a console SPA that alone blew fast_select_option's 20s deadline (2026-09-15).
+  const ROW_SCAN_NODES = 1500;   // nodes visited inside one candidate row before it is "not a row"
+  const ROW_MAX_SIBS   = 200;    // children examined while looking for same-shaped siblings
+  const ROW_FIELD_CAP  = 60;     // fields read per candidate row
+  const ROW_KEY_CAP    = 40;     // distinct labels compared per row
+  const rowCtxCache = new WeakMap();
+  // ONE label[for] map per invocation, shared by every fieldKey.
+  let rowForMap = null;
+  const rowForLookup = (el) => {
+    if (!rowForMap) {
+      rowForMap = new Map();
+      try { for (const l of document.querySelectorAll('label[for]')) if (!rowForMap.has(l.htmlFor)) rowForMap.set(l.htmlFor, cleanLabel(l.textContent)); } catch {}
+    }
+    return el.id && rowForMap.has(el.id) ? rowForMap.get(el.id) : null;
+  };
   const fieldKey = (el) => {
     try {
-      const l = cleanLabel(labelFor(el) || el.getAttribute('aria-label') || '').toLowerCase();
+      const l = cleanLabel(labelFor(el, rowForLookup) || el.getAttribute('aria-label') || '').toLowerCase();
       return l || String(el.getAttribute('name') || '').replace(/\d+/g, '#').toLowerCase();
     } catch { return ''; }
   };
-  const fieldKeys = (root, cap = 40) => {
+  // Fillable fields inside `root`, document order, DFS under a hard node budget.
+  // null = this subtree is already too big to be one row.
+  const fieldsWithin = (root, cap = ROW_FIELD_CAP) => {
+    const out = [];
+    let seen = 0;
+    const stack = [root];
+    while (stack.length) {
+      const n = stack.pop();
+      if (n !== root) {
+        if (++seen > ROW_SCAN_NODES) return null;
+        try { if (n.matches(FILLABLE_SEL)) { out.push(n); if (out.length >= cap) return out; } } catch {}
+      }
+      const kids = n.children;
+      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+    }
+    return out;
+  };
+  const fieldKeys = (root) => {
+    const fields = fieldsWithin(root);
+    if (!fields) return null;
     const keys = new Set();
-    try { for (const f of root.querySelectorAll(FILLABLE_SEL)) { const k = fieldKey(f); if (k) keys.add(k); if (keys.size >= cap) break; } } catch {}
+    for (const f of fields) { const k = fieldKey(f); if (k) keys.add(k); if (keys.size >= ROW_KEY_CAP) break; }
     return keys;
   };
-  const rowContextOf = (el) => {
-    if (!el) return null;
+  const computeRowContext = (el) => {
     let a = el;
     for (let hops = 0; a && a.parentElement && hops < 16; hops++, a = a.parentElement) {
       const p = a.parentElement;
       if (p === document.body || p === document.documentElement) break;
       const sig = rowSig(a);
       const rows = [];
-      for (const c of p.children) { if (c === a || rowSig(c) === sig) rows.push(c); if (rows.length > 80) break; }
+      let scanned = 0;
+      for (const c of p.children) {
+        if (++scanned > ROW_MAX_SIBS) break;
+        if (c === a || rowSig(c) === sig) rows.push(c);
+        if (rows.length > 80) break;
+      }
       if (rows.length < 2) continue;
       const keys = fieldKeys(a);
+      if (keys === null) break;   // already bigger than any row — so is every higher hop
       if (!keys.size) continue;
-      const shares = (r) => { try { let n = 0; for (const f of r.querySelectorAll(FILLABLE_SEL)) { if (keys.has(fieldKey(f))) return true; if (++n >= 40) break; } } catch {} return false; };
+      const shares = (r) => {
+        const fields = fieldsWithin(r);
+        if (!fields) return false;
+        for (const f of fields) if (keys.has(fieldKey(f))) return true;
+        return false;
+      };
       if (rows.slice(0, 20).some(r => r !== a && shares(r))) return { row: a, rows, index: rows.indexOf(a) };
     }
     return null;
+  };
+  const rowContextOf = (el) => {
+    if (!el) return null;
+    if (rowCtxCache.has(el)) return rowCtxCache.get(el);
+    const ctx = computeRowContext(el);
+    rowCtxCache.set(el, ctx);
+    return ctx;
   };
   // What tells a row apart for a person: its first non-empty field value (first
   // name, an id), else the start of its text.
@@ -2911,6 +2967,11 @@ async function runPageAction(action, args) {
       while (!secErr && !cands.some(c => c.visible) && nowMs() - t0 < AUTO_WAIT_MS) { await wait(150); resolve(); }
       timing.resolveMs = Math.round(nowMs() - t0);
       if (secErr) return secErr;
+      // Row/ambiguity resolution is its OWN timed phase: when this went super-linear
+      // (9d18d4d) the call died on the 20s deadline with every reported phase cheap,
+      // so nothing pointed at it.
+      const tRows = nowMs();
+      const rowsDone = () => { timing.rowsMs = Math.round(nowMs() - tRows); return timing; };
       // a hidden candidate in a row (or widget) that already has a VISIBLE one is that
       // row's widget internals (Choices' search input), not another copy of the field
       {
@@ -2921,7 +2982,7 @@ async function runPageAction(action, args) {
       const where = sectionRaw ? ` in section "${sectionRaw}"` : '';
       if (!vis.length) {
         const act = pageActivity();
-        return { error: `field "${fieldRaw}" not found${where} — no visible dropdown/combobox/select carries that label, aria-label, placeholder, name, id, or titled section. Nothing was changed. Retry with one of the names in \`candidates\`.`, waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing — the control may not be rendered yet: fast_wait for text that identifies its view, then retry' } : {}), ...(cands.length ? { hiddenMatches: listCands(cands) } : {}), candidates: dropdownCandidates() };
+        return { error: `field "${fieldRaw}" not found${where} — no visible dropdown/combobox/select carries that label, aria-label, placeholder, name, id, or titled section. Nothing was changed. Retry with one of the names in \`candidates\`.`, waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing — the control may not be rendered yet: fast_wait for text that identifies its view, then retry' } : {}), ...(cands.length ? { hiddenMatches: listCands(cands) } : {}), candidates: dropdownCandidates(), timing: rowsDone() };
       }
       const hiddenRows = (c) => cands.filter(o => !o.visible && o.el !== c.el && inOtherRow(c.el, [o.backing || o.el]));
       let chosen = null;
@@ -2936,6 +2997,7 @@ async function runPageAction(action, args) {
       let field = chosen.el;
       const backing = chosen.backing || null;
       const pre = { backing, row: rowInfoOf(field) };   // before the pick: a re-render can detach the field
+      rowsDone();
       try { const r = field.getBoundingClientRect(); if (r.bottom < 0 || r.top > window.innerHeight) field.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
 
       if (field.tagName === 'SELECT') {

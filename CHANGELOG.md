@@ -33,6 +33,39 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast_select_option regression: the repeated-row scan was O(fields × document); bounded, memoized, and now guarded by a perf test
+- **What:** `rowContextOf` (page.js) is bounded and memoized. (a) ONE `label[for]` map per
+  invocation feeds every `fieldKey` via `labelFor(el, rowForLookup)`; (b) `rowContextOf` answers
+  from a per-action `WeakMap`; (c) the subtree scans are a DFS under a hard node budget
+  (`fieldsWithin`, `ROW_SCAN_NODES` 1500) — a subtree too big to be one row aborts the climb
+  (`keys === null` → `break`), and the sibling scan is capped (`ROW_MAX_SIBS` 200). Row/ambiguity
+  resolution is now its own reported phase, `timing.rowsMs`.
+- **Why:** on build 12b368c `fast_select_option {field:"Application type"}` on GCP's OAuth form
+  burned the whole 20s runBridge deadline (`{"error":"page busy"}`) on a page whose `fast_snapshot`
+  took 116ms; it was 5.4s and verified on 976771f. Bisect on a synthetic console-SPA repro (wall /
+  document-wide querySelector calls): a550ef0 2740ms/404 → 3b5063e 2744ms/412 → **9d18d4d
+  8490ms/3104** → 8837e49 8353ms/3104 → 12b368c 8471ms/3092. 9d18d4d's row detection climbed 16
+  ancestors, ran `querySelectorAll(FILLABLE_SEL)` over ancestor subtrees that grow toward the whole
+  document, and resolved every field's label through `labelFor()` with no precomputed map — two
+  document-wide `querySelector('label[for=…]')` per field — uncached, 3-6× per element per call
+  (visRows, hiddenRows/inOtherRow, pre/rowInfoOf, rowInfoOf per listed candidate). A page with NO
+  repeated rows (GCP) never returns early, so it always paid the worst case. CPU profile:
+  `querySelector` self-time 25% → 89.6%.
+- **Files:** `fast-ext/src/actions/page.js`, `fast-runner/test/select-perf.test.mjs`,
+  `fast-runner/package.json` (jsdom devDependency).
+- **Watch out:** a repeated row larger than `ROW_SCAN_NODES` (1500 nodes) is no longer detected as a
+  row — that is deliberate (a row is a small local structure), but a page with genuinely huge rows
+  would lose the row naming, not the write. The row scan is memoized for the whole page action:
+  row STRUCTURE is cached, row VALUES (`rowFirst`) are still re-read, so before/after comparisons
+  around a write stay live.
+- **Status:** committed; unit tests pass (fast-runner 52/52 + the new guard, fast-dxt 6/6).
+  Measured on a 243k-node repro under a 16ms mutation storm: **41,002ms → 1,722ms**
+  (`rowsMs` 54). 178k-node repro: row block 2103ms → 10ms. 10k-node/50-row DOM: document-wide
+  queries 3092 → 404 (976771f baseline 404), un-attributed row time 6.2s → 61ms; at 2× the page
+  the query count does not grow (404 → 314). Live: selenium web-form native select verified in
+  10ms; react-select.com returns the SAME "2 visible dropdown(s) match" refusal as pre-fix.
+  GCP itself is untested here (no login) — the lead re-tests it in the owner's Chrome.
+
 ## 2026-09-15 — holdout 2: six more unseen sites (bench/holdout2.js, ids h2_*), validated both directions; baseline pending
 - **What:** `bench/holdout2.js` — Syncfusion EJ2 tab wizard (dependent steps), Mantine slider + switch, Wunderbaum 100k-node virtualized tree (target under two collapsed nodes), National Rail live-trains typeahead (commit = hidden CRS code), Element Plus form-in-modal, itch.io infinite-scroll games grid. Registered as `SUITES.holdout2` (`node bench/run.js --list --suite holdout2`, `--test h2_<id>`).
 - **Why:** holdout 1's sites are now the fixer's proof sites, so they no longer measure carry-over. None of these six is in suite.js, holdout 1, or the fixer's proof list (GOV.UK, jQuery UI, Select2, Form.io, jsDelivr, DataTables, Bootstrap btn-check, MUI Checkbox, SurveyJS, bootstrap-datepicker, Tom Select, Choices.js).
