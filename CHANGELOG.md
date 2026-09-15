@@ -54,7 +54,14 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 - **Watch out:** a portal panel NOT named by aria-controls/-owns is now found ≤250ms after it
   renders (the sweep cadence), not ≤30ms. A `for=` label is looked up in the control's own root
   then the document, like before.
-- **Status:** committed; measured on hvm below.
+- **Status:** committed (3a374f7); measured on hvm (timing field, element already mounted):
+  GCP-shaped storm page (3000 id'd `aria-haspopup` controls nested 8 deep, 200 two-label
+  sections, ~40k nodes, 2000 spans rewritten every 16ms, `aria-controls` set at click, panel
+  drawn 150ms later): resolveMs 4294-4407 → 56-83; openMs 266-613 both builds, of which the
+  page's own (timer-starved) panel draw is 203-503ms → our detection 31-141ms after the panel
+  exists. material.angular.dev mat-select: resolve 19 / open 28ms (771 → 536ms before a wait:
+  that was the app still mounting). W3C APG select-only: resolve 1-6 / open 3-13ms (unchanged).
+  Light storm page: resolve 32-52 → 14-21ms. GCP itself: lead re-records in the owner's Chrome.
 
 ## 2026-09-15 — fast-runner gate wording: "If the task asked you to <verb>, do it now"; system prompt "do every step the task names"
 - **What:** the claimMismatch refusal reads `your result says "<verb>" but no <family> call
@@ -133,7 +140,17 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   fields: nothing). The pending record is heuristic (typed value unchanged + same URL): an exact
   typed value accepted by a click on the app's own Go button is still flagged — only on a
   fast_wait TIMEOUT. `commitSuggestion`'s "still open" check uses the same `openSuggestions`.
-- **Status:** committed; live proof on hvm below.
+- **Status:** committed (7f20f26 + follow-up 823a17c); proven live on hvm: **Google Maps
+  directions** `fast_fill {fields:{origin,destination}}` → both fields `committed:false`, origin
+  `suggestions:["Your location"]`, destination the 5 Times Square rows, head `uncommitted:[both]`;
+  a fast_wait timeout then carries `"Destination Times Square, New York" has an open suggestion
+  list…` + suggestions; after `fast_key_press Enter` the routes render and a timeout carries no
+  hint. **google.com search box** (`role=combobox`, aria-controls) → `committed:false` + 5
+  "weather chicago…" suggestions, timeout hint names "Search". **W3C APG combobox-autocomplete-
+  list** → `committed:false` + ["Alabama","Alaska","American Samoa","Arizona","Arkansas"]; an
+  uncommitted value (list closed) gives the "has an uncommitted value" timeout hint. selenium
+  web-form text + datalist fields: no `committed` flag (datalist is not an autocomplete). A fill
+  ~350ms after fast_tab on APG opened nothing (page script not attached yet).
 
 ## 2026-09-15 — bench scorer: literal `\n` in a report compares as a newline (SCORER CHANGE)
 - **What:** `bench/score.js` `reportContains` (every `live` checkpoint) and `runLiveList` read a
