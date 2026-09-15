@@ -126,7 +126,9 @@ export async function waitForIdle(handle, { timeoutMs = 60_000 } = {}) {
   handle.runId = handle.final?.run_id || null;
   const rec = handle.runId ? readRun(handle.runId) : null;
   if (rec) {
-    handle.toolLog = rec.toolLog || [];
+    // ms < 0 = Date.now() jumped backwards inside the runner (WSL clock skew after
+    // host sleep); clamp so the duration sums stay sane.
+    handle.toolLog = (rec.toolLog || []).map((e) => ({ ...e, ms: Math.max(0, e.ms) }));
     const t0 = Date.parse(rec.startedAt);
     handle.trace.replace(handle.toolLog.map((e) => ({ t: t0 + e.t + e.ms, name: e.name, durMs: e.ms, ok: e.ok, session: rec.run_id, client: 'fast-runner' })));
   }
@@ -160,7 +162,8 @@ export function readFinalMessage(handle) {
 export function recordUsage(handle, { client, testId }) {
   appendFileSync(USAGE_JSONL, JSON.stringify({
     ts: new Date().toISOString(), client, testId, runId: handle.runId, status: handle.final?.status || null,
-    toolLog: handle.toolLog.map(({ t, name, ms, ok }) => ({ t, name, ms, ok })),
+    wallMs: handle.exited ? handle.exited.at - handle.startedAt : null,
+    toolLog: handle.toolLog.map(({ t, name, ms, ok, args }) => ({ t, name, ms, ok, target: targetOf(name, args) })),
   }) + '\n');
   writeFileSync(USAGE_MD, renderUsage(loadUsage()));
 }
@@ -168,40 +171,70 @@ export function recordUsage(handle, { client, testId }) {
 export function loadUsage(file = USAGE_JSONL) {
   let raw;
   try { raw = readFileSync(file, 'utf8'); } catch { return []; }
-  return raw.trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const rows = raw.trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  // Rows written before `target` existed get it from the run store's args.
+  for (const r of rows) {
+    if (!r.toolLog.length || 'target' in r.toolLog[0]) continue;
+    const rec = r.runId ? readRun(r.runId) : null;
+    if (rec) r.toolLog = r.toolLog.map((e, i) => ({ ...e, target: targetOf(e.name, rec.toolLog?.[i]?.args) }));
+  }
+  return rows;
 }
 
-/** Latest cell per (client, test) wins, like report.js. */
+/** What a call was aimed at, as a comparable string; null when the call has no
+ *  target (fast_snapshot, fast_status…). Two consecutive calls on the same
+ *  target are the fumble signal below. */
+const TARGET_KEYS = ['text', 'match', 'field', 'selector', 'label', 'url', 'intent', 'key', 'option'];
+export function targetOf(name, args) {
+  if (!args || typeof args !== 'object') return null;
+  if (name === 'fast_batch') return null;
+  for (const k of TARGET_KEYS) if (args[k] != null && args[k] !== '') return String(args[k]).toLowerCase().trim();
+  if (args.x != null && args.y != null) return `xy`; // any coordinate click on the same page counts as the same blind target
+  if (args.fields) return Object.keys(args.fields).sort().join('|').toLowerCase();
+  if (args.selections) return Object.keys(args.selections).sort().join('|').toLowerCase();
+  return null;
+}
+
+/** EVERY cell counts (all passes), so n=3 runs aggregate instead of the latest
+ *  overwriting. Per tool: calls, errors, avg ms, and the fumble columns — how
+ *  often a call was immediately followed by the SAME tool on the same target
+ *  (retry) or a DIFFERENT tool on the same target (switch). */
 export function renderUsage(rows) {
-  const cell = new Map();
-  for (const r of rows) cell.set(`${r.client}|${r.testId}`, r);
   const agg = new Map();
-  let cells = 0;
-  for (const r of cell.values()) {
-    cells++;
-    for (const e of r.toolLog) {
-      const a = agg.get(e.name) || { calls: 0, errors: 0, ms: 0, tests: new Set() };
+  const passes = new Map(); // testId -> number of cells
+  for (const r of rows) {
+    passes.set(r.testId, (passes.get(r.testId) || 0) + 1);
+    const log = r.toolLog;
+    for (let i = 0; i < log.length; i++) {
+      const e = log[i];
+      const a = agg.get(e.name) || { calls: 0, errors: 0, ms: 0, retry: 0, switch: 0, tests: new Set() };
       a.calls++; if (!e.ok) a.errors++; a.ms += e.ms; a.tests.add(r.testId);
+      const next = log[i + 1];
+      if (next && e.target != null && next.target === e.target) { if (next.name === e.name) a.retry++; else a.switch++; }
       agg.set(e.name, a);
     }
   }
   const order = TESTS.map((t) => t.id);
   const names = [...agg.keys()].sort((a, b) => agg.get(b).calls - agg.get(a).calls || a.localeCompare(b));
+  const cellsPerTest = [...passes.entries()].sort((x, y) => order.indexOf(x[0]) - order.indexOf(y[0])).map(([t, n]) => `${t}×${n}`).join(', ');
   const out = [
     '# fast-runner tool usage',
     '',
-    `Aggregated over ${cells} cell(s) (latest per client × test) from \`bench/tool-usage.jsonl\`. Regenerate: \`node bench/drive-runner.js usage\`.`,
+    `Aggregated over ${rows.length} cell(s), ALL passes (${cellsPerTest}) from \`bench/tool-usage.jsonl\`. Regenerate: \`node bench/drive-runner.js usage\`.`,
     '',
-    '| tool | calls | errors | avg ms | tests used in |',
-    '|---|---:|---:|---:|---|',
+    'fumble columns: `retry` = call immediately followed by the same tool on the same target; `switch` = followed by a different tool on the same target; `fumble %` = (retry+switch)/calls.',
+    '',
+    '| tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |',
+    '|---|---:|---:|---:|---:|---:|---:|---|',
   ];
   for (const n of names) {
     const a = agg.get(n);
     const tests = [...a.tests].sort((x, y) => order.indexOf(x) - order.indexOf(y)).join(', ');
-    out.push(`| ${n} | ${a.calls} | ${a.errors} | ${Math.round(a.ms / a.calls)} | ${tests} |`);
+    out.push(`| ${n} | ${a.calls} | ${a.errors} | ${Math.round(a.ms / a.calls)} | ${a.retry} | ${a.switch} | ${Math.round(100 * (a.retry + a.switch) / a.calls)} | ${tests} |`);
   }
   const totalCalls = names.reduce((s, n) => s + agg.get(n).calls, 0);
-  out.push('', `Total: ${totalCalls} calls across ${names.length} distinct tools.`, '');
+  const totalFumbles = names.reduce((s, n) => s + agg.get(n).retry + agg.get(n).switch, 0);
+  out.push('', `Total: ${totalCalls} calls across ${names.length} distinct tools; ${totalFumbles} fumbles (${Math.round(100 * totalFumbles / totalCalls)}%).`, '');
   return out.join('\n');
 }
 

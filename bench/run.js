@@ -28,7 +28,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { byId, TEST_IDS } from './suite.js';
 import { closeMatching, clearStorageFor, pinInstall, status } from './fastlink.js';
-import { RelayTrace, LocalTrace, TrailWatcher, watchRun, renderTiming, resolveDeviceToken, TOKEN_HELP, DEFAULTS } from './monitor.js';
+import { RelayTrace, LocalTrace, TrailWatcher, watchRun, renderTiming, summarize, resolveDeviceToken, TOKEN_HELP, DEFAULTS } from './monitor.js';
 import { scoreTest, renderScore } from './score.js';
 import * as web from './drive-web.js';
 import * as runner from './drive-runner.js';
@@ -227,6 +227,9 @@ export async function runCell({
     let final = { via: 'none', text: null };
     if (handle) {
       const idle = await runner.waitForIdle(handle);
+      // The store's toolLog is the record; the streamed stderr rows can lag it by a
+      // call, so the row's wall/calls are re-derived from the swapped-in rows.
+      if (idle.record) Object.assign(watch, summarize(source.rows));
       if (!idle.record) notes.push('runner run store had no record for this run — tool histogram is empty');
       final = runner.readFinalMessage(handle);
       notes.push(`runner ${final.status || 'no-json'}${final.runId ? ` run_id=${final.runId}` : ''}${handle.questions ? ` (answered ${handle.questions} ask_caller)` : ''}`);

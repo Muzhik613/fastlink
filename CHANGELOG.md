@@ -19,6 +19,25 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Grok runner bench, phase 1: full suite ×3 over the relay + tool-usage data
+- **What:** All 8 bench tests run through `bench/run.js --client grok_runner --browser
+  yaakovschrome` (fast-runner over relay.ytx.app, grok-4.6 effort low). Pass 1: **70/70,
+  428.2s wall, 110 calls, 8/8 valid** vs the 08-06 grok.com baseline 70/70 / 259.3s / 99.
+  Results + fumble review in `docs/GROK_RUNNER_BENCH_2026-09-15.md` (passes 2–3 appended as
+  they land). Driver fixes in `bench/` only: runner rows re-summarize wall/calls from the run
+  store's toolLog after exit (streamed stderr rows lagged by a call); negative `ms` from
+  WSL clock skew clamped; `tool-usage.md` now aggregates ALL cells (n=3) with per-tool
+  `retry` / `switch` / `fumble %` (next call on the same target), each usage row carrying a
+  `target` per call (backfilled from the run store for older rows).
+- **Why:** plan phase 1 — the data phase 2's tool triage needs.
+- **Files:** `bench/{drive-runner,run}.js`, `bench/tool-usage.md`, `docs/GROK_RUNNER_BENCH_2026-09-15.md`.
+- **Watch out:** `fast_evaluate` is BLOCKED for the runner's relay account (`evalBlocked`);
+  the runner still lists it, so Grok reaches for it and falls back to `fast_text`. Round-trips
+  are 80–96% of wall in every cell — per-turn latency grows with input size (full snapshots
+  on cfworkers/overlay → ~5s/turn), which is the whole gap vs grok.com, not tool count. The
+  pre-pass 05:52 `extract` verification cell was pruned from `tool-usage.jsonl` so n=3 is clean.
+- **Status:** pass 1 committed; passes 2–3 in flight.
+
 ## 2026-09-15 — bench: self-driving hvm rig (grok_runner over the LOCAL transport, n=3)
 - **What:** `bench/hvm-rig.sh` (env + idempotent bring-up: Xvfb `:98`, Chrome for Testing
   with the unpacked `fast-ext`, broker `:9876`, grokcode proxy `:8791`, proof that the
@@ -40,6 +59,23 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   `~/.grok/auth.json`: if xAI rotates refresh tokens, one side's refresh can invalidate the
   other — cure is `grok login` on the side that breaks.
 - **Status:** in code / committed / rig verified live on hvm.
+
+## 2026-09-15 — fast-runner: explicit per-run toolsets (`--toolset`) + phase-2 / no-cdp sets
+- **What:** `runner.mjs` `loadToolset(spec)` — `"default"`/unset → `toolset.json` (all 45 tools +
+  the server's `instructions` essay, the A/B baseline, untouched); a bare name → `toolset.<name>.json`;
+  a path → that file. `buildTools`/`buildSystem` exported; `runs.jsonl` rows + the finished-run
+  snapshot carry `toolset`. Non-default toolsets DROP `client.instructions` from the system prompt.
+  New `toolset.phase2.json` (13 raw tools + 2 native = 15, ≤2-sentence Grok descriptions) and
+  `toolset.no-cdp.json` (12, no `chrome.debugger` tools), per `docs/TOOL_TRIAGE_DRAFT.md` §3.
+  `cli.mjs --toolset <name|path>` and `--dump-tools` (reads `fast-dxt/server/tools.js`, no browser);
+  `grok_run{toolset}`; `FASTRUN_TOOLSET` env. `npm test` → `test/toolset.test.mjs` (node:test).
+- **Why:** owner: "we are looking to optimize" — the bench needs to A/B the triaged list against the
+  baseline per cell, so selection must be explicit, not ambient.
+- **Files:** `fast-runner/runner.mjs`, `cli.mjs`, `caller-mcp.mjs`, `package.json`, `README.md`,
+  new `toolset.phase2.json`, `toolset.no-cdp.json`, `test/toolset.test.mjs`; `docs/TOOL_TRIAGE_DRAFT.md` §3a/3b.
+- **Watch out:** `describe` keys are REAL tool names (pre-rename). A missing/mistyped toolset name
+  throws before any connect. Bench slicing: filter `runs.jsonl` by `toolset`, not by date.
+- **Status:** unit-tested + `--dump-tools` eyeballed; NOT yet run against a browser (both busy with bench passes).
 
 ## 2026-09-15 — docs: Grok runner phase-2 tool triage draft (`docs/TOOL_TRIAGE_DRAFT.md`) — 45-tool inventory + use counts, overlap map, ≤15-tool toolset (core/fold/internal/drop), Grok-tuned descriptions, no-cdp profile, phase-3 risks; source only, no code touched.
 
