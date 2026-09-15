@@ -15,7 +15,7 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 - **Status:** in code / synced to Windows copy / committed / verified live.
 ```
 
-Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjtur\FastLink\extension\` and reloading at `chrome://extensions`**. Server changes need a Claude Code restart (WSL MCP) or `.mcpb` rebuild (Desktop). Relay changes need `wrangler deploy`.
+Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`** (syncs HEAD's `fast-ext/` → `C:\Users\yjtur\FastLink\extension\`, stamps `build.json`, reloads the pinned profile via the broker, verifies the build in `fast_status`). Server changes need a Claude Code restart (WSL MCP) or `.mcpb` rebuild (Desktop). Relay changes need `wrangler deploy`.
 
 ---
 
@@ -108,6 +108,73 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   page.js on a local two-heading page (refusal → `section:` and `index:` each wrote the right
   input) and on getbootstrap.com/docs/5.3/examples/checkout ("name" → 4 candidates with
   sections Billing address / Payment; "Email" still fills).
+
+## 2026-09-15 — No-click extension ship: `scripts/ship-ext.sh` (sync → build stamp → `fast_ext_reload` → build check)
+- **What:** `scripts/ship-ext.sh` ships git HEAD, not the working tree (other sessions keep WIP
+  in `fast-ext/`; commit to ship): `git archive HEAD fast-ext` → temp stage, stamps
+  `build.json` `{sha, syncedAt}` (HEAD short sha) into the stage and the repo tree (gitignored),
+  rsyncs the stage to the Windows copy (`--delete`), then through a stdio MCP server (`fast-runner/fastlink-client.mjs`, local
+  transport) pins `fast_profile {install:$SLOT}` (default `primary`), calls `fast_ext_reload`,
+  and polls `fast_status` until `installs.$SLOT.build == sha` (≤30s) → `PASS`/`FAIL` (exit 1).
+- **Why:** shipping a build into the owner's real Chrome required them to open
+  `chrome://extensions` and click Reload; nothing broker-reachable existed (entry below).
+- **Files:** `scripts/ship-ext.sh` (new), `.gitignore`, `CLAUDE.md` (untracked), `CHANGELOG.md`
+  header, `docs/GROK_RUNNER_PLAN.md` (pick-up line replaced).
+- **Watch out:** the running broker must be on the ext-reload build — an older broker forwards
+  `fast_ext_reload` to the extension as a page action and the script prints a restart hint.
+  Never point `SLOT` at the relay-connected `secondary` profile (another session's).
+- **Status:** committed. Live run against the owner's Chrome: FAIL as expected — the running
+  primary worker is the pre-change build (hello has no `build`, no `{type:'reload'}` handler),
+  so `fast_ext_reload` → `reloaded:false` after 20s. **Needs ONE manual Reload at
+  chrome://extensions (bootstrap)**; every ship after that is no-click. The extension refuses
+  its own `chrome-extension://` pages (`Restricted URL`), so the popup's Reload button is not
+  broker-clickable either.
+
+## 2026-09-15 — Broker `ext-reload` + `fast_ext_reload` (INTERNAL): reload the pinned profile's extension and wait for its hello
+- **What:** MCP call `{type:'call', action:'fast_ext_reload', install}` is handled by the broker
+  itself (`mcpBridge.js` → `router.js dispatchReload`): refused unless the envelope pins ONE
+  label (unpinned / `"auto"` → `error`), else sends `{type:'reload'}` on that slot's socket,
+  marks it `__closeReason='reload requested (fast_ext_reload)'`, and `state.awaitHello(label,
+  20s)` answers `{result:{reloaded:true, install, build, previousBuild, ms}}` on the next hello
+  from the same label or `{result:{reloaded:false, reason, previousBuild, ms}}` on timeout.
+  Tool `fast_ext_reload` in `fast-dxt/server/tools.js` (no handler change — the generic
+  `callExtension` path carries it). Log lines: `ext-reload install= sent`, `… back in <ms>
+  build=`, `… no hello within`.
+- **Why:** the only reload paths were the toolbar click, the options-page relay-reconnect
+  message and updateCheck's 6h GitHub-release check (housekeeping entry below).
+- **Files:** `fast-dxt/broker/router.js`, `mcpBridge.js`, `state.js`, `fast-dxt/server/tools.js`,
+  `fast-dxt/test/broker.test.mjs`.
+- **Watch out:** local broker only — NOT added to `fastlink-relay/tools.js` (the mirror already
+  differs at `fast_upload`, deliberately relay-worded, so the byte-identical condition did not
+  hold; the relay never lists a tool it would refuse). Hidden from the Grok toolsets
+  (`toolset.phase2`/`no-cdp` allow lists); `toolset.json`'s `"*"` still exposes it. Takes
+  effect after a broker restart + MCP restart.
+- **Status:** committed; unit + throwaway-broker tests (`npm test` in `fast-dxt/`). Live broker
+  restarted onto it 19:05Z (log: `hello install="primary" … build=n/a`, `ext-reload
+  install="primary" sent (build n/a)`, `… no hello within 20000ms` against the old worker).
+
+## 2026-09-15 — Extension: build id in the hello (`installs.<label>.build`) + ONE `reloadSelf(reason)` in the service worker
+- **What:** (1) `src/reloadSelf.js` — the single `chrome.runtime.reload()` path; appends
+  `{at, reason}` (last 20) to `fastlinkSelfReloadLog` first. Callers: updateCheck
+  (`'update'`), broker `{type:'reload'}` (`'broker'`, connection.js), toolbar-click fallback
+  and relay-reconnect (background.js). updateCheck's circuit breaker now counts only
+  `reason:'update'` entries (a dev shipping 3 builds in 10 min is not a loop); the 6h GitHub
+  check itself is unchanged. (2) `connection.js` reads `build.json` `{sha}` once per worker
+  (`fetch(chrome.runtime.getURL('build.json'))`; absent → `"dev"`) and sends
+  `{type:'hello', installId, build}`. Broker `extBridge.js` sanitizes it (`[A-Za-z0-9._-]{1,40}`),
+  logs `hello … build=<sha>` / `connect … build=<sha>`, `state.js` keeps it per slot →
+  `snapshot().installs.<label>.build` → `fast_status`.
+- **Why:** verifying which build a profile runs needed the chrome://extensions page; the
+  reload calls were scattered and the breaker log held bare timestamps.
+- **Files:** `fast-ext/src/reloadSelf.js` (new), `src/updateCheck.js`, `src/connection.js`,
+  `background.js`, `fast-dxt/broker/extBridge.js`, `state.js`, `fast-dxt/test/broker.test.mjs`.
+- **Watch out:** `background.js handleSelfReloadResult` still wipes the whole
+  `fastlinkSelfReloadLog` after a successful GitHub update (broker entries go with it —
+  diagnostic only). popup.js / onboarding.js reload from page context and keep their direct
+  `chrome.runtime.reload()`. The packaged zip (`fast-ext/scripts/package.sh` allowlist) carries
+  no `build.json` → reports `"dev"`.
+- **Status:** committed; broker side unit-tested; Windows copy synced to HEAD. Extension side
+  unverified live until the one-time bootstrap Reload (entry above).
 
 ## 2026-09-15 — fast-runner: evidence gate checks the current URL + unretried failures
 - **What:** `runner.mjs` tracks `urlTrail` (distinct `url`s carried by tool results —
