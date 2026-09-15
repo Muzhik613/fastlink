@@ -19,6 +19,31 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Housekeeping: hvm bench branch merged, Windows extension copy synced (reload still manual)
+- **What:** (1) hvm repo (`/home/dev/code/Fastlink`, commits `8eaff09…ba610e0`, bench passes
+  1–4 on the rig) merged into WSL main as `fb94fd6` via a `hvm` git remote; both results
+  docs kept (`docs/GROK_RUNNER_BENCH_2026-09-15.md` local, `…_hvm_2026-09-15.md` hvm);
+  `bench/tool-usage.md` conflict resolved to the WSL render — it is generated per machine
+  from the untracked `bench/tool-usage.jsonl`, the hvm histogram lives in the hvm doc.
+  hvm main moved to the same commit by pushing a temp branch and `git reset` (mixed) +
+  checkout of the 5 bench/doc files, so the rig's on-disk `fast-ext/` was never rewritten
+  (its 3 rsynced files were byte-identical to WSL HEAD). (2) `fast-ext/` rsynced to
+  `C:\Users\yjtur\FastLink\extension\` — differing files were `manifest.json` (0.4.3 →
+  0.4.4), `src/actions/page.js`, `src/connection.js`; trees now identical. (3) No
+  broker-reachable extension reload exists: `chrome.runtime.reload()` is only behind the
+  toolbar click, the options-page `fastlink:relay-reconnect` message, and updateCheck's
+  6h self-apply alarm, which needs a GitHub release newer than the running 0.4.3 (latest
+  is `ext-v0.4.3`). Not hacked in; the one-line instruction is in
+  `docs/GROK_RUNNER_PLAN.md` → Pick-up.
+- **Verification:** `fast-runner/cli.mjs --local --toolset phase2` on selenium.dev web-form
+  → 3 calls / 8.7s, `fast_select_option {field:"Dropdown (select)", option:"Two"}` →
+  `picked:"Two", kind:"native-select"` — but that readback already existed in 0.4.3, so it
+  does not discriminate builds. Discriminating probe: `fast_select_option` on a bogus field
+  returned the bare `field … not found` (no `candidates`) → the user's Chrome is still
+  running the OLD 0.4.3 code until it is reloaded.
+- **Files:** `CHANGELOG.md`, `docs/GROK_RUNNER_PLAN.md`, `bench/tool-usage.md` (merge).
+- **Status:** committed; WSL main == hvm main; Windows copy synced, NOT reloaded.
+
 ## 2026-09-15 — Grok runner latency study + terse `report_done` behind phase2
 - **What:** `docs/GROK_LATENCY_2026-09-15.md`: 33-call synthetic matrix straight against
   api.x.ai (grok-4.6 / grok-4.3 × effort low / medium × 7k / 30k / 70k ctx × stream, plus

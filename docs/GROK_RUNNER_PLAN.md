@@ -74,6 +74,17 @@ Frontdesk owns: image, Container DO, Workflow caller, profile snapshot/restore, 
 - New xAI account: not needed; runs on the SuperGrok sub via `~/.grok/auth.json`.
 - Frontdesk container/DO: frontdesk session owns it.
 
+## Pick-up (2026-09-15 night)
+
+- **Reload the extension in your real Chrome: `chrome://extensions` → FastLink → Reload.** The fixed
+  `fast-ext/` (page.js fumble fixes + auto-snapshot byte cap, connection.js single dial, manifest
+  0.4.4) is synced to `C:\Users\yjtur\FastLink\extension\` but Chrome still runs 0.4.3 until you
+  reload — there is no broker-reachable `chrome.runtime.reload()`; the only no-click path is
+  updateCheck's 6h alarm, and it only fires when a GitHub release is newer than 0.4.3 (latest is
+  `ext-v0.4.3`), so it stays dormant.
+- WSL main and hvm main are the same commit after the merge; `bench/tool-usage.md` is per-machine
+  (generated from the untracked `bench/tool-usage.jsonl`) — regenerate, don't merge.
+
 ## Open decisions
 
 1. Runner ↔ xAI: through grokcode proxy (:8790, recommended, one token owner) vs own client (duplicate refresh, race on auth.json).
