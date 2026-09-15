@@ -1,15 +1,25 @@
-import { writeFileSync, unlinkSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { writeFileSync, unlinkSync, appendFileSync, statSync, truncateSync } from 'fs';
+import { PID_FILE, LOG_FILE, LOG_MAX_BYTES } from './config.js';
 
-// os.tmpdir() resolves to %TEMP% on Windows and /tmp on macOS/Linux/WSL, so the
-// broker's PID file is portable instead of assuming a Unix /tmp.
-const PID_FILE = join(tmpdir(), 'fastlink-broker.pid');
 const IDLE_MS = 60_000;
 const IDLE_POLL_MS = 5_000;
 
+// Every line lands in LOG_FILE (the durable record: connects/disconnects/hello/
+// slotBusy with ISO time + label + reason). Rotation = truncate at LOG_MAX_BYTES.
+// Echo to stderr only on a terminal (foreground run); when the server spawned
+// us, stderr IS the log file and echoing would double every line.
 export const log = (msg) => {
-  process.stderr.write(`[broker] ${new Date().toISOString()} ${msg}\n`);
+  const line = `[broker] ${new Date().toISOString()} ${msg}\n`;
+  try {
+    let size = 0;
+    try { size = statSync(LOG_FILE).size; } catch {}
+    if (size > LOG_MAX_BYTES) {
+      truncateSync(LOG_FILE, 0);
+      appendFileSync(LOG_FILE, `[broker] ${new Date().toISOString()} log rotated (exceeded ${LOG_MAX_BYTES} bytes)\n`);
+    }
+    appendFileSync(LOG_FILE, line);
+  } catch {}
+  if (process.stderr.isTTY) process.stderr.write(line);
 };
 
 export function writePidFile() {

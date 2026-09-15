@@ -1,12 +1,18 @@
 import { WebSocket } from 'ws';
 import { spawn } from 'child_process';
+import { openSync, closeSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { tmpdir } from 'os';
 import { BROKER_PORT, REQUEST_TIMEOUT_MS } from './config.js';
 import { log } from './log.js';
 
 const BROKER_ENTRY = join(dirname(fileURLToPath(import.meta.url)), '..', 'broker', 'index.js');
+// Same path broker/config.js derives for the default instance; the broker
+// appends its own lines there and rotates it. Spawning with both fds on it
+// also captures crash stacks.
+export const BROKER_LOG_FILE = join(tmpdir(), 'fastlink-broker.log');
 const RECONNECT_BACKOFF_MS = [200, 500, 1000, 2000, 4000];
 const MAX_CONNECT_ATTEMPTS = 12;
 const STATUS_TIMEOUT_MS = 5_000;
@@ -166,9 +172,14 @@ function spawnBroker() {
   // path as an argument makes Electron treat it as a file-open / second-instance
   // event (the "Attach index.js to this session?" popup). Forcing
   // ELECTRON_RUN_AS_NODE=1 makes the same binary run as plain Node instead.
+  // stdout/stderr → the broker log (append) so connects/disconnects and crashes
+  // are on record; 'ignore' left no trace at all.
+  let fd = 'ignore';
+  try { fd = openSync(BROKER_LOG_FILE, 'a'); } catch (e) { log(`broker log unavailable: ${e.message}`); }
   spawn(process.execPath, [BROKER_ENTRY], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', fd, fd],
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   }).unref();
+  if (fd !== 'ignore') closeSync(fd);
 }

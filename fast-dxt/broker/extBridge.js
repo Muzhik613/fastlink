@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws';
-import { state, EXT_PORTS } from './state.js';
+import { state } from './state.js';
+import { EXT_PORTS } from './config.js';
 import { log, onFatalListenError } from './lifecycle.js';
 import { onExtensionResponse, failPendingForSocket } from './router.js';
 import { mcpClientCount, broadcastToMcp } from './mcpBridge.js';
@@ -39,15 +40,16 @@ function startOne(defaultId, port) {
   wss.on('listening', () => log(`ext WS listening on ${port} (default install: ${defaultId})`));
   wss.on('error', (e) => onFatalListenError('ext', port, e));
   wss.on('connection', (ws, req) => {
-    log(`extension connected on :${port} from ${req.socket.remoteAddress}`);
+    log(`ext socket opened on :${port} from ${req.socket.remoteAddress}`);
     let installId = null;
     const helloTimer = setTimeout(() => {
       if (installId) return;
       log(`no hello on :${port}, defaulting to install "${defaultId}"`);
-      assign(defaultId, ws);
+      assign(defaultId, ws, 'no-hello-default');
     }, HELLO_TIMEOUT_MS);
 
-    function assign(id, socket) {
+    // `reason` rides into the slot's recent[] ring + the log line.
+    function assign(id, socket, reason) {
       if (installId) return;
       // Same-slot arbitration. A prior socket on this install is EITHER a stale
       // socket from a service-worker respawn (adopt the newcomer, replace it) OR
@@ -58,7 +60,9 @@ function startOne(defaultId, port) {
       if (prevForId && prevForId !== socket && state.isInstallLive(id)) {
         // Live incumbent owns the slot → tell the newcomer to switch slots and
         // close it, leaving the working profile untouched.
-        log(`slot "${id}" busy (live incumbent) — rejecting newcomer on :${port}`);
+        log(`slotBusy install="${id}" — live incumbent holds the slot; rejecting newcomer on :${port} from ${req.socket.remoteAddress}`);
+        state.noteSlotBusy(id, `newcomer on :${port} rejected, live incumbent`);
+        socket.__closeReason = 'slotBusy';
         try { socket.send(JSON.stringify({ type: 'slotBusy', install: id, knownInstalls: state.knownInstalls() })); } catch {}
         // Give the frame a tick to flush before closing.
         setTimeout(() => { try { socket.close(); } catch {} }, 50);
@@ -67,8 +71,13 @@ function startOne(defaultId, port) {
       installId = id;
       // Stale prev (respawn) → replace. Distinct labels = distinct slots even on
       // shared port 9876, so cross-install never collides.
-      if (prevForId && prevForId !== socket) try { prevForId.close(); } catch {}
-      state.setExtensionSocket(id, socket);
+      if (prevForId && prevForId !== socket) {
+        prevForId.__closeReason = 'replaced by respawn';
+        reason += ' (replaced stale socket)';
+        try { prevForId.close(); } catch {}
+      }
+      state.setExtensionSocket(id, socket, reason);
+      log(`connect install="${id}" on :${port} reason=${reason}`);
       attachHeartbeat(socket);
       try { socket.send(JSON.stringify({ type: 'mcpClients', count: mcpClientCount() })); } catch {}
     }
@@ -80,11 +89,12 @@ function startOne(defaultId, port) {
         clearTimeout(helloTimer);
         // Sanitizable label → dynamic slot; empty/garbage → port default.
         const id = sanitizeInstallId(msg.installId);
+        log(`hello install="${id ?? defaultId}" raw="${msg.installId}" on :${port}`);
         if (!id) {
           log(`unusable installId "${msg.installId}" on :${port}, falling back to "${defaultId}"`);
-          assign(defaultId, ws);
+          assign(defaultId, ws, `hello unusable "${msg.installId}" → port default`);
         } else {
-          assign(id, ws);
+          assign(id, ws, 'hello');
         }
         return;
       }
@@ -104,11 +114,15 @@ function startOne(defaultId, port) {
       }
       onExtensionResponse(msg);
     });
-    ws.on('close', () => {
+    ws.on('close', (code, reasonBuf) => {
       clearTimeout(helloTimer);
+      // 1006 = no close frame (SW killed, WSL forwarding died, heartbeat terminate).
+      const reason = ws.__closeReason || `close ${code}${reasonBuf?.length ? ' ' + reasonBuf : ''}`;
       if (installId) {
-        state.clearExtensionSocket(installId, ws);
-        log(`extension "${installId}" disconnected`);
+        state.clearExtensionSocket(installId, ws, reason);
+        log(`disconnect install="${installId}" on :${port} reason=${reason}`);
+      } else {
+        log(`ext socket closed on :${port} before owning a slot reason=${reason}`);
       }
       failPendingForSocket(ws);
     });
