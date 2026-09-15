@@ -19,6 +19,29 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — fast-runner phase 0: Grok drives FastLink, Claude is the caller
+- **What:** New `fast-runner/` (see `docs/GROK_RUNNER_PLAN.md`). `runner.mjs` runs an
+  agent loop with grok-4.6 (Anthropic-Messages format via the grokcode proxy on :8790,
+  which owns the xAI OAuth token) over FastLink's MCP tools listed dynamically from
+  `fastlink-client.mjs` (`local` = spawn `fast-dxt/server/index.js` over stdio with the
+  same env as the `fastlink` MCP entry in `~/.claude.json`; `relay` = `relay-transport.mjs`).
+  Runner-native tools `ask_caller` / `report_done`; budgets 60 calls / 10 min / 3
+  consecutive errors; runs logged to `~/.local/state/fastrun/runs.jsonl`. `caller-mcp.mjs`
+  is the `fastrun` MCP server (user-scope) with `grok_run` / `grok_answer` /
+  `grok_status` / `grok_cancel` (240s hold, question/running/done). `cli.mjs` runs one
+  task from the shell; `toolset.json` = allow/rename/describe overrides Grok sees.
+- **Why:** bench 2026-08-06 — Grok finished the suite 2× faster than claude.ai; make it
+  the operator and keep Claude as dispatcher.
+- **Files:** `fast-runner/{package.json,runner.mjs,xai.mjs,fastlink-client.mjs,caller-mcp.mjs,cli.mjs,toolset.json,README.md}`.
+- **Watch out:** reasoning effort is fixed at proxy start (`GROKCODE_EFFORT`; runner starts
+  it with `low`) — restart the proxy to change it. FastLink signals failures as
+  `{"error":…}` text, not MCP `isError`; the runner parses that for its ok flag and the
+  consecutive-error budget. The local server spawn is a SECOND fast-dxt process attached
+  to the shared broker (no `--http`, so no port clash with Claude Code's own instance).
+- **Status:** committed; verified live over `local` (Wikipedia search 58.6s/14 calls,
+  ask_caller fill task 14.2s/4 calls, fill read back via fast_snapshot). Relay transport
+  is phase 0b.
+
 ## 2026-08-06 — fast_tab returned before the tab existed → "Restricted URL: " in fast_batch
 - **What:** `chrome.tabs.create` resolves BEFORE the navigation commits — the new tab's
   `.url` is `""` and only `.pendingUrl` holds the target. `openTab` pinned the tab and
