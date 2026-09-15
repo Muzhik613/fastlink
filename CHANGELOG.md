@@ -87,6 +87,22 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 - **Status:** committed (e0ee7eb); `fast-dxt/test/broker.test.mjs` proves log lines
   + `recent[]`.
 
+## 2026-09-15 — Suggestion picks are verified (keyboard first, coords for fast_click_xy on refusal); synthetic keys carry keyCode; fast_wait keeps its own deadline
+- **What:** (1) `commitSuggestion` (page.js): ArrowDown×(index+1) + Enter on the input,
+  then pointer/mouse events on the entry; `committed` = value/URL changed or the list
+  closed. A pick the control ignores is now an ERROR carrying `suggestion:{text,x,y,w,h}`
+  + hint "fast_click_xy at x,y (trusted click) commits it" — never a false `clicked`.
+  (2) `keyInit` adds legacy `keyCode`/`which` to every synthetic KeyboardEvent
+  (`fast_key_press` + the suggestion commit): Google's widgets switch on keyCode, so an
+  ArrowDown without it was a no-op. (3) `runBridge` (index.js): the 20s page-action
+  deadline is `max(20s, timeoutMs+3s)` capped at 28s for `fast_wait` — a 30s wait was
+  cut at 20s with "page busy".
+- **Why:** batch-build iteration 4 (57/59, mapsdir 5/6 in 19 calls / 94s): the mouse-
+  event suggestion pick returned `clicked` while Maps ignored it, and two waits hit the
+  new deadline.
+- **Files:** `fast-ext/src/actions/page.js`, `fast-ext/src/actions/index.js`.
+- **Status:** committed; verified on the hvm rig after the 4.6 control pass (below).
+
 ## 2026-09-15 — fast_click reaches open suggestion-list entries; fast_status says when a pin is required
 - **What:** `fast_click` whose text matches no index entry looks in the OPEN suggestion
   list of the focused control (`aria-controls`/`aria-owns` panel: `[role=option|row|
