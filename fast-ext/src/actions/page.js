@@ -1049,6 +1049,15 @@ const serializeSnapshot = async (viewportOnly, opts) => {
   };
 };
 
+// Synthetic key events carry the legacy keyCode/which too: Google's widgets
+// (Maps suggestions) and older handlers switch on event.keyCode, which is 0
+// unless set explicitly — an ArrowDown without it is a no-op there.
+const KEY_CODES = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46, ' ': 32, Space: 32, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Home: 36, End: 35, PageUp: 33, PageDown: 34 };
+const keyInit = (key, extra) => {
+  const code = KEY_CODES[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
+  return { key, code: key === ' ' ? 'Space' : key, keyCode: code, which: code, bubbles: true, cancelable: true, composed: true, ...(extra || {}) };
+};
+
 // Options panel of an ARIA select: the ids named by aria-controls / aria-owns on
 // the field itself, on its inner combobox/input, or on a [aria-haspopup]
 // descendant (mat-select / cfc-select set them on open). Pure: takes any object
@@ -1789,7 +1798,7 @@ async function runPageAction(action, args) {
   const commitSuggestion = async (sug) => {
     const { el, input, index } = sug;
     const before = liveValueOf(input);
-    const key = (target, k) => { const o = { key: k, code: k, bubbles: true, cancelable: true, composed: true }; target.dispatchEvent(new KeyboardEvent('keydown', o)); target.dispatchEvent(new KeyboardEvent('keyup', o)); };
+    const key = (target, k) => { const o = keyInit(k); target.dispatchEvent(new KeyboardEvent('keydown', o)); target.dispatchEvent(new KeyboardEvent('keyup', o)); };
     for (let i = 0; i <= index; i++) { key(input, 'ArrowDown'); await wait(40); }
     key(input, 'Enter');
     await wait(300);
@@ -1964,7 +1973,7 @@ async function runPageAction(action, args) {
     if (!key) return { error: 'key required' };
     const el = document.activeElement || document.body;
     const urlBefore = location.href;
-    const opts = { key, code: key, bubbles: true, cancelable: true, composed: true };
+    const opts = keyInit(key);
     el.dispatchEvent(new KeyboardEvent('keydown', opts));
     el.dispatchEvent(new KeyboardEvent('keypress', opts));
     el.dispatchEvent(new KeyboardEvent('keyup', opts));
