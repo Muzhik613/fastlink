@@ -79,9 +79,16 @@ function applyExpect(actual, expect) {
 
 const pickField = (v, pick) => (pick && v && typeof v === 'object' ? v[pick] : v);
 
+// Models copy values out of JSON tool results, so a multi-line value can arrive
+// as a literal backslash-n ("Multi-line\ntext here"). Both sides of every report
+// comparison read literal \n / \r\n / \r as a newline (norm() then folds it).
+const unescNewlines = (s) => String(s ?? '').replace(/\\r\\n|\\n|\\r/g, '\n');
+
 /** Does the chat's final message actually contain this live value? */
-function reportContains(reportText, value, { numeric = false, tolerance = 0.01 } = {}) {
+export function reportContains(reportText, value, { numeric = false, tolerance = 0.01 } = {}) {
   if (reportText == null) return null; // unknown — caller records it as unverified
+  reportText = unescNewlines(reportText);
+  value = unescNewlines(value);
   const nums = extractNumbers(value);
   if (numeric) return nums.length ? nums.every((n) => hasNumberNear(reportText, n, tolerance)) : false;
   if (norm(reportText).includes(norm(value))) return true;
@@ -163,7 +170,7 @@ async function runLiveList(cp, ctx, cache) {
     out.push({ name: `${cp.name}: page data readable`, kind: 'liveList', passed: false, expected: `${cp.count} rows from the live table`, actual: JSON.stringify(live) });
     return out;
   }
-  const report = ctx.reportText;
+  const report = ctx.reportText == null ? null : unescNewlines(ctx.reportText);
   const positions = [];
   for (const [i, row] of live.entries()) {
     const namePos = report == null ? -1 : loose(report).indexOf(loose(row.name));

@@ -33,6 +33,18 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — bench scorer: literal `\n` in a report compares as a newline (SCORER CHANGE)
+- **What:** `bench/score.js` `reportContains` (every `live` checkpoint) and `runLiveList` read a
+  literal `\n` / `\r\n` / `\r` as a newline on both sides before `norm()` folds whitespace.
+  `reportContains` is exported; `fast-runner/test/score-report.test.mjs` (new).
+- **Why:** staticform run fdc1ed25 (grok-4.3/phase2, 11/12): the model reported the textarea as
+  `Multi-line\ntext here` (copied JSON-escaped from the tool result) and "reported the live
+  textarea value" failed against the real newline.
+- **Files:** `bench/score.js`, `fast-runner/test/score-report.test.mjs`.
+- **Watch out:** comparability: only runs that failed a text checkpoint through an escaped
+  newline score differently from earlier runs; everything else is unchanged.
+- **Status:** committed; unit test.
+
 ## 2026-09-15 — toolset test: 45 server tools (fast_ext_reload), asserted absent from phase2 / no-cdp
 - **What:** `fast-runner/test/toolset.test.mjs` `TOOLS.length` 44 → 45 plus: `fast_ext_reload`
   is on the server (default `"*"` toolset exposes it) and is NOT in the phase2 or no-cdp tool
