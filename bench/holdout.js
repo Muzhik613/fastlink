@@ -62,12 +62,13 @@ const JQUI_INLINE = `() => {
 const SELECT2_SINGLE = `() => {
   const s = document.querySelector('select.js-example-basic-single');
   if (!s) return null;
-  // What the user sees = the widget's rendered selection (Select2's own container,
-  // the element right after the hidden <select>). select2('data')[0].text read "AK"
-  // here on hvm, i.e. the option VALUE, so it cannot prove the visible state.
+  // What the user sees = the widget's rendered selection TEXT (Select2's own container,
+  // the element right after the hidden <select>). Both select2('data')[0].text and the
+  // rendered node's title attribute read the option VALUE ("AK") on this page — only
+  // the text node carries "Alaska" (verified live on hvm).
   const w = s.nextElementSibling;
   const r = w && w.querySelector('.select2-selection__rendered');
-  const shown = r ? (r.getAttribute('title') || r.textContent || '') : '';
+  const shown = r ? (r.textContent || '') : '';
   return { url: location.href, value: s.value, shown: shown.replace(/^×/, '').trim() };
 }`;
 
