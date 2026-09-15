@@ -36,6 +36,10 @@ rig_up() {
   if ! pgrep -u "$USER" -f "user-data-dir=$RIG_PROFILE" > /dev/null; then
     [ -x "$RIG_CHROME" ] || { echo "no Chrome for Testing under /home/dev/.local/share/fastlink-bench-chrome (npx @puppeteer/browsers install chrome@stable --path …)"; return 1; }
     mkdir -p "$RIG_PROFILE"
+    # Chrome keeps the extension's service-worker script (background.js + its imports)
+    # in the profile's ScriptCache across restarts: a "restart" after rsyncing
+    # index.js/text.js ran the OLD worker while content scripts (page.js) were fresh.
+    rm -rf "$RIG_PROFILE/Default/Service Worker/ScriptCache"
     RIG_LOG="$RIG_PROFILE/chrome.log" daemon "$RIG_CHROME" \
       --load-extension="$RIG_REPO/fast-ext" --user-data-dir="$RIG_PROFILE" \
       --no-first-run --no-default-browser-check --disable-features=ExtensionsToolbarMenu \

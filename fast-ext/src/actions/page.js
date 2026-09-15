@@ -1105,7 +1105,8 @@ const markTruncated = (snap, hintFor) => {
   const dropped = { ...d };
   if (off) dropped.offscreen = off;
   const parts = [hintFor(dropped)];
-  if (snap.hint) { parts.push(snap.hint); delete snap.hint; }
+  if (snap.hint) parts.push(snap.hint);
+  delete snap.hint;   // serializeSnapshot emits hint:undefined — spreading it would erase ours
   return { truncated: true, dropped, hint: parts.join(' | '), ...snap };
 };
 const offscreenHint = (d) => d.offscreen

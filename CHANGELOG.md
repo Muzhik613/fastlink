@@ -19,6 +19,21 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — hvm rig: clear the extension service-worker ScriptCache on Chrome launch; snapshot `hint` survives the spread
+- **What:** `bench/hvm-rig.sh` removes `$RIG_PROFILE/Default/Service Worker/ScriptCache`
+  before launching Chrome. `page.js` `markTruncated` always deletes the serializer's
+  `hint:undefined` before spreading (it erased the truncation hint on explicit
+  `fast_snapshot`).
+- **Why:** two rig "restarts" after fast-forwarding the feedback build still ran the OLD
+  background worker (`fast_key_press` returned `{keyDispatched,target:"INPUT#id"}`, the
+  deleted `key.js` shape) while content scripts were current: Chrome serves an unpacked
+  extension's SW script from the profile cache until the extension is reloaded. Clearing
+  the cache dir fixed it on the spot.
+- **Files:** `bench/hvm-rig.sh`, `fast-ext/src/actions/page.js`.
+- **Watch out:** only the rig profile; the Windows copy still needs a manual reload at
+  chrome://extensions after a sync.
+- **Status:** committed; verified on hvm.
+
 ## 2026-09-15 — Extension: page results cross `executeScript` as a JSON string (Chrome sorts returned object keys)
 - **What:** `index.js` `pageBridge` returns `JSON.stringify(result)` and `runBridge`
   parses it; `text.js` does the same for `fast_text`. `labelFor` strips a wrapping
