@@ -52,22 +52,91 @@ const STATE_TOOLS = new Set([
 const READ_TOOLS = new Set(['fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_evaluate', 'fast_marks', 'fast_scout', 'fast_list', 'fast_console', 'fast_network']);
 const isStateChanging = (e) => STATE_TOOLS.has(e.name);
 const isRead = (e) => READ_TOOLS.has(e.name) || (e.name === 'fast_wait' && !!(e.args && e.args.text));
-// Tool-result JSON vs. what the model copies from it: unescape \n and \", collapse whitespace, lowercase.
-const normQuote = (s) => String(s ?? '').replace(/\\n/g, ' ').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_, h) => String.fromCharCode(parseInt(h, 16))).replace(/\s+/g, ' ').trim().toLowerCase();
+// ONE normalization for both sides of the evidence match (tool results and the
+// model's quote): JSON escapes copied verbatim (\uXXXX \n \t \" \\ \/) unescaped,
+// NFKC (… → ..., fullwidth forms), curly quotes → straight, dash variants → "-",
+// zero-width chars dropped, whitespace (nbsp included) collapsed, lowercased.
+export const normQuote = (s) => String(s ?? '')
+  .replace(/\\u([0-9a-f]{4})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+  .replace(/\\[nrt]/g, ' ').replace(/\\(["\\/])/g, '$1')
+  .normalize('NFKC')
+  .replace(/[‘’‚′]/g, "'").replace(/[“”„″]/g, '"')
+  .replace(/[‐-―−]/g, '-')
+  .replace(/[​-‍⁠﻿]/g, '')
+  .replace(/\s+/g, ' ').trim().toLowerCase();
 const currentUrl = (run) => (run.urlTrail || [])[run.urlTrail?.length - 1] || '';
 
-// Every tool result passes through here. FastLink reports failures as {"error":…}
-// in the text payload (not MCP isError). A result carrying `url` (fast_tab/nav/
-// click/snapshot/wait, or its auto-snapshot's) extends urlTrail; a successful
-// text joins the evidence corpus tagged with the URL it was read on.
-export function recordResult(run, text, isError) {
+// The units a model quotes from a result: every string/number VALUE of the JSON
+// (a content block, a field value, a label, a URL), split into lines, plus object
+// keys that read as labels (contain a space: a {fields} name). Plain keys
+// ("value", "text") are structure, never evidence. A non-JSON result is its lines.
+const MAX_LEAVES = 20_000;
+function leafLines(text, o) {
+  const out = [];
+  const add = (s) => { for (const l of String(s).split(/\r?\n/)) { const n = normQuote(l); if (n) out.push(n); } };
+  const walk = (v) => {
+    if (out.length >= MAX_LEAVES || v == null) return;
+    if (typeof v === 'string' || typeof v === 'number') return add(v);
+    if (Array.isArray(v)) { for (const x of v) walk(x); return; }
+    if (typeof v === 'object') for (const [k, x] of Object.entries(v)) { if (/\s/.test(k)) add(k); walk(x); }
+  };
+  if (o && typeof o === 'object') walk(o); else add(text);
+  return out;
+}
+
+// Every tool result passes through here, ALL its text blocks. FastLink reports
+// failures as {"error":…} in the first block (not MCP isError). A result carrying
+// `url` (fast_tab/nav/click/snapshot/wait, or its auto-snapshot's) extends
+// urlTrail; a successful result joins the evidence corpus — full text, never a
+// preview — tagged with the URL it was read on, pre-normalized for the gate.
+export function recordResult(run, texts, isError) {
+  const parts = (Array.isArray(texts) ? texts : [texts]).map(t => String(t ?? ''));
+  const text = parts[0] || '';
   let o = null;
-  if (text.startsWith('{')) { try { o = JSON.parse(text); } catch {} }
+  if (text.startsWith('{') || text.startsWith('[')) { try { o = JSON.parse(text); } catch {} }
   const ok = !isError && typeof o?.error !== 'string';
   const url = typeof o?.url === 'string' ? o.url : typeof o?.snapshot?.url === 'string' ? o.snapshot.url : '';
   if (url && currentUrl(run) !== url) run.urlTrail.push(url);
-  if (ok) run.corpus.push({ text, url: currentUrl(run) });
+  if (ok) run.corpus.push(corpusRow(parts, currentUrl(run)));
   return ok;
+}
+export function corpusRow(parts, url = '') {
+  const lines = [];
+  for (const p of parts) {
+    let po = null;
+    if (p.startsWith('{') || p.startsWith('[')) { try { po = JSON.parse(p); } catch {} }
+    lines.push(...leafLines(p, po));
+  }
+  const text = parts.join('\n');
+  return { text, url, norm: normQuote(text), leaves: '\n' + lines.join('\n') + '\n', leafSet: new Set(lines) };
+}
+
+// What the evidence quotes. (1) Quoted spans, each quote kind paired with its own
+// closer ("…" “…” ‘…’ `…`, and '…' only when not an apostrophe) at ANY length, so
+// a 3-char `value="JFK"` cannot shift the pairing of every later quote. (2) The
+// unquoted segments between separators (newline, " ... ", ;, |, (), =, ", ", ": ").
+// (3) Word runs of 3-6 words. All normalized like the corpus.
+const QUOTED = /"([^"\n]{1,300})"|“([^”\n]{1,300})”|‘([^’\n]{1,300})’|`([^`\n]{1,300})`|(?<![\p{L}\p{N}])'([^'\n]{1,300})'(?![\p{L}\p{N}])/gu;
+const SEGMENT_SEP = /\n|\s(?:\.{2,}|…|—|–|-|\|)\s|[;|()=]|,\s|:\s/;
+const TRIM_PUNCT = /^[\s"'`.,;:!?]+|[\s"'`.,;:!?]+$/g;
+export function evidenceFragments(ev) {
+  const raw = [];
+  for (const m of String(ev).matchAll(QUOTED)) raw.push(m.slice(1).find(x => x != null));
+  for (const seg of String(ev).replace(QUOTED, '\n').split(SEGMENT_SEP)) raw.push(seg);
+  const words = normQuote(ev).split(' ').filter(Boolean);
+  for (let n = 6; n >= 3; n--) for (let i = 0; i + n <= words.length; i++) raw.push(words.slice(i, i + n).join(' '));
+  return [...new Set(raw.map(f => normQuote(f).replace(TRIM_PUNCT, '')).filter(f => f.length >= 3))];
+}
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Does corpus entry `c` contain fragment `f`? Strict by length: a 3-char quote
+// must BE a whole value/line ("JFK"); a single word of 4+ chars must stand as a
+// whole word inside a value/line ("Metrics", "£45.17", "10/15/2026"); a phrase
+// must appear inside one value/line or in the raw result text.
+function quotes(c, f) {
+  if (c.leafSet.has(f)) return true;
+  if (f.length < 4) return false;
+  if (!f.includes(' ')) return new RegExp(`(?<![\\p{L}\\p{N}])${escRe(f)}(?![\\p{L}\\p{N}])`, 'u').test(c.leaves);
+  return c.leaves.includes(f) || c.norm.includes(f);
 }
 
 // What a call was aimed at; the same target under another tool still counts as a retry.
@@ -94,16 +163,43 @@ export function partialFailures(name, args, text) {
   }
   return out;
 }
+// Sections a successful fill/select RESULT says it acted in: the `section` of each
+// written field's `filled` / `field` descriptor (fast_select_option reports one).
+export function resultSections(text) {
+  let o = null;
+  try { o = JSON.parse(text); } catch { return []; }
+  const out = new Set();
+  const take = (r) => { if (!r || typeof r !== 'object' || typeof r.error === 'string') return; for (const d of [r.filled, r.field]) if (d && typeof d.section === 'string' && d.section) out.add(d.section); };
+  take(o);
+  for (const bag of [o?.fields, o?.results]) if (bag && typeof bag === 'object') for (const r of Object.values(bag)) { take(r); take(r?.result); }
+  return [...out];
+}
 // Targets a SUCCESSFUL call acted on: its own target, every {fields} / selections
-// label and every batch step target — minus what it reported as missed.
+// label and every batch step target — minus what it reported as missed — plus the
+// SECTION each written field sat in (args `section`/`near`, top-level or per field,
+// and the result's own report): a "section with no input yet" miss is resolved by
+// filling the created field with section:<that label>, exactly as its hint says.
 const FILL_SELECT = new Set(['fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_type', 'fast_fill_vision', 'fast_batch']);
+const sectionsOf = (args, missed) => {
+  const top = args?.section ?? args?.near;
+  const out = [];
+  const fields = args?.fields && typeof args.fields === 'object' ? Object.entries(args.fields) : [];
+  for (const [k, v] of fields) {
+    if (missed.has(k)) continue;
+    const s = v && typeof v === 'object' ? (v.section ?? v.near ?? top) : top;
+    if (s) out.push(String(s));
+  }
+  if (!fields.length && top && !missed.has(target({ args }))) out.push(String(top));
+  return out;
+};
 const succeededTargets = (e) => {
   if (!e.ok) return [];
   const missed = new Set((e.partial || []).map(p => p.target));
   const ts = [target(e), ...Object.keys(e.args?.fields || {}), ...Object.keys(e.args?.selections || {})];
-  for (const s of e.args?.actions || e.args?.steps || []) ts.push(stepTarget(s), ...Object.keys(s?.args?.fields || {}), ...Object.keys(s?.args?.selections || {}));
-  return ts.filter(t => t && !missed.has(t));
+  for (const s of e.args?.actions || e.args?.steps || []) ts.push(stepTarget(s), ...Object.keys(s?.args?.fields || {}), ...Object.keys(s?.args?.selections || {}), ...sectionsOf(s?.args, missed));
+  return [...ts.filter(t => t && !missed.has(t)), ...sectionsOf(e.args, missed), ...(e.sections || [])];
 };
+const sameTarget = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
 const describe = (f) => f.name + (f.target ? ` ${JSON.stringify(f.target)}` : '');
 // Failed calls whose intent never succeeded afterwards (latest attempt per tool+target).
 // A failed ACTION needs a retry on its target (or another tool on it). A failed
@@ -118,14 +214,14 @@ export function unresolvedFailures(log) {
   log.forEach((e, i) => {
     const later = log.slice(i + 1);
     for (const p of e.partial || []) {
-      const retried = later.some(x => FILL_SELECT.has(x.name) && succeededTargets(x).includes(p.target))
+      const retried = later.some(x => FILL_SELECT.has(x.name) && succeededTargets(x).some(t => sameTarget(t, p.target)))
         || (!FILL_SELECT.has(p.name) && later.some(x => x.ok && x.name === p.name && target(x) === p.target));
       if (!retried) out.set(`${p.name}\0${p.target}`, { name: p.name, target: p.target, t: e.t });
     }
     if (e.ok) return;
     const tg = target(e);
     const retried = later.some(x => x.ok && (x.name === e.name ? target(x) === tg : tg !== '' && target(x) === tg))
-      || (tg !== '' && later.some(x => succeededTargets(x).includes(tg)));
+      || (tg !== '' && later.some(x => succeededTargets(x).some(t => sameTarget(t, tg))));
     const overtaken = isReadOrWait(e) && later.some((x, j) => x.ok && isStateChanging(x) && later.slice(j + 1).some(y => y.ok && isRead(y)));
     if (!retried && !overtaken) out.set(`${e.name}\0${tg}`, { name: e.name, target: tg, t: e.t });
   });
@@ -195,13 +291,8 @@ export function gateProblems(run, args) {
   const ev = String(args?.evidence ?? '').trim();
   if (!ev) problems.push('evidence is empty — quote what you read back from the page, plus the URL');
   else {
-    const frags = [];
-    for (const m of ev.matchAll(/["“”'‘’`]([^"“”'‘’`]{4,300})["“”'‘’`]/g)) frags.push(m[1]);
-    const words = normQuote(ev).split(' ').filter(Boolean);
-    for (let n = 6; n >= 3; n--) for (let i = 0; i + n <= words.length; i++) frags.push(words.slice(i, i + n).join(' '));
-    for (const w of words) if (/\d/.test(w) && w.length >= 6) frags.push(w);
-    const qs = frags.map(f => normQuote(f).replace(/[.,;:]+$/, '')).filter(q => q.length >= 4);
-    const hits = (run.corpus || []).filter(c => { const t = normQuote(c.text); return qs.some(q => t.includes(q)); });
+    const qs = evidenceFragments(ev);
+    const hits = (run.corpus || []).filter(c => qs.some(q => quotes(c, q)));
     const now = currentUrl(run);
     if (!hits.length) problems.push('evidence does not quote any tool result of this run — copy a phrase exactly as the last fast_snapshot/fast_text result showed it (a content text, a field value, a number), then report again');
     else if (now && !hits.some(c => c.url === now)) problems.push(`evidence quotes a result read on ${hits[hits.length - 1].url || 'an earlier page'}, but the page is now at ${now}; read the current page (fast_snapshot/fast_text) and quote that result`);
@@ -425,7 +516,8 @@ async function loop(run) {
         const unresolved = unresolvedFailures(run.toolLog);
         const claims = claimMismatch(run.toolLog, args.result);
         if (problems.length && run.gateRefusals.length < MAX_GATE_REFUSALS) {
-          run.gateRefusals.push({ turn: run.turns.length, t: Date.now() - t0, problems, ...(unresolved.length ? { unresolvedFailures: unresolved } : {}), ...(claims.length ? { claimMismatch: claims } : {}) });
+          // the refused report itself, so a post-mortem sees what was quoted
+          run.gateRefusals.push({ turn: run.turns.length, t: Date.now() - t0, problems, result: String(args.result ?? '').slice(0, 2000), evidence: String(args.evidence ?? '').slice(0, 4000), ...(unresolved.length ? { unresolvedFailures: unresolved } : {}), ...(claims.length ? { claimMismatch: claims } : {}) });
           onEvent?.({ type: 'gate', problems });
           results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: `report_done refused: ${problems.join('; ')}. Fix that, then call report_done again.` }] });
           continue;
@@ -453,14 +545,16 @@ async function loop(run) {
         catch (e) { res = { content: [{ type: 'text', text: `tool error: ${e.message}` }], isError: true }; }
       }
       const ms = Date.now() - t1;
-      const firstText = res?.content?.find(c => c.type === 'text')?.text || '';
-      ok = recordResult(run, firstText, !!res?.isError); // urlTrail + evidence corpus (corpus is memory only, not written to runs.jsonl)
+      const texts = (res?.content || []).filter(c => c.type === 'text').map(c => c.text);
+      const firstText = texts[0] || '';
+      ok = recordResult(run, texts, !!res?.isError); // urlTrail + evidence corpus (corpus is memory only, not written to runs.jsonl)
       // 1200 chars: enough of a result to post-mortem a fumble from runs.jsonl
       // (an error's candidates / a batch's per-step results); 160 showed only the
       // first key of a snapshot.
       const preview = firstText.slice(0, 1200);
       const partial = ok ? partialFailures(real || u.name, args, firstText) : [];
-      run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview, ...(partial.length ? { partial } : {}) });
+      const sections = ok ? resultSections(firstText) : [];
+      run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview, ...(partial.length ? { partial } : {}), ...(sections.length ? { sections } : {}) });
       onEvent?.({ type: 'tool', name: real || u.name, args, ms, ok, preview });
       run.consecutiveErrors = ok ? 0 : run.consecutiveErrors + 1;
       results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResultContent(res), ...(ok ? {} : { is_error: true }) });

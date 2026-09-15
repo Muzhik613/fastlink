@@ -33,6 +33,48 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast-runner gate: evidence matcher normalizes both sides and matches values, not raw JSON; refused reports are stored
+- **What:** runner.mjs. (1) `normQuote` is the ONE normalization for result and quote: JSON
+  escapes unescaped (\uXXXX \n \t \" \\ \/), NFKC, curly quotes → straight, dash variants →
+  "-", zero-width dropped, whitespace collapsed, lowercased. (2) `recordResult` takes EVERY text
+  block of a result (was: the first) and `corpusRow` pre-computes the result's LEAF lines: every
+  JSON string/number value split into lines, plus keys that contain a space ({fields} labels);
+  plain keys ("value", "name") are never evidence. (3) `evidenceFragments`: quoted spans paired
+  per quote kind at ANY length ("…" “…” ‘…’ `…`, '…' only when not an apostrophe), unquoted
+  segments between separators (newline, " ... ", ; | ( ) =, ", ", ": "), 3-6 word runs. (4)
+  `quotes(row, f)`: a 3-char fragment must BE a whole value/line ("JFK"); one word of 4+ chars
+  must stand as a whole word inside a value/line; a phrase must sit inside one value/line or the
+  raw text. Replaces the old single-regex pairing + raw-JSON substring test. (5) Each
+  `gateRefusals` row stores the refused report's `result` and `evidence`.
+- **Why:** hvm flightsearch hit the refusal cap 4× (78477b54, 319ebee7, df8959b2, fcd7afc5,
+  then gateOverridden) on evidence whose values WERE in the results: `value="JFK" ...
+  value="LAX" ... value="10/15/2026" ...`. The old regex skipped the 3-char `"JFK"` and then
+  paired every later closing quote with the next opening one, so every fragment read
+  ` ... value=`; `value="10/15/2026"` never equals the result's `"value":"10/15/2026"`; and
+  `value="JFK" (item 284 in snapshot)` had no 4+ char fragment at all. Matcher too strict, not
+  fabricated quotes. Recording #4 (f96c8d9c) was refused twice the same way, but refused
+  evidence was not stored, so its exact strings are lost (the accepted third one — two quoted
+  headings — passes old and new).
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/test/gate.test.mjs`.
+- **Watch out:** a real quote of a structure word alone ("value", "name") still fails; a 2-char
+  quote never counts.
+- **Status:** committed; `node --test test/*.test.mjs` passes (the four hvm evidences + the
+  JSON-copied and `label=value` forms pass; fabricated values/phrases/2-char fragments fail).
+
+## 2026-09-15 — fast-runner gate: a missed label is resolved by a later fill in section:<that label>
+- **What:** `succeededTargets` (runner.mjs) also returns the SECTION each written field sat in:
+  args `section`/`near` (top-level or per field, only for fields not missed; batch steps too)
+  and the result's own `filled.section` / `field.section` (`resultSections`, stored on the
+  toolLog entry as `sections`). Target comparison is case-insensitive.
+- **Why:** recording #4 filled both URI fields with `fast_fill {fields:{"URIs 1": …},
+  section:"Authorized JavaScript origins"}` (t=26.4/26.9s, verified) — exactly what the
+  section-miss hint says — but the gate matched only the label and refused "your last attempt
+  to fast_fill \"Authorized JavaScript origins\" failed and was never retried"; Grok re-filled
+  the same values (t=38.4/39.1s), ~10s of turns.
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/test/gate.test.mjs` (that log).
+- **Watch out:** a fill in the section that MISSED its field resolves nothing.
+- **Status:** committed; unit tests pass.
+
 ## 2026-09-15 — fast_fill section miss: buttons ranked (add/+ first, help/close icons never named); a section label is a final miss (no auto-wait, no "not rendered yet")
 - **What:** page.js, generic. (1) `rankCreateButtons` (module, pure): a section-with-no-input
   miss lists `buttons` by rank — tier 0 an add/new/create/insert/append word (letter/digit

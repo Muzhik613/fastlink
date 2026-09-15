@@ -1,7 +1,7 @@
 // node --test — the report_done evidence gate on synthetic tool logs (no browser, no model).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gateProblems, recordResult, unresolvedFailures, claimMismatch, partialFailures, buildSystem, loadToolset } from '../runner.mjs';
+import { gateProblems, recordResult, corpusRow, unresolvedFailures, claimMismatch, partialFailures, resultSections, buildSystem, loadToolset } from '../runner.mjs';
 
 const LIST = 'https://dash.cloudflare.com/acc/workers-and-pages';
 const WORKER = 'https://dash.cloudflare.com/acc/workers/services/view/fastlink-relay/production';
@@ -12,7 +12,8 @@ function runOf(rows) {
   rows.forEach(([name, args, text = '{}', isError = false], i) => {
     const ok = recordResult(run, text, isError);
     const partial = ok ? partialFailures(name, args, text) : [];
-    run.toolLog.push({ t: i * 1000, name, args, ok, preview: text.slice(0, 100), ...(partial.length ? { partial } : {}) });
+    const sections = ok ? resultSections(text) : [];
+    run.toolLog.push({ t: i * 1000, name, args, ok, preview: text.slice(0, 100), ...(partial.length ? { partial } : {}), ...(sections.length ? { sections } : {}) });
   });
   return run;
 }
@@ -21,7 +22,7 @@ const txt = (text) => JSON.stringify({ from: 'body', text });
 const problems = (run, evidence) => gateProblems(run, { result: 'x', evidence }).join(';');
 
 test('check 1 (as before): a read must follow the last action; evidence must quote a result', () => {
-  const corpus = [{ text: '{"content":[{"text":"It\'s Only the Himalayas"},{"text":"£45.17"}],"url":"https://x"}', url: '' }];
+  const corpus = [corpusRow(['{"content":[{"text":"It\'s Only the Himalayas"},{"text":"£45.17"}],"url":"https://x"}'])];
   const log = (rows) => rows.map(([name, ok, args = {}]) => ({ name, ok, args }));
   const run = (rows) => ({ toolLog: log(rows), corpus, urlTrail: [], gateRefusals: [] });
   assert.match(problems(run([['fast_tab', true], ['fast_fill', true]]), '"£45.17"'), /no tool has read the page since your last fast_fill/);
@@ -102,7 +103,7 @@ test('check 3: a failed call never retried is refused once, then recorded as unr
   // a target-less failure (fast_evaluate disabled) is resolved only by the same tool succeeding
   const evalLog = [{ name: 'fast_evaluate', ok: false, args: { fn: '() => 1' }, t: 0 }, { name: 'fast_snapshot', ok: true, args: {}, t: 1 }];
   assert.deepEqual(unresolvedFailures(evalLog), [{ name: 'fast_evaluate', target: '', t: 0 }]);
-  assert.match(gateProblems({ toolLog: evalLog, corpus: [{ text: '{"content":[{"text":"page body here"}]}', url: '' }], urlTrail: [], gateRefusals: [] }, { evidence: '"page body here"' }).join(';'), /your last attempt to fast_evaluate failed/);
+  assert.match(gateProblems({ toolLog: evalLog, corpus: [corpusRow(['{"content":[{"text":"page body here"}]}'])], urlTrail: [], gateRefusals: [] }, { evidence: '"page body here"' }).join(';'), /your last attempt to fast_evaluate failed/);
   assert.deepEqual(unresolvedFailures([...evalLog, { name: 'fast_evaluate', ok: true, args: { fn: '() => 2' }, t: 2 }]), []);
   // repeated failures of one intent collapse to the latest attempt
   const twice = [{ name: 'fast_click', ok: false, args: { text: 'Go' }, t: 0 }, { name: 'fast_click', ok: false, args: { text: 'Go' }, t: 1 }];
@@ -216,4 +217,108 @@ test('check 3: each missed field of fast_fill {fields} / failed batch step is it
 
 test('system prompt tells the model an unretried failure blocks report_done', () => {
   assert.match(buildSystem(loadToolset('phase2'), ''), /A tool call that failed and was never retried also blocks report_done/);
+});
+
+// ── evidence matcher: the real reports the old matcher refused ─────────────────
+const AA = 'https://www.aa.com/booking/search/find-flights';
+const aaRows = () => [
+  ['fast_tab', { url: AA }, `{"id":1,"url":"${AA}"}`],
+  ['fast_batch', { actions: [{ name: 'fast_fill', args: { fields: { 'Leaving from': 'JFK', 'Going to': 'LAX', 'Departure date': '10/15/2026', 'Return date': '10/22/2026' } } }] },
+    JSON.stringify({ summary: '4/4 steps ok', ok: 4, results: [
+      { step: 0, name: 'fast_fill', ok: true, result: { verified: true, fields: {
+        'Leaving from': { verified: true, value: 'JFK', filled: { tag: 'input', placeholder: 'Leaving from', name: 'orig', ariaLabel: 'Departure airport' } },
+        'Going to': { verified: true, value: 'LAX', filled: { tag: 'input', placeholder: 'Going to', name: 'dest' } },
+        'Departure date': { verified: true, value: '10/15/2026', filled: { tag: 'input', placeholder: 'mm/dd/yyyy', ariaLabel: 'Departure date' } },
+        'Return date': { verified: true, value: '10/22/2026', filled: { tag: 'input', placeholder: 'mm/dd/yyyy', ariaLabel: 'Return date' } } } } },
+      { step: 1, name: 'fast_select_option', ok: true, result: { verified: true, picked: '2', value: '2', field: { tag: 'select', label: 'Number of passengers', section: 'Passengers' } } },
+      { step: 2, name: 'fast_select_option', ok: true, result: { verified: true, picked: 'Business / First', value: 'Business / First', field: { tag: 'select', label: 'Class' } } },
+      { step: 3, name: 'fast_select_option', ok: true, result: { verified: true, picked: 'American Airlines', value: 'American Airlines', field: { tag: 'select', label: 'Airline' } } }] })],
+  ['fast_snapshot', { full: true, limit: 30 }, JSON.stringify({ url: AA, title: 'American Airlines - Advanced search', items: [
+    { i: 284, tag: 'input', text: 'JFK', role: 'combobox', value: 'JFK', name: 'orig', placeholder: 'Leaving from' },
+    { i: 290, tag: 'select', value: 'Business / First', innerText: 'Show all  Business / First', label: 'Class' }] })],
+];
+
+test('evidence: hvm flightsearch reports (refused 3× and overridden by the old matcher) quote real values', () => {
+  const run = runOf(aaRows());
+  // 18:26 / 18:41 / 18:44 / 19:53 (78477b54, 319ebee7, df8959b2, fcd7afc5) and 17:48 (d133d581): the
+  // 3-char "JFK" shifted the old quote pairing onto ` ... value=`, and value="…" never equals "value":"…"
+  for (const ev of [
+    'value="JFK" (Leaving from), value="LAX" (Going to), value="10/15/2026" (Departure date), value="10/22/2026" (Return date); select value="2" (Number of passengers), value="Business / First" (Class), value="American Airlines" (Airline)',
+    `value="JFK" ... value="LAX" ... value="10/15/2026" ... value="10/22/2026" ... value="2" ... value="Business / First" ... value="American Airlines" (URL ${AA})`,
+    `value="JFK" ... value="LAX" ... value="10/15/2026" ... value="10/22/2026" ... value="2" ... value="Business / First" ... value="American Airlines" (from fast_snapshot items on ${AA})`,
+    'value="JFK" (item 284 in snapshot)',
+    '"value":"JFK","name":"orig" ... "value":"LAX","name":"dest" ... "value":"10/15/2026","name":"date"',
+    'Leaving from=JFK; Going to=LAX; Departure date=10/15/2026',
+  ]) assert.equal(problems(run, ev), '', ev);
+});
+
+test('evidence: fabricated quotes still fail — values, phrases and short tokens that no result holds', () => {
+  const run = runOf(aaRows());
+  for (const ev of [
+    'value="SFO" ... value="ORD" ... value="11/01/2026" ... value="Economy"',
+    'the price is right, trust me',
+    '"SFO" and "ORD"',
+    'Flights from Boston to Denver on 11/01/2026',
+    'value="JF" (item 284)',                       // a 2-char fragment of a real value is not a quote
+    `"Search completed, 42 flights found" at ${AA}`,
+  ]) assert.match(problems(run, ev), /evidence does not quote/, ev);
+  // structure words alone ("value", "name", "placeholder") are JSON keys, never evidence
+  assert.match(problems(run, 'value name placeholder'), /evidence does not quote/);
+});
+
+test('evidence: normalization — newlines between blocks, JSON escapes, curly quotes, dashes, every text block', () => {
+  const SEL = 'https://www.selenium.dev/selenium/web/web-form.html';
+  const run = runOf([['fast_tab', { url: SEL }, `{"id":1,"url":"${SEL}"}`], ['fast_snapshot', {}, snap(SEL, 'Web form', 'Text input', 'Password', 'Textarea', 'Open this select menu')]]);
+  // selenium 18:00 (c76dc2c9): consecutive content blocks copied as lines
+  assert.equal(problems(run, `Web form\nText input\n Password\n Textarea | ${SEL}`), '');
+  assert.equal(problems(run, 'the select reads \\"Open this select menu\\"'), '');            // JSON-escaped quote copied verbatim
+  assert.equal(problems(run, 'heading “Web form”, then ‘Text input’'), '');                  // curly quotes
+  const dash = runOf([['fast_snapshot', {}, snap('https://a', 'Google Auth Platform – Google Cloud console')]]);
+  assert.equal(problems(dash, '"Google Auth Platform - Google Cloud console"'), '');         // en dash vs hyphen
+  // a quote from the SECOND text block of a result is in the corpus too
+  const two = { toolLog: [{ name: 'fast_snapshot', ok: true, args: {} }], corpus: [], urlTrail: [], gateRefusals: [] };
+  recordResult(two, ['{"url":"https://b","items":[]}', 'Extra block: Order #77812 confirmed'], false);
+  assert.equal(problems(two, '"Order #77812 confirmed"'), '');
+});
+
+// ── gcpform recording #4 (relay, grok-4.3, 2026-09-15T20:03:03Z, f96c8d9c) ────
+const GCP4 = 'https://console.cloud.google.com/auth/clients/create?project=booming-argon-464605-n5';
+const JS4 = 'Authorized JavaScript origins', RD4 = 'Authorized redirect URIs';
+const sectionMiss = (l, btns) => ({ error: `No visible fillable element matching "${l}". Nothing was filled.`, candidates: [{ tag: 'input', label: 'Name' }], section: l, buttons: btns, hint: `"${l}" is a section with no input yet` });
+const uriFill = (v) => JSON.stringify({ verified: true, filled: 1, missed: 0, total: 1, fields: { 'URIs 1': { verified: true, value: v, filled: { tag: 'input', label: 'URIs 1', placeholder: 'https://www.example.com' } } }, snapshot: { url: GCP4, items: [] } });
+const gcp4 = [
+  ['fast_tab', { url: GCP4 }, `{"id":1220561903,"url":"${GCP4}"}`],
+  ['fast_snapshot', { full: true }, snap(GCP4, 'Google Auth Platform')],
+  ['fast_snapshot', { full: true, limit: 200 }, snap(GCP4, 'Create OAuth client ID', JS4, RD4)],
+  ['fast_select_option', { field: 'Application type', option: 'Web application' }, JSON.stringify({ verified: true, picked: 'Web application', field: { tag: 'cfc-select', label: 'Application type', section: 'Create OAuth client ID' }, snapshot: { url: GCP4, items: [] } })],
+  ['fast_fill', { fields: { Name: 'FastLink Bench', [JS4]: 'https://bench.example.com', [RD4]: 'https://bench.example.com/callback' } },
+    JSON.stringify({ verified: false, filled: 1, missed: 2, total: 3, fields: { Name: { verified: true, value: 'FastLink Bench', filled: { tag: 'input', label: 'Name' } }, [JS4]: sectionMiss(JS4, ['Add URI', 'Help with Javascript origins']), [RD4]: sectionMiss(RD4, ['Add URI']) } })],
+  ['fast_click', { text: 'Add URI', index: 0 }, JSON.stringify({ clicked: { text: 'Add URI' }, url: GCP4 })],
+  ['fast_click', { text: 'Add URI', index: 1 }, JSON.stringify({ clicked: { text: 'Add URI' }, url: GCP4 })],
+  ['fast_fill', { fields: { 'URIs 1': 'https://bench.example.com' }, section: JS4 }, uriFill('https://bench.example.com')],
+  ['fast_fill', { fields: { 'URIs 1': 'https://bench.example.com/callback' }, section: RD4 }, uriFill('https://bench.example.com/callback')],
+  ['fast_snapshot', { full: true, limit: 50 }, snap(GCP4, 'Create OAuth client ID', JS4, RD4)],
+];
+
+test('check 3: a missed section label is resolved by a later fill with section:<that label> (recording #4)', () => {
+  const run = runOf(gcp4);
+  assert.deepEqual(unresolvedFailures(run.toolLog), []);
+  const p = gateProblems(run, { result: 'All four fields filled', evidence: `"${JS4}" and "${RD4}" (exact phrases from the final fast_snapshot content at ${GCP4})` });
+  assert.deepEqual(p, [], p.join('\n'));
+  // only ONE section filled → the other label is still unresolved
+  const half = runOf(gcp4.filter((_, i) => i !== 8));
+  assert.deepEqual(unresolvedFailures(half.toolLog).map(f => f.target), [RD4]);
+  // a fill in that section that MISSED its field does not resolve the label
+  const missed = runOf([...gcp4.slice(0, 7), ['fast_fill', { fields: { 'URIs 1': 'x' }, section: JS4 }, JSON.stringify({ verified: false, filled: 0, missed: 1, total: 1, fields: { 'URIs 1': { error: 'No fillable element matching "URIs 1" inside section' } } })]]);
+  assert.deepEqual(unresolvedFailures(missed.toolLog).map(f => f.target), [JS4, RD4, 'URIs 1']);
+  // per-field section (fields:{label:{value, section}}) and a single {match, section} fill count too
+  const perField = runOf([...gcp4.slice(0, 7), ['fast_fill', { fields: { 'URIs 1': { value: 'a', section: JS4 }, 'URIs 2': { value: 'b', section: RD4 } } }, '{"verified":true,"fields":{}}']]);
+  assert.deepEqual(unresolvedFailures(perField.toolLog), []);
+  const single = runOf([...gcp4.slice(0, 7), ['fast_fill', { match: 'URIs 1', value: 'a', section: JS4.toLowerCase() }, '{"verified":true}'], ['fast_fill', { match: 'URIs 1', value: 'b', near: RD4 }, '{"verified":true}']]);
+  assert.deepEqual(unresolvedFailures(single.toolLog), []);
+  // ...and a fill whose RESULT reports the section it wrote in (no section arg)
+  const byResult = runOf([...gcp4.slice(0, 7),
+    ['fast_fill', { match: 'URIs 1', value: 'a', index: 0 }, JSON.stringify({ verified: true, filled: { tag: 'input', label: 'URIs 1', section: JS4 } })],
+    ['fast_select_option', { field: 'Region', option: 'EU' }, JSON.stringify({ verified: true, field: { tag: 'select', label: 'Region', section: RD4 } })]]);
+  assert.deepEqual(unresolvedFailures(byResult.toolLog), []);
 });
