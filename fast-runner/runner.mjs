@@ -30,7 +30,7 @@ Rules:
 - A result that starts with truncated:true is partial: never answer or report_done from it — call fast_snapshot full:true / fast_text / limit:N first.
 - Call ask_caller ONLY when a decision genuinely needs the caller (missing info, ambiguous choice, risky/irreversible action). Never ask for things you can find on the page.
 - Never claim success without reading it back from the page (snapshot/text/value).
-- When finished call report_done with a concise result and evidence (what you read back, URL). report_done is refused unless a read (fast_snapshot/fast_text) followed your last action and evidence quotes that result verbatim. A tool call that failed and was never retried also blocks report_done — retry it, or say in result why it is not needed. Do not end your turn without calling report_done or ask_caller.`;
+- When finished call report_done with a concise result and evidence (what you read back, URL). report_done is refused unless a read (fast_snapshot/fast_text) followed your last action and evidence quotes that result verbatim. A tool call that failed and was never retried also blocks report_done — retry it, or say in result why it is not needed. So does a result that claims an action (opened, clicked, selected, filled, submitted…) no successful tool call performed — say what you observed, not what you intended. Do not end your turn without calling report_done or ask_caller.`;
 
 // Evidence gate for report_done (a caller-facing contract, every toolset):
 //  1. the run must have READ the page after its last state-changing call;
@@ -91,6 +91,52 @@ export function unresolvedFailures(log) {
   return [...out.values()];
 }
 
+// The model's OWN action claims vs. the calls it made (no task parsing): a
+// `result` saying "opened / clicked / selected / filled / submitted …" needs a
+// successful call of that family (fast_batch steps count). Negated mentions
+// ("Search NOT clicked", "form not submitted") and "opened a (new) tab" (the
+// first page load itself) are not claims.
+// A custom dropdown is "selected" by clicking its option and a native <select>
+// can be set by fast_fill, so the select family includes both; fast_do (vision
+// act) counts for every family; fast_fill_form is still a valid batch step name.
+const CLICKS = ['fast_click', 'fast_click_xy', 'fast_do'];
+const CLAIMS = [
+  { re: /\b(opened|navigated|drilled|went to)\b/gi, family: 'fast_click / fast_nav / fast_tab (beyond the first page load)', nav: true },
+  { re: /\b(clicked|added|checked)\b/gi, family: 'fast_click', tools: CLICKS },
+  { re: /\b(selected|picked)\b/gi, family: 'fast_select_option / fast_click / fast_fill', tools: ['fast_select_option', 'fast_fill', 'fast_fill_form', ...CLICKS], enter: true },
+  { re: /\b(filled|entered|typed)\b/gi, family: 'fast_fill', tools: ['fast_fill', 'fast_fill_form', 'fast_type', 'fast_fill_vision', 'fast_do'] },
+  { re: /\b(submitted)\b/gi, family: 'fast_click / fast_key_press Enter', tools: CLICKS, enter: true },
+];
+const NEGATED_BEFORE = /(?:\b(?:not|never|no|nothing|none|neither|without|nor)|n't)\s+(?:[\w-]+\s+){0,2}$/i;
+const TAB_OPEN = /^opened\s+(?:a\s+)?(?:new\s+)?tab\b/i;
+// Successful calls, fast_batch steps flattened (incl. ifFound then/else), in log order.
+const successfulCalls = (log) => {
+  const out = [];
+  const steps = (list) => { for (const s of list || []) { if (!s || typeof s !== 'object') continue; if (s.name) out.push({ name: s.name, args: s.args || {} }); steps(s.then); steps(s.else); } };
+  for (const e of log) { if (!e.ok) continue; out.push({ name: e.name, args: e.args || {} }); if (e.name === 'fast_batch') steps(e.args?.actions || e.args?.steps); }
+  return out;
+};
+export function claimMismatch(log, result) {
+  const text = String(result ?? '');
+  const calls = successfulCalls(log || []);
+  const loads = calls.filter(c => c.name === 'fast_tab' || c.name === 'fast_nav');
+  const out = [];
+  for (const c of CLAIMS) {
+    let verb = null;
+    for (const m of text.matchAll(c.re)) {
+      if (NEGATED_BEFORE.test(text.slice(Math.max(0, m.index - 40), m.index))) continue;
+      if (c.nav && TAB_OPEN.test(text.slice(m.index)) && loads.length) continue;
+      verb = m[1].toLowerCase(); break;
+    }
+    if (!verb) continue;
+    const done = c.nav
+      ? calls.some(x => CLICKS.includes(x.name)) || loads.length > 1
+      : calls.some(x => c.tools.includes(x.name) || (c.enter && x.name === 'fast_key_press' && /^enter$/i.test(String(x.args.key || ''))));
+    if (!done) out.push({ verb, family: c.family });
+  }
+  return out;
+}
+
 export function gateProblems(run, args) {
   const log = run.toolLog || [];
   const problems = [];
@@ -121,6 +167,10 @@ export function gateProblems(run, args) {
   // one refusal per run: a prior refusal that recorded unresolvedFailures already said this
   if (!(run.gateRefusals || []).some(r => r.unresolvedFailures)) {
     for (const f of unresolvedFailures(log)) problems.push(`your last attempt to ${describe(f)} failed and was never retried; retry it or explain in \`result\` why it is not needed`);
+  }
+  // same one-refusal rule for an action the result claims but no call performed
+  if (!(run.gateRefusals || []).some(r => r.claimMismatch)) {
+    for (const c of claimMismatch(log, args?.result)) problems.push(`your result says "${c.verb}" but no ${c.family} call succeeded in this run; do it now, or rewrite result to say what you actually observed`);
   }
   return problems;
 }
@@ -258,7 +308,7 @@ function snapshot(run) {
   const base = { status: run.status, run_id: run.id };
   if (run.status === 'question') return { ...base, question: run.question, so_far: soFar(run) };
   if (run.status === 'running') return base;
-  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined, unresolvedFailures: run.unresolvedFailures || undefined };
+  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined, unresolvedFailures: run.unresolvedFailures || undefined, claimMismatch: run.claimMismatch || undefined };
 }
 
 function notify(run) {
@@ -278,6 +328,7 @@ function finish(run, status, fields = {}) {
       toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog, turns: run.turns,
       result: run.result, evidence: run.evidence, error: run.error, usage: run.usage, urlTrail: run.urlTrail,
       gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined, unresolvedFailures: run.unresolvedFailures || undefined,
+      claimMismatch: run.claimMismatch || undefined,
     }) + '\n');
   } catch {}
   run.client?.close().catch(() => {});
@@ -330,14 +381,15 @@ async function loop(run) {
       if (u.name === 'report_done') {
         const problems = gateProblems(run, args);
         const unresolved = unresolvedFailures(run.toolLog);
+        const claims = claimMismatch(run.toolLog, args.result);
         if (problems.length && run.gateRefusals.length < MAX_GATE_REFUSALS) {
-          run.gateRefusals.push({ turn: run.turns.length, t: Date.now() - t0, problems, ...(unresolved.length ? { unresolvedFailures: unresolved } : {}) });
+          run.gateRefusals.push({ turn: run.turns.length, t: Date.now() - t0, problems, ...(unresolved.length ? { unresolvedFailures: unresolved } : {}), ...(claims.length ? { claimMismatch: claims } : {}) });
           onEvent?.({ type: 'gate', problems });
           results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: `report_done refused: ${problems.join('; ')}. Fix that, then call report_done again.` }] });
           continue;
         }
         if (problems.length) run.gateOverridden = problems;
-        return finish(run, 'done', { result: args.result ?? '', evidence: args.evidence ?? '', unresolvedFailures: unresolved.length ? unresolved : null });
+        return finish(run, 'done', { result: args.result ?? '', evidence: args.evidence ?? '', unresolvedFailures: unresolved.length ? unresolved : null, claimMismatch: claims.length ? claims : null });
       }
       if (u.name === 'ask_caller') {
         run.question = String(args.question ?? '');

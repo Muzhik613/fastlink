@@ -1,7 +1,7 @@
 // node --test — the report_done evidence gate on synthetic tool logs (no browser, no model).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gateProblems, recordResult, unresolvedFailures, buildSystem, loadToolset } from '../runner.mjs';
+import { gateProblems, recordResult, unresolvedFailures, claimMismatch, buildSystem, loadToolset } from '../runner.mjs';
 
 const LIST = 'https://dash.cloudflare.com/acc/workers-and-pages';
 const WORKER = 'https://dash.cloudflare.com/acc/workers/services/view/fastlink-relay/production';
@@ -132,6 +132,43 @@ test('check 3: a failed read/wait is resolved by a later action + read; a failed
   // a failed ACTION still needs a retry on its own target: another action + read is not enough
   const actFail = [{ name: 'fast_click', ok: false, args: { text: 'Search' }, t: 0 }, { name: 'fast_key_press', ok: true, args: { key: 'Enter' }, t: 1 }, { name: 'fast_snapshot', ok: true, args: {}, t: 2 }];
   assert.deepEqual(unresolvedFailures(actFail), [{ name: 'fast_click', target: 'Search', t: 0 }]);
+});
+
+test('check 4: an action the result claims but no call performed is refused once, then recorded as claimMismatch', () => {
+  // cfworkers over relay, 2026-09-15T19:28:48Z (fbc16cf2): tab → wait → snapshot, never clicked, result says "opened"
+  const rows = [
+    ['fast_tab', { url: 'https://dash.cloudflare.com/?to=/:account/workers-and-pages' }, '{"id":1,"url":"https://dash.cloudflare.com/?to=/:account/workers-and-pages"}'],
+    ['fast_wait', { text: 'Workers & Pages', networkIdle: true, timeoutMs: 15000 }, JSON.stringify({ found: {}, snapshot: { url: LIST, content: [] } })],
+    ['fast_snapshot', { full: true, limit: 100 }, snap(LIST, 'fastlink-relay', 'gauth-father', 'gauth-broker-mt', 'gauth-broker-staging', 'fd-relay')],
+  ];
+  const run = runOf(rows);
+  const result = 'Worker "fastlink-relay" opened; other Workers listed: gauth-father, gauth-broker-mt, gauth-broker-staging, fd-relay (plus Pages).';
+  const evidence = `"fastlink-relay", "gauth-father", "gauth-broker-mt", "gauth-broker-staging", "fd-relay" at ${LIST}`;
+  assert.deepEqual(claimMismatch(run.toolLog, result), [{ verb: 'opened', family: 'fast_click / fast_nav / fast_tab (beyond the first page load)' }]);
+  const p = gateProblems(run, { result, evidence });
+  assert.deepEqual(p, ['your result says "opened" but no fast_click / fast_nav / fast_tab (beyond the first page load) call succeeded in this run; do it now, or rewrite result to say what you actually observed']);
+  run.gateRefusals.push({ turn: 4, t: 15000, problems: p, claimMismatch: claimMismatch(run.toolLog, result) });
+  assert.deepEqual(gateProblems(run, { result, evidence }), [], 'second report_done passes; the row carries claimMismatch');
+  // a genuine click run with the same claim: no refusal
+  const clicked = runOf([...rows, ['fast_click', { text: 'fastlink-relay', index: 1 }, JSON.stringify({ clicked: {}, url: WORKER })], ['fast_text', {}, txt('fastlink-relay\nMetrics')]]);
+  assert.deepEqual(claimMismatch(clicked.toolLog, 'Opened the Worker "fastlink-relay"; it shows Metrics'), []);
+  assert.deepEqual(gateProblems(clicked, { result: 'Opened the Worker "fastlink-relay"; it shows Metrics', evidence: `"Metrics" at ${WORKER}` }), []);
+  // extract: fast_tab + fast_text, result lists countries → no claim at all
+  const WIKI = 'https://en.wikipedia.org/wiki/List_of_countries_and_dependencies_by_population';
+  const extract = runOf([['fast_tab', { url: WIKI }, `{"id":2,"url":"${WIKI}"}`], ['fast_text', { selector: 'table.wikitable' }, txt('India 1,417,492,000\nChina 1,408,280,000')]]);
+  assert.deepEqual(gateProblems(extract, { result: '1. India — 1,417,492,000\n2. China — 1,408,280,000', evidence: `"India 1,417,492,000" at ${WIKI}` }), []);
+  // not claims: negations, and "opened a new tab" satisfied by the first load
+  assert.deepEqual(claimMismatch(extract.toolLog, 'Opened a new tab to the list. Search NOT clicked, form not submitted, nothing was filled'), []);
+  // other families: fill / select / submit, including fast_batch steps and Enter
+  assert.deepEqual(claimMismatch(extract.toolLog, 'Filled the name and selected Two').map(c => c.verb), ['selected', 'filled']);
+  const batch = [{ name: 'fast_batch', ok: true, args: { actions: [{ name: 'fast_fill', args: {} }, { name: 'fast_select_option', args: {} }] } }];
+  assert.deepEqual(claimMismatch(batch, 'Filled the name and selected Two'), []);
+  assert.deepEqual(claimMismatch([{ name: 'fast_key_press', ok: true, args: { key: 'Enter' } }], 'Submitted the search'), []);
+  // react-select: fast_select_option failed, the pick was done by clicks → "Selected" is backed
+  assert.deepEqual(claimMismatch([{ name: 'fast_tab', ok: true, args: {} }, { name: 'fast_select_option', ok: false, args: {} }, { name: 'fast_click_xy', ok: true, args: {} }], 'Selected "Forest" in the Single dropdown'), []);
+  // a batch step named fast_fill_form (rewritten to fast_fill by the batch) backs "Filled"
+  assert.deepEqual(claimMismatch([{ name: 'fast_batch', ok: true, args: { actions: [{ name: 'fast_fill_form', args: {} }] } }], 'Filled the form'), []);
+  assert.deepEqual(claimMismatch([{ name: 'fast_key_press', ok: true, args: { key: 'Tab' } }], 'Submitted the search').map(c => c.verb), ['submitted']);
 });
 
 test('system prompt tells the model an unretried failure blocks report_done', () => {

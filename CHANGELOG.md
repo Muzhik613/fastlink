@@ -33,6 +33,28 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast-runner gate: a result claiming an action no call performed is refused once (`claimMismatch`)
+- **What:** `claimMismatch(toolLog, result)` (runner.mjs) parses only the model's OWN `result`:
+  verbs opened|navigated|drilled|went to → needs a fast_click/click_xy/do or a fast_tab/fast_nav
+  beyond the first page load; clicked|added|checked → a click; selected|picked →
+  fast_select_option / a click / fast_fill (custom dropdowns are picked by clicking, a native
+  select can be filled); filled|entered|typed → fast_fill (incl. a `fast_fill_form` batch step)
+  / fast_type / fast_fill_vision / fast_do; submitted → a click or `fast_key_press Enter`.
+  fast_batch steps (incl. ifFound then/else) count. Not claims: a verb with not/no/never/
+  nothing/none/neither/without/n't in the 3 words before it ("Search NOT clicked", "form not
+  submitted"), and "opened a (new) tab" when a page load happened. Refused ONCE: `your result
+  says "<verb>" but no <family> call succeeded in this run; do it now, or rewrite result to say
+  what you actually observed`; the refusal records `claimMismatch`, the next report_done passes
+  and the row / `grok_status` carry `claimMismatch:[{verb,family}]`. System prompt: one sentence.
+- **Why:** cfworkers over relay 19:28:48Z (fbc16cf2, grok-4.3): fast_tab → fast_wait →
+  fast_snapshot, never clicked, result `Worker "fastlink-relay" opened; …` → bench 2/5 with
+  claimedComplete; the gate passed it (no failed call, evidence quoted the current URL).
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/test/gate.test.mjs`.
+- **Watch out:** replayed over every `done` row (hvm 106 + WSL 55 → 154): 1 refusal, fbc16cf2
+  only. Word-level: a result that narrates a state ("checkbox: checked") needs a click in the
+  run — every such run had one.
+- **Status:** committed; `node --test test/*.test.mjs`.
+
 ## 2026-09-15 — fast_fill reports an uncommitted autocomplete (`committed:false` + suggestions), per field; fast_wait timeout names it
 - **What:** one autocomplete path in page.js: `isAutocomplete(el)` (typeable control with
   `role=combobox` on itself or its ARIA-1.1 wrapper, `aria-autocomplete` ≠ none,
