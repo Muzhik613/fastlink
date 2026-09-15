@@ -33,7 +33,12 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
-## 2026-09-15 — holdout follow-up (first n=2 on 9d18d4d): repeated-row checkbox clicks refused; a no-href <a> answers to role "link"; a top-level verified:false write is an unresolved action for the gate
+## 2026-09-15 — holdout 2: six more unseen sites (bench/holdout2.js, ids h2_*), validated both directions; baseline pending
+- **What:** `bench/holdout2.js` — Syncfusion EJ2 tab wizard (dependent steps), Mantine slider + switch, Wunderbaum 100k-node virtualized tree (target under two collapsed nodes), National Rail live-trains typeahead (commit = hidden CRS code), Element Plus form-in-modal, itch.io infinite-scroll games grid. Registered as `SUITES.holdout2` (`node bench/run.js --list --suite holdout2`, `--test h2_<id>`).
+- **Why:** holdout 1's sites are now the fixer's proof sites, so they no longer measure carry-over. None of these six is in suite.js, holdout 1, or the fixer's proof list (GOV.UK, jQuery UI, Select2, Form.io, jsDelivr, DataTables, Bootstrap btn-check, MUI Checkbox, SurveyJS, bootstrap-datepicker, Tom Select, Choices.js).
+- **Files:** `bench/holdout2.js`, `bench/suite.js`, `bench/run.js`, `docs/GROK_RUNNER_HOLDOUT2_2026-09-15.md`.
+- **Watch out:** every checkpoint fails on the untouched page except `tab`, and passes after the task was done by hand through the local FastLink tools on hvm (see the doc). Validation fixed four readers before any run: Mantine's controls panel has its own 0–100 sliders, and its snippet always prints `color="blue"`; an Element Plus dialog is position:fixed (offsetParent is always null); National Rail's hidden field holds the CRS code; Wunderbaum's Causes group is collapsed too. For infinite scroll, DEV's top feed was dropped (logged out it never loads past 18 cards), and so was Discourse Meta (after ~10 quick loads, hvm's IP got network errors). Never tune a fix against these sites.
+- **Status:** committed; grok-4.3 / phase2 baseline NOT run (xAI spending limit, still `personal-team-blocked:spending-limit` on re-check).: repeated-row checkbox clicks refused; a no-href <a> answers to role "link"; a top-level verified:false write is an unresolved action for the gate
 - **What:** page.js fast_click: when the best match is a check-type control (checkbox/radio, native
   or ARIA) whose label also names the same kind of control in ANOTHER row of the same repeated rows
   and no index is given, nothing is clicked — `candidates` {index, label, checked, row, rows,

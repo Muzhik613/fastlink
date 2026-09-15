@@ -11,6 +11,7 @@
 // in the order the work must happen, so `firstFailure` tells you where a run died.
 //
 import { HOLDOUT } from './holdout.js';
+import { HOLDOUT2 } from './holdout2.js';
 
 // Kinds:
 //   tab     {urlIncludes}                 – some tab is open on that URL
@@ -429,9 +430,9 @@ export const TESTS = [
   },
 ];
 
-// The holdout set (bench/holdout.js, ids `h_*`) resolves through the same lookup, so
-// run.js / score.js take `--test h_table` with no second code path.
-export const SUITES = { main: TESTS, holdout: HOLDOUT };
-export const ALL_TESTS = [...TESTS, ...HOLDOUT];
+// The holdout sets (bench/holdout.js ids `h_*`, bench/holdout2.js ids `h2_*`) resolve
+// through the same lookup, so run.js / score.js take `--test h2_tree` with no second code path.
+export const SUITES = { main: TESTS, holdout: HOLDOUT, holdout2: HOLDOUT2 };
+export const ALL_TESTS = [...TESTS, ...HOLDOUT, ...HOLDOUT2];
 export const byId = (id) => ALL_TESTS.find((t) => t.id === id);
 export const TEST_IDS = ALL_TESTS.map((t) => t.id);
