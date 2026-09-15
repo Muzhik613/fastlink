@@ -19,6 +19,24 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Extension: page results cross `executeScript` as a JSON string (Chrome sorts returned object keys)
+- **What:** `index.js` `pageBridge` returns `JSON.stringify(result)` and `runBridge`
+  parses it; `text.js` does the same for `fast_text`. `labelFor` strips a wrapping
+  `<label>`'s own control text (every `<option>` of a `<select>`, an input's value).
+- **Why:** the hvm smoke test of the feedback build came back with keys in
+  ALPHABETICAL order (`{clicked, focused, index, snapshot, url…}`): Chrome marshals an
+  object returned from `chrome.scripting.executeScript` through a `base::Value` dict,
+  which sorts keys — so `verified` / `truncated` / `url` landed after `snapshot`, the
+  opposite of "first field". A string crosses untouched; key order then survives
+  JSON.parse → WebSocket → broker → server. `fast_select_option`'s `field.label` also
+  read "Dropdown (select) Open this select menu One Two Three".
+- **Files:** `fast-ext/src/actions/index.js`, `fast-ext/src/actions/text.js`,
+  `fast-ext/src/actions/page.js`.
+- **Watch out:** anything that returns an object from page.js must be JSON-serializable
+  (it already had to be — executeScript serialized it before); `undefined` → `null`
+  keeps the "injected script returned no value" error path.
+- **Status:** committed; hvm rig.
+
 ## 2026-09-15 — phase2 toolset: drop `fast_evaluate`, miss/truncation/wait guidance, exact-quote `report_done`
 - **What:** `fast-runner/toolset.phase2.json` is 12 FastLink tools + 2 native = 14:
   `fast_evaluate` is gone (was disabled on the runner's relay account; 11 of 32 bench

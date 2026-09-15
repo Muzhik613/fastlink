@@ -154,11 +154,15 @@ async function runOne(action, args) {
 // attached it returns a SENTINEL ({__fastlinkMissing}) rather than a human
 // error string, so injectPageAction can distinguish "script gone" (→ reinject
 // + retry) from a real page-action error and self-heal silently.
+// The result crosses executeScript as a JSON STRING, not an object: Chrome
+// marshals returned objects through base::Value dicts, which SORT keys
+// alphabetically — the leading `verified` / `truncated` / `url` fields the model
+// must read first would land after `snapshot`. A string keeps the page's order.
 function pageBridge(action, args) {
   if (!window.__fastlink || !window.__fastlink.run) {
     return { __fastlinkMissing: true };
   }
-  return window.__fastlink.run(action, args);
+  return Promise.resolve(window.__fastlink.run(action, args)).then((r) => (r === undefined ? null : JSON.stringify(r)));
 }
 
 // Fallback re-injection list when the pre-injected page.js went stale/missing
@@ -177,7 +181,7 @@ async function runBridge(tabId, action, args) {
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId }, world: 'MAIN', func: pageBridge, args: [action, args || {}],
     });
-    return result;
+    return typeof result === 'string' ? JSON.parse(result) : result;
   } catch (e) {
     // Keep the raw chrome message ALONGSIDE the human-readable wrapper so the
     // caller can classify the failure (frame-teardown-on-navigation vs the tab

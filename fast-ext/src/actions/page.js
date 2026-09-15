@@ -129,9 +129,12 @@ const labelFor = (el) => {
   let p = el.parentElement;
   while (p) {
     if (p.tagName === 'LABEL') {
-      const t = cleanLabel(p.textContent);
-      const v = cleanLabel(el.value || '');
-      return v ? cleanLabel(t.replace(v, '')) : t;
+      let t = cleanLabel(p.textContent);
+      // A wrapping label's textContent includes the control's own text: the value
+      // of an input, every <option> of a <select> ("Dropdown (select) One Two").
+      const own = el.tagName === 'SELECT' ? Array.from(el.options).map((o) => cleanLabel(o.text)) : [cleanLabel(el.value || '')];
+      for (const v of own) if (v) t = t.replace(v, '');
+      return cleanLabel(t);
     }
     p = p.parentElement;
   }
