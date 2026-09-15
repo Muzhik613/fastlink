@@ -19,6 +19,181 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-08-06 — fast_tab returned before the tab existed → "Restricted URL: " in fast_batch
+- **What:** `chrome.tabs.create` resolves BEFORE the navigation commits — the new tab's
+  `.url` is `""` and only `.pendingUrl` holds the target. `openTab` pinned the tab and
+  returned immediately (reporting `pendingUrl`, so it *looked* fine), and the next
+  action resolved that pinned tab, hit `isInjectableUrl(tab.url)` with `""`, and failed
+  with `Restricted URL: ` — an EMPTY url after the colon, which is the signature of
+  this race. All three tab-creation paths in `openTab` now await a new
+  `waitForUrlCommit()` before returning, and return the COMMITTED url.
+- **Why:** every `fast_batch` starting with `fast_tab` lost all subsequent steps.
+  Reproduced 100% on example.com: `[fast_tab, fast_snapshot]` → step 1
+  `"Restricted URL: "`. Between two separate MCP calls the model's round-trip masks
+  it, which is why it only ever showed up inside a batch.
+- **Files:** `fast-ext/src/actions/tab.js`.
+- **Watch out:** `waitForUrlCommit` deliberately does NOT reuse `waitForComplete()`.
+  That one waits for `status:'complete'` via an `onUpdated` listener, so a load that
+  finishes before the listener attaches would burn the FULL timeout on every single
+  `fast_tab`. A committed URL is what callers actually need and it has a natural
+  early-out. Do not "simplify" the two into one.
+- **Status:** in code / synced to Windows copy / reloaded / **VERIFIED LIVE** as the
+  running content script: `[fast_tab, fast_snapshot]` on example.com now returns real
+  page content (was `"Restricted URL: "`), and the full original failure path
+  `[fast_tab, fast_fill, fast_evaluate]` on selenium web-form succeeds with the value
+  confirmed present in the DOM.
+
+## 2026-08-06 — bench/: chat-vs-chat FastLink benchmark harness
+- **What:** New `bench/` harness measuring how well different AI chats drive FastLink.
+  EIGHT tests (`multipage`, `gcpform`, `staticform`, `overlay`, `extract`,
+  `flightsearch` aa.com, `mapsdir` Google Maps, `cfworkers` Cloudflare dashboard), each scored
+  by ORDERED CHECKPOINTS verified against **live page state read back through the
+  LOCAL broker** — deliberately off-transport, so the channel under test (the relay)
+  is never also the channel doing the verifying. Nothing is scored from what the model
+  claims. A separate `claimedComplete` column records whether the chat asserted success,
+  so "filled 3 of 4 fields" and "claimed 4" cannot blur into one number.
+  `monitor.js` flags a run STUCK (no tool call for ~60s) or NO_ACTIVITY so a broken
+  cell is marked `valid:false` instead of being recorded as a slow/failed model.
+- **Why:** wall-clock alone is misleading — a model that quits at 60% looks fast. Also
+  to quantify what FastLink fixes actually buy, by re-running the suite after changes.
+- **Files:** `bench/{suite,score,monitor,drive-web,run,report,fastlink}.js`, `bench/package.json`.
+- **Watch out:** Prompts MUST name the FastLink connector explicitly — with a neutral
+  prompt, Grok answered from its own web browsing and made **zero** FastLink calls
+  (scored 0/6 until the harness flagged NO_ACTIVITY). The suite then measures tool
+  choice rather than driving speed.
+  Test pages hand out FALSE results from their default state: on selenium's web-form
+  the `<select>` starts non-empty, the FIRST radio is pre-checked, and BOTH checkboxes
+  share `name="my-check"` so `form.elements['my-check'].checked` is `undefined` — that
+  last one scored a false FAILURE against both models until fixed by reading
+  `#my-check-2` directly. Verify every checkpoint against an UNTOUCHED page.
+  Relay clients open a new MCP session per tool call, so traces must be aggregated
+  across all sessions and sliced by time window.
+  **Authed tests are NOT symmetric across two Chrome profiles on different accounts.**
+  `gcpform` needed `gcloud projects add-iam-policy-binding booming-argon-464605-n5
+  --member=user:yaakov@ytx.app --role=roles/editor`; `cfworkers` needed the second
+  profile signed into the SAME Cloudflare account. Cookies are per-profile, so an
+  OAuth flow completed in one profile does NOT give the other a session.
+  **claude.ai asks tool permission PER TOOL** and blocks the whole turn until a human
+  clicks — with no trace activity, so a blocked run records as NO_ACTIVITY / a low
+  score. `drive-web.approveToolPrompts()` clears it, hooked to `watchRun`'s new
+  `onQuiet` so it only fires when nothing is driving the browser.
+  aa.com persists a submitted itinerary to `localStorage` and RE-FILLS the form from
+  it on the next load — cleared via `reset.clearStorage`, since closing tabs cannot.
+  `cfworkers` runs against a REAL production Cloudflare account: it is read-only by
+  construction. Do NOT add a mutating step.
+- **Status:** in code / all 8 tests validated in BOTH directions; suite running live.
+
+## 2026-08-06 — Multi-browser: named browsers + per-client routing on the relay
+- **What:** One relay account can now drive MANY named browsers, and a client picks
+  which one. `devices.label` becomes the user-facing NAME (migration `0006` renumbers
+  existing labels to `browser-N` and adds a **partial** unique index on
+  `(user_id, label) WHERE revoked = 0`, so revoking frees a name). `extSocket()` is
+  **deleted**, replaced by `resolveTarget(clientKey)` → name → `device_token` → the
+  live socket carrying it; the socket is resolved ONCE per MCP request and threaded
+  through consent probes, `fast_batch` nav-settle, `fast_evaluate`, `notifyExtension`
+  and the vision tier, so two chat products calling concurrently cannot race.
+  Relay `fast_profile` (`install:"<name>"|"auto"`) mirrors the local tool byte-for-byte;
+  `fast_status` gains `browsers[]`, `selected`, `selectionMode`, `selectionSource`,
+  `defaultBrowser`, `routedBrowser`. New `GET/POST /devices` (same device-token auth
+  as `/consent`, `/trace`). Options page gains a "This browser's name" card modelled
+  on the Broker-slot card.
+  - Two bugs found en route: the `hello` frame's `serializeAttachment({installId,version})`
+    was **erasing** the `{connectedAt, deviceToken}` stamp (which also broke targeted
+    revoke) — now merged; and background prewarm-on-nav snapshotted "whichever
+    connected last" instead of the browser that actually navigated.
+- **Why:** `userRelay.js` routed every command to the MOST-RECENTLY-CONNECTED socket
+  ("multi-device most-recent-wins"). With two browsers paired, which one got driven
+  flipped whenever an MV3 service worker redialed — silently wrong, not merely
+  blocked. The local broker had solved this years earlier with install slots; the
+  relay never caught up.
+- **Files:** `fastlink-relay/migrations/0006_device_names.sql` (new),
+  `fastlink-relay/src/{db,auth,index,mcp,userRelay,composite,timing}.js`,
+  `fastlink-relay/tools.js`, `fast-ext/options.html`, `fast-ext/options.js`.
+- **Watch out:** Selection is keyed by **OAuth client id** (`cid`, stamped into grant
+  props, forwarded as `X-Fastlink-Client-Id`), NOT the MCP session and NOT the raw
+  bearer. This is load-bearing: relay clients open a NEW MCP session per tool call
+  (measured: claude.ai 5 sessions for 5 calls; Grok 11 for 11), and access tokens
+  refresh hourly — a session-scoped or raw-token-keyed pin would silently drop.
+  Grants minted before the `cid` stamp fall back to `tokenKey()` until the client
+  re-authorizes. Most-recent-wins survives ONLY inside the explicit `auto` branch —
+  do NOT reintroduce it as a fallback; a pinned-but-offline browser must stay a hard
+  error naming the connected ones.
+- **Status:** deployed to relay.ytx.app (version `d1abf155`) + migration applied
+  remote / extension synced to Windows copy, **needs `chrome://extensions` reload**
+  for the options card. Verified live: `/devices` returns the new shape and the
+  migration renamed the existing device to `browser-1`. NOT yet verified: any
+  second-browser pairing — only one browser is paired, so multi-browser routing has
+  never run end-to-end on the wire.
+
+## 2026-08-06 — Snapshot served STALE input values; password leak; section-scoping rewrite
+- **What:** Two bugs in `fast-ext/src/actions/page.js`, both reproduced live on the
+  GCP "Create OAuth client ID" form.
+  1. **Stale input values.** `makeClickEntry` baked `el.value` into the cached
+     `entry.text`, and *nothing could ever invalidate it*: writing `.value` through
+     the property setter mutates **no attribute**, so no MutationRecord exists; the
+     observer's `attributeFilter` excludes `value` and `characterData` isn't
+     observed. A filled field reported its pre-fill default forever. Fix: a
+     control's value is **no longer cached** — `liveKindOf()` tags value-bearing
+     entries and `refreshLiveEntry()` re-reads the DOM as the single derivation
+     point (index time, serialize loop, and `fast_wait`'s scan). Snapshot items now
+     also carry an explicit live `value`.
+  2. **`section:` silently wrote the WRONG field.** Two defects: `fast_fill` did
+     `if (scoped.length) pool = scoped;` so an unresolved section silently kept the
+     page-wide pool and the first global match won; and the nearest-preceding-heading
+     resolver could never resolve on GCP, which renders an `<h3>Item 1</h3> `directly
+     above *each* URI row. Fix: sections resolve by **document outline** (anchor to
+     next same-or-higher-level anchor), candidates collected from the DOM inside
+     that span. An unresolved section is now a **hard error** listing the page's
+     real sections.
+  - Also: `input[type=password]` was putting the **raw password** into snapshot
+    text — now reports a `•` mask of the right length.
+  - Also: `fast_fill_form` was ignoring `section`/`near` **entirely and silently**
+    (args forwarded verbatim); now wired to the same resolver, with the same hard error.
+  - `near` was documented as "nearest context text" but implemented as heading
+    scoping — it is now an explicit alias of `section` (one resolver).
+- **Why:** benchmarking Claude vs Grok on the GCP form. The stale snapshot forced
+  ~49s of screenshot round-trips in a single run because the agent couldn't trust
+  the DOM; the `section:` bug silently overwrote the JavaScript-origins field while
+  reporting success.
+- **Files:** `fast-ext/src/actions/page.js`; descriptions only in
+  `fast-dxt/server/tools.js` + `fastlink-relay/tools.js` (mirrors kept in sync).
+- **Watch out:** Do NOT re-add `el.value` to `makeClickEntry`'s text chain — the
+  cache cannot be invalidated for property-setter writes, that IS the bug.
+  `refreshLiveEntry()` must stay the single derivation point. Do NOT reintroduce a
+  silent fallback when a section fails to resolve — silent wrong-field writes are
+  worse than errors. Note this page hits the `MAX_WALK` ceiling (`capped:true`,
+  ~130 entries), which is why a plain `fast_fill {match:"Name"}` can miss right
+  after render; section-scoped fills bypass it by reading candidates from the DOM.
+- **Status:** in code / synced to Windows copy / **needs `chrome://extensions`
+  reload**; root causes verified live in-page, but nothing yet exercised as the
+  actual content script (password masking, `fast_fill_form` section path, and
+  `fast_wait`'s live re-read are unverified).
+
+## 2026-08-06 — Relay per-tool-call timing instrumentation
+- **What:** The cloud relay recorded no timing, so only the local path could be
+  measured. Added per-call `{t, name, gapMs, durMs}` traces (same semantics as the
+  local `logTiming`: `gapMs` = model think time, `durMs` = action time) stored in
+  the user's own Durable Object, scoped per session and stamped with the MCP
+  `clientInfo` name so a trace can be attributed to grok / claude / gpt. Read them
+  back with `relay-timing-report.js` (device-token authed `/trace`). The local
+  report's inline summarizer was **deleted**; both now render through the shared
+  `fast-dxt/server/timing-format.js`.
+- **Why:** to compare how different AI clients drive FastLink. Without this there
+  was zero data on any relay-driven client.
+- **Files:** new `fastlink-relay/src/timing.js`, `fastlink-relay/relay-timing-report.js`,
+  `fast-dxt/server/timing-format.js`; modified `fastlink-relay/src/mcp.js`,
+  `src/userRelay.js`, `src/auth.js`, `src/index.js`, `package.json`,
+  `fast-dxt/server/timing-report.js`.
+- **Watch out:** Caps are deliberate — 500 rows/session, 20 sessions/user, 7-day
+  TTL. `/trace` is device-token authed and deliberately sends **no** CORS header
+  (its consumer is a CLI), unlike `/consent` and `/settings/gemini-key`.
+  **Grok's connector opens a NEW MCP session per tool call** (11 sessions for 11
+  calls), so any consumer must aggregate across ALL sessions sorted by timestamp
+  and slice by time window — never assume one run maps to one session. In the rows,
+  `t` is the END timestamp, so gap = (thisEnd − prevEnd) − thisDur.
+- **Status:** deployed to relay.ytx.app (version `614f1ebc`) / verified live —
+  captured a full 11-call Grok trace and a 14-call Claude trace.
+
 ## 2026-07-12 — Alex's laptop moved to the official release channel (fplhij → ockcja)
 - **What:** HKLM forcelist entry repointed to the official channel
   (`ockcja…;raw.githubusercontent…/release/updates.xml`); signed 0.4.3 installed,

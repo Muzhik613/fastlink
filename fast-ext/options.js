@@ -418,6 +418,161 @@ async function onToggleDebugger() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// THIS BROWSER'S NAME (cloud relay). The relay twin of the Broker-slot card
+// below: one unique NAME per browser so a chat can say which browser to drive
+// (fast_profile install:"<name>"). Same sanitizing rule as the broker slot, so a
+// name means the same thing on both transports.
+//
+// The relay is authoritative (names live in D1, selection lives in the user's
+// Durable Object). This page reads/writes them through {base}/devices, authed
+// with the device token this browser already holds — exactly like the Gemini-key
+// and site-permission cards. Nothing is mirrored into chrome.storage: a second
+// copy of a name would just be a way to disagree with the relay.
+// ---------------------------------------------------------------------------
+const RELAY_NAME_ERRORS = {
+  invalid_device_token: 'This browser is no longer paired — re-pair it in Connection above.',
+  invalid_name: 'Use letters, digits, "-" or "_" (e.g. "work"), starting with a letter or digit.',
+  reserved_name: '“auto”, “default” and “none” are reserved words — pick another name.',
+  name_taken: 'Another browser on your account already uses that name. Pick a different one.',
+  unknown_device: 'The relay doesn’t recognise this browser — re-pair it in Connection above.',
+  invalid_json: 'The relay rejected the request.',
+};
+
+function relayNameMsg(text, kind) {
+  const el = $('relay-name-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = kind ? `msg ${kind}` : 'msg';
+}
+
+async function devicesFetch(method, body) {
+  const c = await chrome.storage.local.get(['relayBase', 'deviceToken']);
+  if (!c.deviceToken) return null;                       // not paired — card renders its empty state
+  const base = String(c.relayBase || DEFAULT_RELAY_BASE).replace(/\/+$/, '');
+  const url = `${base}/devices`;
+  const res = method === 'GET'
+    ? await fetch(`${url}?deviceToken=${encodeURIComponent(c.deviceToken)}`)
+    : await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceToken: c.deviceToken, ...body }),
+      });
+  let b = {};
+  try { b = await res.json(); } catch {}
+  if (!res.ok) throw new Error(RELAY_NAME_ERRORS[b?.error] || b?.error || `Request failed (HTTP ${res.status}).`);
+  return b;
+}
+
+// Paint the card from a /devices payload: this browser's name, the account
+// default, and every browser with its live connection state.
+function paintRelayDevices(data) {
+  const list = $('relay-devices');
+  const input = $('relay-name');
+  const toggle = $('relay-default-toggle');
+  if (!list) return;
+  list.replaceChildren();
+
+  if (!data) {
+    if (input) { input.value = ''; input.disabled = true; }
+    if (toggle) toggle.disabled = true;
+    const p = document.createElement('div');
+    p.className = 'perm-empty';
+    p.textContent = 'Pair this browser with the cloud relay (above) to name it.';
+    list.append(p);
+    return;
+  }
+
+  if (input) {
+    input.disabled = false;
+    // Don't clobber what the user is mid-way through typing.
+    if (document.activeElement !== input) input.value = data.self || '';
+  }
+  if (toggle) {
+    toggle.disabled = false;
+    toggle.checked = !!(data.self && data.default === data.self);
+  }
+
+  const devices = Array.isArray(data.devices) ? data.devices : [];
+  if (!devices.length) {
+    const p = document.createElement('div');
+    p.className = 'perm-empty';
+    p.textContent = 'No browsers paired to this account yet.';
+    list.append(p);
+    return;
+  }
+
+  for (const d of devices) {
+    const item = document.createElement('div');
+    item.className = 'perm-item';
+
+    const dot = document.createElement('span');
+    dot.className = 'fl-dot ' + (d.connected ? 'ok' : 'err');
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'host';
+    nameEl.textContent = d.name;
+
+    const tags = document.createElement('span');
+    tags.className = 'fine';
+    const bits = [d.connected ? 'connected' : 'offline'];
+    if (d.self) bits.push('this browser');
+    if (data.default === d.name) bits.push('default');
+    tags.textContent = bits.join(' · ');
+
+    item.append(dot, nameEl, tags);
+    list.append(item);
+  }
+}
+
+async function renderRelayDevices() {
+  try {
+    paintRelayDevices(await devicesFetch('GET'));
+  } catch (e) {
+    paintRelayDevices(null);
+    relayNameMsg(e?.message || String(e), 'err');
+  }
+}
+
+async function onSaveRelayName() {
+  const btn = $('relay-name-btn');
+  const raw = ($('relay-name').value || '').trim();
+  if (!raw) { relayNameMsg('Enter a name for this browser first.', 'info'); return; }
+  // Sanitize client-side with the SAME rule the relay applies, so the user sees
+  // what will actually be stored instead of a silent normalization.
+  const name = sanitizeInstallId(raw);
+  if (!name) { relayNameMsg(RELAY_NAME_ERRORS.invalid_name, 'err'); return; }
+  btn.disabled = true;
+  relayNameMsg('Saving…', 'info');
+  try {
+    const data = await devicesFetch('POST', { name });
+    if (!data) { relayNameMsg('Pair this browser with the cloud relay first.', 'err'); return; }
+    paintRelayDevices(data);
+    relayNameMsg(`This browser is now “${data.self}”. Tell a chat to drive it with fast_profile install:"${data.self}".`, 'ok');
+  } catch (e) {
+    relayNameMsg(e?.message || String(e), 'err');
+    renderRelayDevices();   // revert the field to what the relay actually holds
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function onRelayDefaultToggle(e) {
+  const makeDefault = !!e.target.checked;
+  relayNameMsg('Saving…', 'info');
+  try {
+    const data = await devicesFetch('POST', { makeDefault });
+    if (!data) return;
+    paintRelayDevices(data);
+    relayNameMsg(makeDefault
+      ? `Chats that don't pick a browser now drive “${data.self}”.`
+      : 'Cleared the default — chats that don\'t pick a browser drive whichever connected most recently.', 'ok');
+  } catch (err) {
+    relayNameMsg(err?.message || String(err), 'err');
+    renderRelayDevices();
+  }
+}
+
 // Broker slot LABEL (chrome.storage.local 'fastlinkInstallId', default 'primary').
 // Mirrors connection.js. Presets have a dedicated <option>; any other stored
 // value is a custom label shown via the "Custom label…" option.
@@ -713,6 +868,9 @@ $('local-btn').addEventListener('click', onUseLocal);
 $('pause-btn').addEventListener('click', onPauseToggle);
 $('disconnect-btn').addEventListener('click', onDisconnectToggle);
 $('dbg-btn').addEventListener('click', onToggleDebugger);
+$('relay-name-btn').addEventListener('click', onSaveRelayName);
+$('relay-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') onSaveRelayName(); });
+$('relay-default-toggle').addEventListener('change', onRelayDefaultToggle);
 $('install-select').addEventListener('change', onInstallSlotChange);
 $('install-custom-apply').addEventListener('click', onApplyCustomInstall);
 $('install-custom').addEventListener('keydown', (e) => { if (e.key === 'Enter') onApplyCustomInstall(); });
@@ -751,7 +909,7 @@ $('reload-btn').addEventListener('click', () => chrome.runtime.reload());
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local') {
     if (changes.fastlinkConn || changes.relayAuthError) render();
-    if (changes.deviceToken || changes.relayEnabled || changes.fastlinkMode) { render(); renderControls(); reflectVisionStatus(); }
+    if (changes.deviceToken || changes.relayEnabled || changes.fastlinkMode) { render(); renderControls(); reflectVisionStatus(); renderRelayDevices(); }
     if (changes[ADVANCED_CONTROL_KEY]) renderDebugger();
     if (changes.fastlinkNotify) renderNotifyToggle();
     if (changes[AUTO_UPDATE_KEY] || changes[HALTED_KEY]) renderAutoUpdateToggle();
@@ -777,6 +935,7 @@ async function init() {
   renderAutoUpdateToggle();
   renderPermissions();
   reflectVisionStatus();
+  renderRelayDevices();
   // Deep-link params win over stored/default values (they reflect a fresh code).
   // Auto-pair: a deep-linked code is fresh (just minted on the relay), so run the
   // pairing immediately — but only once per page load, and never when this browser

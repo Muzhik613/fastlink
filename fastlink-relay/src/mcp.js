@@ -19,6 +19,8 @@ import { TOOLS } from '../tools.js';
 import {
   handleScout, handlePoint, handlePointSom, handleFillVision, handleDo, handleLocate,
 } from './composite.js';
+import { resolveTraceSession, startTraceSession, recordTiming } from './timing.js';
+import { sanitizeDeviceName, RESERVED_DEVICE_NAMES } from './db.js';
 
 // Guidance the client (Claude) sees in the initialize result — steers it toward
 // the FAST tools instead of its default "screenshot + read it myself" instinct.
@@ -43,8 +45,11 @@ const INSTRUCTIONS = [
 
 // ---- JSON-RPC plumbing ----------------------------------------------------
 
-const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+const json = (body, status = 200, extraHeaders = {}) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', ...extraHeaders },
+  });
 
 const ok = (id, result) => ({ jsonrpc: '2.0', id, result });
 const rpcErr = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
@@ -63,22 +68,33 @@ export async function handleMcpRequest(request, relay) {
     return json(rpcErr(null, -32700, 'parse error'));
   }
 
+  // Timing trace (src/timing.js): one session per MCP connection. `initialize`
+  // opens it (and captures who is driving); tools/call rows are appended to it.
+  // sessionId stays `undefined` until a method actually needs it, so ping /
+  // tools/list POSTs cost nothing. `minted` carries a new id into the response header.
+  const trace = { request, sessionId: undefined, minted: null };
+
   // Batch support (claude.ai rarely batches, but the spec allows it).
   if (Array.isArray(rpc)) {
     const out = [];
     for (const one of rpc) {
-      const r = await handleOne(one, relay);
+      const r = await handleOne(one, relay, trace);
       if (r) out.push(r); // notifications produce no response
     }
-    return out.length ? json(out) : new Response(null, { status: 202 });
+    return out.length ? json(out, 200, traceHeaders(trace)) : new Response(null, { status: 202 });
   }
 
-  const r = await handleOne(rpc, relay);
+  const r = await handleOne(rpc, relay, trace);
   // A notification (no id) gets no body — just acknowledge.
-  return r ? json(r) : new Response(null, { status: 202 });
+  return r ? json(r, 200, traceHeaders(trace)) : new Response(null, { status: 202 });
 }
 
-async function handleOne(rpc, relay) {
+// Hand the freshly-minted session id back on the initialize response. A client
+// that echoes Mcp-Session-Id (Streamable HTTP) keeps the SAME trace across an
+// access-token refresh; one that doesn't is still tracked by its token.
+const traceHeaders = (trace) => (trace.minted ? { 'mcp-session-id': trace.minted } : {});
+
+async function handleOne(rpc, relay, trace) {
   const { id, method, params } = rpc || {};
 
   // Notifications (e.g. notifications/initialized) carry no id and want no reply.
@@ -86,6 +102,11 @@ async function handleOne(rpc, relay) {
 
   switch (method) {
     case 'initialize':
+      // Every initialize opens a FRESH trace session, stamped with the client's
+      // self-reported identity (clientInfo.name/version) so a run is attributable
+      // to claude / grok / gpt after the fact.
+      trace.sessionId = await startTraceSession(relay, trace.request, params?.clientInfo);
+      trace.minted = trace.sessionId;
       return ok(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {} },
@@ -94,8 +115,25 @@ async function handleOne(rpc, relay) {
       });
     case 'tools/list':
       return ok(id, { tools: TOOLS });
-    case 'tools/call':
-      return ok(id, await dispatchTool(params || {}, relay));
+    case 'tools/call': {
+      // Bind to this connection's session — the one `initialize` just opened, the
+      // one an earlier POST opened (looked up by Mcp-Session-Id or bearer token),
+      // or a fresh one for a client that calls tools without initializing.
+      if (trace.sessionId === undefined) {
+        trace.sessionId = (await resolveTraceSession(relay, trace.request))
+          ?? (await startTraceSession(relay, trace.request, null));
+      }
+      const startTs = Date.now();
+      try {
+        // WHICH BROWSER this call drives is resolved per REQUEST and threaded
+        // down (see dispatchTool) — never re-picked mid-call, and never stored on
+        // the DO instance, which two concurrent chat products would race over.
+        const session = { clientKey: await relay.clientKey(trace.request), target: undefined };
+        return ok(id, await dispatchTool(params || {}, relay, session));
+      } finally {
+        recordTiming(relay, trace.sessionId, params?.name || 'unknown', startTs, Date.now());
+      }
+    }
     case 'ping':
       return ok(id, {});
     default:
@@ -136,16 +174,16 @@ const MUTATING_TOOLS = new Set([
 ]);
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.
-const DIAGNOSTIC_ONLY = new Set([...VISION_TOOLS, 'fast_prewarm', 'fast_status', 'fast_batch']);
+const DIAGNOSTIC_ONLY = new Set([...VISION_TOOLS, 'fast_prewarm', 'fast_status', 'fast_profile', 'fast_batch']);
 
 // Relay-native tools that never touch a page → exempt from the per-origin consent
 // gate. (fast_batch's STEPS are gated individually inside runBatch.)
-const CONSENT_EXEMPT = new Set(['fast_status', 'fast_prewarm', 'fast_batch']);
+const CONSENT_EXEMPT = new Set(['fast_status', 'fast_profile', 'fast_prewarm', 'fast_batch']);
 
 // N2 kill-switch: tools still allowed while the user has PAUSED driving — only the
 // observable relay-meta ones, so the paused state can be reported. Everything else
 // (incl. fast_batch and all browser actions) is refused until the user resumes.
-const PAUSE_EXEMPT = new Set(['fast_status', 'fast_prewarm']);
+const PAUSE_EXEMPT = new Set(['fast_status', 'fast_profile', 'fast_prewarm']);
 
 // Per-origin consent gate (M4 / SIGNUP-SPEC §4.2). Returns null to PROCEED, or a
 // plain blocking payload object to short-circuit (dispatchTool wraps it in
@@ -155,7 +193,7 @@ const PAUSE_EXEMPT = new Set(['fast_status', 'fast_prewarm']);
 //   readonly → refuse MUTATING_TOOLS (reads pass)
 //   prompt   → undecided origin under the multi-user default: reads pass, a write
 //              returns the consent_required affordance so the human can approve.
-async function consentVerdict(relay, name) {
+async function consentVerdict(relay, name, ws) {
   if (CONSENT_EXEMPT.has(name)) return null;
 
   const def = relay.consentDefault();
@@ -165,7 +203,7 @@ async function consentVerdict(relay, name) {
   let origin = relay.lastOrigin || '';
   if (!origin) {
     if (def === 'allow') return null;
-    origin = await relay.currentOrigin();
+    origin = await relay.currentOrigin(ws);
   }
   if (!origin) return null; // no resolvable active-tab origin — let the call run (it'll fail naturally if disconnected)
 
@@ -195,11 +233,18 @@ async function consentVerdict(relay, name) {
   const message = `FastLink needs your approval to act on ${origin}. Approve it in the extension popup (Allow / Read-only).`;
   // Also push an out-of-band frame so the extension popup can surface the Allow /
   // Read-only / Block control proactively (relayClient.js consent_required handler).
-  relay.notifyExtension({ type: 'consent_required', origin, modesOffered, message });
+  relay.notifyExtension({ type: 'consent_required', origin, modesOffered, message }, ws);
   return { consentRequired: true, origin, modesOffered, message };
 }
 
-async function dispatchTool(params, relay) {
+// Resolve (once per request) the browser this call drives. Memoized on `session`
+// so a tool that probes several times still talks to ONE browser.
+async function targetFor(relay, session) {
+  if (session.target === undefined) session.target = await relay.resolveTarget(session.clientKey);
+  return session.target;
+}
+
+async function dispatchTool(params, relay, session) {
   const name = params?.name;
   const args = params?.arguments || {};
   if (!name) return errorResult('missing tool name');
@@ -228,25 +273,43 @@ async function dispatchTool(params, relay) {
     });
   }
 
+  // Relay-native tools that answer without touching a browser. Deliberately
+  // BEFORE target resolution so they still work when the pinned browser is
+  // offline — otherwise the only tool that can fix a bad pin would be unreachable.
+  if (name === 'fast_status') return textResult(await relayStatus(relay, session));
+  if (name === 'fast_profile') return textResult(await handleProfile(relay, args, session));
+
+  // WHICH BROWSER: resolved once, then threaded through every sub-step below.
+  // A pin that can't be honoured is a hard error naming the connected browsers —
+  // NEVER a silent redirect to another browser. Everything past this point needs
+  // a live browser; the relay-native tools that don't have already returned.
+  const target = await targetFor(relay, session);
+  if (target.error) return textResult(target);
+  const ws = target.ws;
+
   // Per-origin consent gate (M4) — applies to every page-touching tool, incl. the
   // vision tiers and fast_evaluate (both in MUTATING_TOOLS). Exempt relay-native
-  // tools (status/prewarm/batch) pass through; batch steps are gated in runBatch.
+  // tools (status/profile/prewarm/batch) pass through; batch steps are gated in runBatch.
   {
-    const verdict = await consentVerdict(relay, name);
+    const verdict = await consentVerdict(relay, name, ws);
     if (verdict) return textResult(verdict);
   }
 
-  // Vision/scout composite tiers — ported to the Worker (task #7).
+  // Vision/scout composite tiers — ported to the Worker (task #7). composite.js
+  // only ever calls relay.callExtension, so it gets a view of the relay pinned to
+  // the resolved browser: every sub-step (capture → click → type) hits the SAME
+  // browser even if another one redials mid-sequence.
   if (VISION_TOOLS.has(name)) {
     const scout = await relay.getBoundScout();
+    const bound = boundRelay(relay, ws);
     let result;
     switch (name) {
-      case 'fast_scout':       result = await handleScout(relay, scout, args); break;
-      case 'fast_point':       result = await handlePoint(relay, scout, args); break;
-      case 'fast_point_som':   result = await handlePointSom(relay, scout, args); break;
-      case 'fast_fill_vision': result = await handleFillVision(relay, scout, args); break;
-      case 'fast_do':          result = await handleDo(relay, scout, args); break;
-      case 'fast_locate':      result = await handleLocate(relay, scout, args); break;
+      case 'fast_scout':       result = await handleScout(bound, scout, args); break;
+      case 'fast_point':       result = await handlePoint(bound, scout, args); break;
+      case 'fast_point_som':   result = await handlePointSom(bound, scout, args); break;
+      case 'fast_fill_vision': result = await handleFillVision(bound, scout, args); break;
+      case 'fast_do':          result = await handleDo(bound, scout, args); break;
+      case 'fast_locate':      result = await handleLocate(bound, scout, args); break;
     }
     relay.audit(name, args, !(result && result.error)); // best-effort
     return textResult(result);
@@ -255,16 +318,14 @@ async function dispatchTool(params, relay) {
   // fast_evaluate: arbitrary in-page JS. Per-user ALLOWLIST gate (db.getEvalPolicy
   // + active-tab origin): enabled AND (operator allow-all OR origin allowlisted).
   if (name === 'fast_evaluate') {
-    const verdict = await relay.checkEvalAllowed();
+    const verdict = await relay.checkEvalAllowed(ws);
     if (!verdict.ok) return textResult({ error: verdict.error, evalBlocked: true });
   }
 
-  // Relay-native orchestration.
-  if (name === 'fast_status') return textResult(await relayStatus(relay));
-  if (name === 'fast_batch') return textResult(await runBatch(args, relay));
+  if (name === 'fast_batch') return textResult(await runBatch(args, relay, ws));
 
   // Everything else: one straight passthrough to the extension.
-  const payload = await relay.callExtension(name, args);
+  const payload = await relay.callExtension(name, args, undefined, ws);
   relay.audit(name, args, !(payload && typeof payload === 'object' && 'error' in payload)); // best-effort, fire-and-forget
 
   // Tool-level errors come back as resolved payloads with `error` set (+ extras
@@ -289,6 +350,69 @@ async function dispatchTool(params, relay) {
   return textResult(result);
 }
 
+// A view of the relay pinned to ONE browser. composite.js touches nothing on the
+// relay except callExtension, so this tiny facade is the whole binding — no
+// prototype tricks, and the DO keeps its per-user caches (scout page-map, pause
+// flag, origin) intact because they're read off the real instance.
+const boundRelay = (relay, ws) => ({
+  callExtension: (action, args, timeoutMs) => relay.callExtension(action, args, timeoutMs, ws),
+});
+
+// ---- fast_profile: pick WHICH paired browser this connection drives --------
+// Same tool name and argument shape as the LOCAL connector's fast_profile
+// (fast-dxt/server/handlers.js handleUseInstall) so the two transports feel
+// identical: install:"<name>" pins, install:"auto" releases.
+//
+// The pin is stored SERVER-SIDE in the user's DO, keyed by the chat product
+// (relay.clientKey), NOT by MCP session — Grok opens a new MCP session for every
+// single tool call, so a session-scoped pin would never survive to the next one.
+async function handleProfile(relay, args, session) {
+  const raw = String(args?.install ?? '').trim().toLowerCase();
+  const devices = await relay.deviceList();
+  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected }));
+  const known = devices.map((d) => d.name);
+  const live = devices.filter((d) => d.connected).map((d) => d.name);
+  const defaultBrowser = await relay.getDefaultDevice();
+
+  if (raw === '' || RESERVED_DEVICE_NAMES.has(raw)) {
+    await relay.setSelection(session.clientKey, null);
+    return {
+      selected: null,
+      mode: 'auto',
+      browsers,
+      defaultBrowser,
+      hint: `AUTO — calls go to the most recently connected browser. Connected: ${live.join(', ') || '(none)'}.`,
+    };
+  }
+
+  const want = sanitizeDeviceName(raw);
+  if (!want) {
+    return {
+      error: `Invalid browser name "${raw}". Names use [a-z0-9_-] (e.g. "work"), or pass "auto" to release the pin.`,
+      browsers,
+    };
+  }
+  const dev = devices.find((d) => d.name === want);
+  if (!dev) {
+    return {
+      error: `No browser named "${want}" is paired to this account. Paired: ${known.join(', ') || '(none)'}. `
+        + `Name a browser on its FastLink options page (Settings → Connection → "This browser's name"), then retry.`,
+      browsers,
+    };
+  }
+  await relay.setSelection(session.clientKey, want);
+  return {
+    selected: want,
+    mode: 'pinned',
+    connected: dev.connected,
+    browsers,
+    defaultBrowser,
+    hint: dev.connected
+      ? `Pinned to "${want}" — every later call from this connection drives that browser. fast_profile install:"auto" releases it.`
+      : `Pinned to "${want}", but it is NOT connected right now. Calls will error (they will not silently go to another browser) until that Chrome profile reconnects. Connected now: ${live.join(', ') || '(none)'}.`,
+  };
+}
+
 // Turn an extension { dataUrl, ...meta } payload into MCP image + text content.
 function imageResult(result) {
   const m = /^data:(image\/[\w.+-]+);base64,(.*)$/s.exec(result.dataUrl);
@@ -303,8 +427,16 @@ function imageResult(result) {
 
 // Relay-aware status (replaces handlers.js's broker report). Tells the user
 // whether their extension WS is attached to their DO.
-async function relayStatus(relay) {
-  const connected = !!relay.extSocket();
+async function relayStatus(relay, session) {
+  const devices = await relay.deviceList();
+  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen }));
+  const liveNames = devices.filter((d) => d.connected).map((d) => d.name);
+  const sel = await relay.getSelection(session.clientKey);
+  const defaultBrowser = await relay.getDefaultDevice();
+  // "connected" = this connection can actually reach a browser right now, i.e.
+  // the SELECTED one is live — not merely "some browser of mine is live".
+  const target = await targetFor(relay, session);
+  const connected = !!(target && target.ws);
   const policy = await relay.evalPolicy();
   const scoutEnabled = (await relay.getBoundScout()).enabled;
   // Per-origin consent (M4): report the decision for the current active-tab origin.
@@ -318,6 +450,15 @@ async function relayStatus(relay) {
     transport: 'cloud-relay',
     userId: relay.userId || null,
     devicesConnected: relay.extSocketCount(),
+    // MULTI-BROWSER: every paired browser of this account, which are live, and
+    // which one THIS connection is driving. `selected` is null in auto mode.
+    browsers,
+    selected: sel.mode === 'pinned' ? sel.name : null,
+    selectionMode: sel.mode,               // 'pinned' | 'auto'
+    selectionSource: sel.source,           // 'pin' | 'default' | 'unset'
+    defaultBrowser,
+    routedBrowser: target && target.ws ? target.name : null,
+    targetError: target && target.error ? target.error : null,
     drivingPaused,
     evaluateAllowed: policy.allowEvaluate,
     consentDefault: relay.consentDefault(),
@@ -328,11 +469,18 @@ async function relayStatus(relay) {
     consent: consentMode,
     readonly: consentMode === 'readonly',
     scoutEnabled,
-    hint: drivingPaused
-      ? 'Driving is PAUSED by the user (FastLink extension popup → Resume to continue). All browser tools are refused until then.'
-      : connected
-      ? 'Your browser extension is paired and connected. fast_snapshot / fast_click / fast_fill etc. should work on your active tab.'
-      : 'No extension is connected to your relay. If you are running Claude Code on your own machine you are likely on the WRONG connector — prefer the LOCAL "fastlink" connector (local broker, no pairing/token/OAuth). To actually use the relay: open the FastLink extension, set it to "relay" mode and pair it (paste your code from the relay site), then retry. (FASTLINK_TOKEN is unrelated and not the fix.)',
+    hint: [
+      drivingPaused
+        ? 'Driving is PAUSED by the user (FastLink extension popup → Resume to continue). All browser tools are refused until then.'
+        : connected
+        ? `Connected — this connection drives the browser "${target.name}". fast_snapshot / fast_click / fast_fill etc. work on its active tab.`
+        : target?.error
+        || 'No extension is connected to your relay. If you are running Claude Code on your own machine you are likely on the WRONG connector — prefer the LOCAL "fastlink" connector (local broker, no pairing/token/OAuth). To actually use the relay: open the FastLink extension, set it to "relay" mode and pair it (paste your code from the relay site), then retry. (FASTLINK_TOKEN is unrelated and not the fix.)',
+      // Only nag about targeting when the choice actually matters.
+      liveNames.length > 1 && sel.mode === 'auto'
+        ? `${liveNames.length} browsers are connected (${liveNames.join(', ')}) and this connection is on AUTO (most recently connected wins). Call fast_profile install:"<name>" to pin one.`
+        : '',
+    ].filter(Boolean).join(' '),
     scoutNote: scoutEnabled
       ? 'Scout/vision tier (fast_scout, fast_point, fast_fill_vision, fast_do, fast_locate) is enabled.'
       : 'Scout/vision tier is disabled — add your own Gemini API key in relay settings, or set the operator GEMINI_API_KEY secret.',
@@ -380,8 +528,8 @@ const settleSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // readyState string (or null on timeout/error). Never rejects, and never blocks
 // past `ms`: a late relay resolution after the race is swallowed so it can't leak
 // an unhandled rejection or stall the poll loop.
-function probeReadyState(relay, ms) {
-  const p = relay.callExtension('fast_evaluate', { fn: '() => document.readyState' });
+function probeReadyState(relay, ms, ws) {
+  const p = relay.callExtension('fast_evaluate', { fn: '() => document.readyState' }, undefined, ws);
   p.catch(() => {}); // swallow a late rejection once the race has moved on
   return Promise.race([
     p.then((r) => (r && typeof r === 'object' ? r.result : null)).catch(() => null),
@@ -393,9 +541,9 @@ function probeReadyState(relay, ms) {
 // a plain chrome.tabs query → no "FastLink is debugging" banner toggle, so it
 // can't shift the viewport between batch steps). Prefers the pinned target tab,
 // else the active tab. '' on any failure.
-async function batchTabUrl(relay) {
+async function batchTabUrl(relay, ws) {
   try {
-    const r = await relay.callExtension('fast_list');
+    const r = await relay.callExtension('fast_list', {}, undefined, ws);
     const tabs = r?.result;
     if (!Array.isArray(tabs)) return '';
     const t = tabs.find((x) => x && x.targetTab) || tabs.find((x) => x && x.active);
@@ -410,7 +558,7 @@ async function batchTabUrl(relay) {
 // tab URL captured BEFORE the step. `willNavigateHint` and nav-actions only WIDEN
 // the detection window — the trigger is the observed URL change. Returns the new
 // URL on a settled navigation, else null (no navigation).
-async function settleIfNavigated(relay, stepName, urlBefore, willNavigateHint) {
+async function settleIfNavigated(relay, stepName, urlBefore, willNavigateHint, ws) {
   const isNavAction = NAV_ACTIONS.has(stepName);
   const predicted = willNavigateHint === true || isNavAction;
   const detectBudget = predicted ? NAV_DETECT_MS : NAV_DETECT_UNPREDICTED_MS;
@@ -419,7 +567,7 @@ async function settleIfNavigated(relay, stepName, urlBefore, willNavigateHint) {
   let navUrl = null;
   const detectDeadline = Date.now() + detectBudget;
   while (Date.now() < detectDeadline) {
-    const url = await batchTabUrl(relay);
+    const url = await batchTabUrl(relay, ws);
     if (url && urlBefore && url !== urlBefore) { navUrl = url; break; }
     await settleSleep(SETTLE_POLL_GAP_MS);
   }
@@ -431,16 +579,16 @@ async function settleIfNavigated(relay, stepName, urlBefore, willNavigateHint) {
   // next step binds to the live page, mirroring fast_nav's post-nav health-check.
   const readyDeadline = Date.now() + SETTLE_READY_BUDGET_MS;
   while (Date.now() < readyDeadline) {
-    const state = await probeReadyState(relay, SETTLE_PROBE_TIMEOUT_MS);
+    const state = await probeReadyState(relay, SETTLE_PROBE_TIMEOUT_MS, ws);
     if (state === 'interactive' || state === 'complete') break;
     await settleSleep(SETTLE_POLL_GAP_MS);
   }
-  return navUrl || (await batchTabUrl(relay)) || urlBefore || '';
+  return navUrl || (await batchTabUrl(relay, ws)) || urlBefore || '';
 }
 
 // Run several extension actions in one call (mirrors handlers.js runBatch). Each
 // step runs only if the prior succeeded unless continueOnError is set.
-async function runBatch(args, relay) {
+async function runBatch(args, relay, ws) {
   const actions = Array.isArray(args?.actions) ? args.actions : [];
   const continueOnError = !!args?.continueOnError;
   const results = [];
@@ -458,14 +606,14 @@ async function runBatch(args, relay) {
       continue;
     }
     if (step.name === 'fast_evaluate') {
-      const verdict = await relay.checkEvalAllowed();
+      const verdict = await relay.checkEvalAllowed(ws);
       if (!verdict.ok) {
         results.push({ step: i, name: step.name, ok: false, error: verdict.error });
         if (!continueOnError) break;
         continue;
       }
     }
-    const cv = await consentVerdict(relay, step.name);
+    const cv = await consentVerdict(relay, step.name, ws);
     if (cv) {
       results.push({ step: i, name: step.name, ok: false, ...cv });
       if (!continueOnError) break;
@@ -475,9 +623,9 @@ async function runBatch(args, relay) {
     // can detect an ACTUAL navigation afterward (the in-flight commit may lag the
     // step's own return, so before-vs-after is the only reliable signal).
     const navCandidate = i < actions.length - 1 && POSSIBLY_NAVIGATING.has(step.name);
-    const urlBefore = navCandidate ? await batchTabUrl(relay) : null;
+    const urlBefore = navCandidate ? await batchTabUrl(relay, ws) : null;
     try {
-      const r = await relay.callExtension(step.name, step.args || {});
+      const r = await relay.callExtension(step.name, step.args || {}, undefined, ws);
       relay.audit(step.name, step.args, !(r && r.error)); // best-effort
       if (r && r.error) {
         results.push({ step: i, name: step.name, ok: false, ...r });
@@ -487,7 +635,7 @@ async function runBatch(args, relay) {
         // If this step actually navigated the tab, settle on the new document
         // before dispatching the next step so it binds to the live page (BUG-2).
         if (navCandidate) {
-          await settleIfNavigated(relay, step.name, urlBefore, r.result && r.result.willNavigate);
+          await settleIfNavigated(relay, step.name, urlBefore, r.result && r.result.willNavigate, ws);
         }
       }
     } catch (e) {

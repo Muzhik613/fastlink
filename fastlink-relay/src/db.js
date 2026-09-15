@@ -67,16 +67,66 @@ export async function claimPairingCode(db, code) {
 }
 
 // --- devices ---------------------------------------------------------------
+//
+// A device's `label` IS its user-facing NAME — the word a human types to target
+// this browser ("work", "ytx", "dads-laptop"). Names are UNIQUE per user
+// (partial unique index on devices(user_id,label) WHERE revoked = 0, migration
+// 0006), so "rename to a name that already exists" is an ERROR, never a silent
+// overwrite, and a name always resolves to exactly one browser.
 
-// Register a paired device with its long-lived bearer token.
-export async function createDevice(db, userId, deviceToken, label) {
+// Sanitize a device name. IDENTICAL rule to the local broker's install-slot label
+// (fast-dxt/broker/extBridge.js sanitizeInstallId, fast-ext/options.js
+// sanitizeInstallId): lowercase, [a-z0-9_-], must start alphanumeric, ≤32 chars.
+// Same rule on all sides so a name means the same thing locally and on the relay.
+export function sanitizeDeviceName(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').replace(/^[-_]+/, '').slice(0, 32);
+}
+
+// Words fast_profile interprets as "release the pin" — reserving them means a
+// browser can never be named something the targeting tool cannot address.
+export const RESERVED_DEVICE_NAMES = new Set(['auto', 'default', 'none']);
+
+// Base of the auto-assigned name for a freshly-paired browser. Always numbered
+// (browser-1, browser-2 …) so a second pairing never collides with the first and
+// the user has something stable to rename.
+const DEFAULT_NAME_BASE = 'browser';
+
+// Pick a free, sanitized name for a new device. `desired` may be anything the
+// pairing flow supplied (or nothing); the result is always unique for this user.
+async function allocateDeviceName(db, userId, desired) {
+  const res = await db
+    .prepare(`SELECT label FROM devices WHERE user_id = ? AND revoked = 0`)
+    .bind(String(userId))
+    .all();
+  const taken = new Set(((res && res.results) || []).map((r) => String(r.label || '')));
+  let base = sanitizeDeviceName(desired);
+  if (!base || base === DEFAULT_NAME_BASE || RESERVED_DEVICE_NAMES.has(base)) base = DEFAULT_NAME_BASE;
+  // The generic base is ALWAYS numbered; a user-chosen base only gets a suffix on
+  // collision. Both loops terminate: at most taken.size + 1 candidates are tried.
+  const start = base === DEFAULT_NAME_BASE ? 1 : 1;
+  for (let n = start; n <= taken.size + 2; n++) {
+    const suffix = base === DEFAULT_NAME_BASE || n > 1 ? `-${n}` : '';
+    const cand = (base.slice(0, 32 - suffix.length) + suffix);
+    if (!taken.has(cand)) return cand;
+  }
+  // Unreachable in practice; a random suffix is still better than a collision.
+  return `${DEFAULT_NAME_BASE}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Register a paired device with its long-lived bearer token. `requestedName` is a
+// hint from the pairing flow; the STORED name is always sanitized + unique for
+// this user. Returns the name actually assigned.
+export async function createDevice(db, userId, deviceToken, requestedName) {
+  const name = await allocateDeviceName(db, userId, requestedName);
   await db
     .prepare(
       `INSERT INTO devices (device_token, user_id, label, created_at, last_seen, revoked)
        VALUES (?, ?, ?, ?, NULL, 0)`
     )
-    .bind(String(deviceToken), String(userId), label != null ? String(label) : null, now())
+    .bind(String(deviceToken), String(userId), name, now())
     .run();
+  return name;
 }
 
 // Resolve a device token -> owning user. Returns { userId, label, revoked } | null.
@@ -109,27 +159,57 @@ export async function revokeDevice(db, deviceToken) {
     .run();
 }
 
-// List a user's devices for a management UI. Device token is MASKED (last 4).
-export async function listDevices(db, userId) {
+// A user's LIVE (non-revoked) devices with UNMASKED tokens. This is the routing
+// table for named targeting: name → device_token → the live WebSocket carrying
+// that token. Server-side only (the DO), inside the owning user's context; the
+// public /devices view masks the token via maskToken().
+export async function getUserDevices(db, userId) {
   const res = await db
     .prepare(
-      `SELECT device_token, label, last_seen, revoked
+      `SELECT device_token, label, created_at, last_seen
          FROM devices
-        WHERE user_id = ?
-        ORDER BY created_at DESC`
+        WHERE user_id = ? AND revoked = 0
+        ORDER BY created_at ASC`
     )
     .bind(String(userId))
     .all();
-  const rows = (res && res.results) || [];
-  return rows.map((r) => ({
-    deviceToken: maskToken(r.device_token),
-    label: r.label,
+  return ((res && res.results) || []).map((r) => ({
+    deviceToken: r.device_token,
+    name: r.label,
+    createdAt: r.created_at,
     lastSeen: r.last_seen,
-    revoked: !!r.revoked,
   }));
 }
 
-function maskToken(t) {
+// Rename ONE of a user's devices. The new name is sanitized; a collision with
+// another live device of the SAME user is refused (never a silent overwrite —
+// two browsers answering to one name would resurrect the routing ambiguity this
+// whole feature exists to remove). Scoped by user_id, so a device token can only
+// ever touch devices belonging to its own account.
+// Returns { ok:true, name } | { ok:false, error }.
+export async function renameDevice(db, userId, deviceToken, requestedName) {
+  const name = sanitizeDeviceName(requestedName);
+  if (!name) return { ok: false, error: 'invalid_name' };
+  if (RESERVED_DEVICE_NAMES.has(name)) return { ok: false, error: 'reserved_name' };
+  const own = await db
+    .prepare(`SELECT label FROM devices WHERE device_token = ? AND user_id = ? AND revoked = 0`)
+    .bind(String(deviceToken), String(userId))
+    .first();
+  if (!own) return { ok: false, error: 'unknown_device' };
+  if (own.label === name) return { ok: true, name };
+  const clash = await db
+    .prepare(`SELECT 1 AS x FROM devices WHERE user_id = ? AND label = ? AND revoked = 0`)
+    .bind(String(userId), name)
+    .first();
+  if (clash) return { ok: false, error: 'name_taken' };
+  await db
+    .prepare(`UPDATE devices SET label = ? WHERE device_token = ? AND user_id = ?`)
+    .bind(name, String(deviceToken), String(userId))
+    .run();
+  return { ok: true, name };
+}
+
+export function maskToken(t) {
   if (!t) return '';
   const s = String(t);
   return s.length <= 4 ? '****' : '****' + s.slice(-4);

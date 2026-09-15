@@ -2,6 +2,7 @@
 /fast-ext-dad/
 /fastlink-cloud-mcp/
 /.claude/
+/.grok/
 
 # Workspace-local notes and docs (session logs, feedback transcripts)
 /CLAUDE.md

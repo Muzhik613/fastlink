@@ -80,6 +80,10 @@ export function makeDefaultHandler() {
             return handleSettingsGeminiKey(request, env);
           case '/consent':
             return handleConsent(request, env);
+          case '/trace':
+            return handleTrace(request, env);
+          case '/devices':
+            return handleDevices(request, env);
           case '/ext':
             return handleExtUpgrade(request, env);
           case '/':
@@ -259,9 +263,11 @@ async function handleUpstreamCallback(request, env) {
     // extension carrying the token in the URL fragment.
     const redirectUri = validExtRedirect(env, st.redirectUri);
     if (!redirectUri) return htmlPage('Invalid request', `<p>Invalid redirect target.</p>`, 400);
-    const label = String(st.label || 'browser');
+    // A pairing flow may HINT a name; db.createDevice sanitizes it and, on a
+    // clash (or no hint), assigns a unique numbered default (browser-1, browser-2
+    // …). Names are per-user unique, so no two browsers ever share one.
     const deviceToken = randomToken();
-    await db.createDevice(env.DB, userId, deviceToken, label);
+    const label = await db.createDevice(env.DB, userId, deviceToken, st.label);
     await db.logAudit(env.DB, userId, 'pair_authorize', { label, via: 'google', tab: !!st.pollId });
     // Tab-poll fallback: this is a REGULAR tab (not a launchWebAuthFlow window), so
     // a chromiumapp.org 302 would dead-end on a placeholder page. Park the token
@@ -320,7 +326,7 @@ async function completeExtPairMagic(env, userId, pollId) {
   const pr = await db.claimPairRequest(env.DB, pollId);
   if (!pr) return htmlPage('Link expired', `<p>This sign-in session has expired — please retry from the extension.</p>`, 400);
   const deviceToken = randomToken();
-  await db.createDevice(env.DB, userId, deviceToken, 'browser');
+  await db.createDevice(env.DB, userId, deviceToken, null);
   await db.bindPairRequest(env.DB, pollId, String(userId), deviceToken);
   await db.logAudit(env.DB, userId, 'pair_authorize', { via: 'magic' });
   return htmlPage(
@@ -345,7 +351,11 @@ async function completeOAuth(env, oauthReqInfo, userId) {
     userId: String(userId),
     scope: OAUTH_SCOPE,
     metadata: { ts: Date.now() },
-    props: { userId: String(userId), idm: identityMode(env) },
+    // `cid` = the OAuth client (chat product) this grant belongs to. Props ride
+    // through token refreshes, so index.js can hand the DO a client identity that
+    // is STABLE across refreshes and across clients that re-`initialize` on every
+    // tool call — that's what keys a per-product browser selection (fast_profile).
+    props: { userId: String(userId), idm: identityMode(env), cid: String(oauthReqInfo?.clientId || '') },
   });
   return Response.redirect(redirectTo, 302);
 }
@@ -493,8 +503,7 @@ async function handlePairClaim(request, env) {
   if (!claim) return jsonResponse({ error: 'invalid_or_expired_code' }, 400);
 
   const deviceToken = randomToken();
-  const label = (body && (body.label || body.deviceId)) ? String(body.label || body.deviceId) : 'browser';
-  await db.createDevice(env.DB, claim.userId, deviceToken, label);
+  const label = await db.createDevice(env.DB, claim.userId, deviceToken, body && (body.label || body.deviceId));
   await db.logAudit(env.DB, claim.userId, 'pair_claim', { label });
 
   return jsonResponse({
@@ -615,6 +624,97 @@ async function handleConsent(request, env) {
   return jsonResponse({ error: 'method_not_allowed' }, 405);
 }
 
+// ===========================================================================
+// /trace — read back the per-session tool-call TIMING trace the DO recorded
+// (src/timing.js). Device-token-authed, exactly like /consent and
+// /settings/gemini-key: the token the user's own extension holds resolves to a
+// userId, and we only ever read THAT user's DO. There is no unauthenticated
+// surface, and no cross-user surface — the DO is addressed by idFromName(userId)
+// derived from the token, never from a request parameter.
+//   GET ?deviceToken=...                    -> { sessions:[{id,startedAt,client,ua,calls}] }
+//   GET ?deviceToken=...&session=<id|latest> -> { session, rows:[{t,name,gapMs,durMs}] }
+// The payload is tool NAMES + timings only — no URLs, no arguments, no page text.
+// Deliberately NOT CORS-open (unlike the popup-facing endpoints): the consumer is
+// the relay-timing-report.js CLI, so no browser page can read it cross-origin.
+// ===========================================================================
+async function handleTrace(request, env) {
+  if (request.method !== 'GET') return jsonResponse({ error: 'method_not_allowed' }, 405);
+  const url = new URL(request.url);
+  const device = await db.lookupDevice(env.DB, url.searchParams.get('deviceToken'));
+  if (!device || device.revoked) {
+    return new Response(JSON.stringify({ error: 'invalid_device_token' }), {
+      status: 401, headers: { 'content-type': 'application/json' },
+    });
+  }
+  const stub = env.USER_RELAY.get(env.USER_RELAY.idFromName(String(device.userId)));
+  // Rebuild the query WITHOUT the device token so the credential never travels
+  // past the auth boundary.
+  const fwd = new URL(url.origin + '/__trace');
+  for (const k of ['session', 'limit']) {
+    const v = url.searchParams.get(k);
+    if (v) fwd.searchParams.set(k, v);
+  }
+  const res = await stub.fetch(new Request(fwd, { method: 'GET' }));
+  return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
+}
+
+// ===========================================================================
+// /devices — name this browser and see the account's other browsers.
+// Backs the extension options page's "This browser's name" card, which is the
+// relay twin of the local broker's install-slot card. Device-token-authed,
+// exactly like /consent, /settings/gemini-key and /trace: the token the
+// extension already holds resolves to a userId, and we only ever touch THAT
+// user's DO (idFromName(userId) derived from the token — never from a request
+// parameter), so a device token can only read/rename devices on its own account.
+//   GET  ?deviceToken=...                -> { self, default, devices:[{name,connected,lastSeen,self,deviceToken(masked)}] }
+//   POST { deviceToken, name }           -> rename THIS browser (unique per user; a clash is an error)
+//   POST { deviceToken, makeDefault:bool}-> make THIS browser the account default (used by clients that never call fast_profile)
+// ===========================================================================
+async function handleDevices(request, env) {
+  if (request.method === 'OPTIONS') return corsPreflight();
+  if (request.method !== 'GET' && request.method !== 'POST') {
+    return jsonResponse({ error: 'method_not_allowed' }, 405);
+  }
+
+  let token;
+  let body = null;
+  if (request.method === 'GET') {
+    token = new URL(request.url).searchParams.get('deviceToken');
+  } else {
+    try { body = await request.json(); } catch { return jsonResponse({ error: 'invalid_json' }, 400); }
+    token = body && body.deviceToken;
+  }
+  const device = await db.lookupDevice(env.DB, token);
+  if (!device || device.revoked) return jsonResponse({ error: 'invalid_device_token' }, 401);
+
+  // The DO owns the merge of D1 names + live socket state + the stored default,
+  // so it is the single place that answers "which browsers does this user have".
+  const stub = env.USER_RELAY.get(env.USER_RELAY.idFromName(String(device.userId)));
+  const u = new URL(new URL(request.url).origin + '/__devices');
+  const headers = {
+    'X-Fastlink-User-Id': String(device.userId),
+    // The credential itself does not travel further than this boundary as a
+    // credential — the DO uses it only to identify WHICH device is "self".
+    'X-Fastlink-Device-Token': String(token),
+    'content-type': 'application/json',
+  };
+  const res = await stub.fetch(
+    new Request(u.toString(), {
+      method: request.method,
+      headers,
+      body: request.method === 'POST' ? JSON.stringify(body || {}) : undefined,
+    })
+  );
+  const text = await res.text();
+  if (request.method === 'POST' && res.ok) {
+    try { await db.logAudit(env.DB, device.userId, 'device_rename', {}); } catch { /* non-fatal */ }
+  }
+  return new Response(text, {
+    status: res.status,
+    headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' },
+  });
+}
+
 // Normalize a site origin to its canonical scheme://host[:port] form (drops any
 // path/query/fragment). Returns '' if it isn't a valid absolute http(s) origin —
 // so a malformed origin can't silently create a junk consent row.
@@ -714,7 +814,9 @@ async function handleExtAuthorize(request, env) {
       );
     }
     const state = String(url.searchParams.get('state') || '');
-    const label = url.searchParams.get('label') ? String(url.searchParams.get('label')) : 'browser';
+    // Optional NAME hint from the extension. null = let db.createDevice assign the
+    // numbered default; it is sanitized + made unique per user either way.
+    const label = url.searchParams.get('label') ? String(url.searchParams.get('label')) : null;
     // Tab-poll fallback: an extension-generated, unguessable poll key (≥128-bit
     // base64url/hex). When present, the completion path PARKS the minted token under
     // it (instead of 302ing to chromiumapp.org, which only works inside a
@@ -765,7 +867,8 @@ async function handleExtAuthorize(request, env) {
     const redirectUri = validExtRedirect(env, st.redirectUri);
     if (!redirectUri) return htmlPage('Invalid request', `<p>Invalid redirect target.</p>`, 400);
     const state = String(st.state || '');
-    const label = String(st.label || 'browser');
+    // Name HINT only — db.createDevice sanitizes it and guarantees uniqueness.
+    const label = st.label ? String(st.label) : null;
 
     // Explicit cancel → bounce to the extension with an error fragment (SIGNUP-SPEC §4.1).
     // Tab-poll flow: no auth window to complete — render a plain page (the extension's
@@ -790,8 +893,8 @@ async function handleExtAuthorize(request, env) {
       await db.upsertUser(env.DB, userId, {});
       await db.setOperator(env.DB, userId, true); // bootstrap single-user IS the operator
       const deviceToken = randomToken();
-      await db.createDevice(env.DB, userId, deviceToken, label);
-      await db.logAudit(env.DB, userId, 'pair_authorize', { label, via: 'shared', tab: !!st.pollId });
+      const name = await db.createDevice(env.DB, userId, deviceToken, label);
+      await db.logAudit(env.DB, userId, 'pair_authorize', { label: name, via: 'shared', tab: !!st.pollId });
       const headers = secretOk ? { 'set-cookie': await pairSessionCookie(env) } : {};
       // Tab-poll fallback: park the token for the extension's JSON poll instead of
       // 302ing to chromiumapp.org (dead-end placeholder outside launchWebAuthFlow).

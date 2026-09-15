@@ -71,6 +71,17 @@ export class FastlinkApiHandler extends WorkerEntrypoint {
     // never trusts this for isolation (that's the idFromName keying above) — it's
     // purely informational.
     try { fwd.headers.set('X-Fastlink-User-Id', String(userId)); } catch { /* immutable headers — non-fatal */ }
+    // MULTI-BROWSER TARGETING: the OAuth client id identifies WHICH chat product
+    // is calling (claude.ai and Grok dynamic-register separately), and it is
+    // stamped into the grant props, so it stays constant across both an access-
+    // token refresh AND a client that opens a fresh MCP session per tool call.
+    // That makes it the key the DO stores this connection's browser selection
+    // under (userRelay.clientKey). Also informational only for isolation — the DO
+    // is still addressed by idFromName(userId) above.
+    const clientId = this.ctx?.props?.cid ?? this.props?.cid;
+    if (clientId) {
+      try { fwd.headers.set('X-Fastlink-Client-Id', String(clientId)); } catch { /* non-fatal */ }
+    }
     const res = await stub.fetch(fwd);
     return withCors(res, cors);
   }
@@ -129,6 +140,9 @@ function corsHeaders(origin, allowed) {
   const h = {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'authorization, content-type, mcp-protocol-version, mcp-session-id',
+    // Streamable HTTP: the browser MCP client can only echo the session id we mint
+    // at initialize (mcp.js traceHeaders) if it's allowed to READ the header.
+    'Access-Control-Expose-Headers': 'mcp-session-id',
     'Access-Control-Max-Age': '86400',
   };
   if (allow) { h['Access-Control-Allow-Origin'] = allow; h.Vary = 'Origin'; }

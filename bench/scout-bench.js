@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Gemini scout latency benchmark
-const fs = require('fs');
+import fs from 'fs';
 
 // API key from GEMINI_API_KEY env, or a KEY=VALUE secrets file at $FASTLINK_SECRETS.
 let KEY = process.env.GEMINI_API_KEY;
