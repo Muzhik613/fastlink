@@ -28,6 +28,7 @@ const passes = Number(flag('--passes', 3));
 const client = flag('--client', 'grok_runner');
 const transport = flag('--transport', 'local');
 const out = flag('--out', null);
+const notes = flag('--notes', ''); // "pass 1 on <sha>; fixer applied: …;" from hvm-run.sh
 
 const inWindow = (r) => r.client === client && r.transport === transport && r.ts >= since;
 const rows = loadResults().filter(inWindow).sort((a, b) => a.ts.localeCompare(b.ts));
@@ -82,6 +83,7 @@ md.push(`# Grok runner bench — hvm, ${transport} transport (${since.slice(0, 1
 md.push(`Client \`${client}\`, ${passes} pass(es) over ${tests.length} tests, driven by \`bench/hvm-run.sh\` on the hvm rig (Xvfb + Chrome for Testing + unpacked fast-ext + local broker; grokcode proxy :8791). Rows since ${since}.`, '');
 md.push('Baseline = the same cells over the RELAY transport from WSL (2026-09-15). Local vs relay changes hop latency only; the tool-choice data is what phase 1 needs.', '');
 md.push(`Skipped as environment-invalid (fresh profile, no login): ${Object.entries(SKIPPED).map(([k, v]) => `\`${k}\` (${v})`).join(', ')}.`, '');
+if (notes.trim()) md.push(`Runtime per pass: ${notes.trim()}`, '');
 md.push('## Per test', '', 'Cell = `score/total wall calls` · flags: X invalid, S stuck, ! overclaim, ~ underclaim.', '');
 md.push(`| test | ${Array.from({ length: passes }, (_, i) => `pass ${i + 1}`).join(' | ')} | best wall | median wall | median calls | score | baseline wall | best vs baseline |`);
 md.push(`|---|${'---|'.repeat(passes)}---:|---:|---:|---|---:|---:|`);
