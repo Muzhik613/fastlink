@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadToolset, buildTools, buildSystem, gateProblems } from '../runner.mjs';
+import { loadToolset, buildTools, buildSystem } from '../runner.mjs';
 import { TOOLS } from '../../fast-dxt/server/tools.js';
 
 // Tools that attach chrome.debugger (fast-ext/src/actions/input.js tier + its importers).
@@ -27,24 +27,6 @@ test('default toolset = every server tool + native, descriptions untouched, inst
   assert.match(tools.find(t => t.name === 'report_done').description, /^Finish the task\. result = concise/, 'baseline native descriptions untouched');
   assert.match(buildSystem(ts, 'ESSAY'), /Tool guidance from FastLink:\nESSAY$/);
   assert.match(buildSystem(ts, ''), /Today is \w+ \d{4}-\d{2}-\d{2} \(America\/Chicago\)/, 'system prompt carries today\'s date + timezone');
-});
-
-test('evidence gate: refuses report_done without a read after the last action or without a verbatim quote', () => {
-  const log = (rows) => rows.map(([name, ok, args = {}]) => ({ name, ok, args }));
-  const corpus = ['{"content":[{"text":"It\'s Only the Himalayas"},{"text":"£45.17"}],"url":"https://x"}'];
-  // last action = fill, nothing read since -> refused
-  assert.match(gateProblems({ toolLog: log([['fast_tab', true], ['fast_fill', true]]), corpus }, { evidence: '"£45.17"' }).join(';'), /no tool has read the page since your last fast_fill/);
-  // read after the action but evidence quotes nothing from a result -> refused
-  assert.match(gateProblems({ toolLog: log([['fast_fill', true], ['fast_snapshot', true]]), corpus }, { evidence: 'the price is right, trust me' }).join(';'), /evidence does not quote/);
-  // read after the action + verbatim quote -> accepted
-  assert.deepEqual(gateProblems({ toolLog: log([['fast_fill', true], ['fast_snapshot', true]]), corpus }, { evidence: 'h1 "It\'s Only the Himalayas", price £45.17 at https://x' }), []);
-  // a failed read does not count
-  assert.match(gateProblems({ toolLog: log([['fast_click', true], ['fast_text', false]]), corpus }, { evidence: '"£45.17"' }).join(';'), /no tool has read/);
-  // the action's own auto-snapshot is not a read-back
-  assert.match(gateProblems({ toolLog: log([['fast_snapshot', true], ['fast_select_option', true]]), corpus }, { evidence: '"£45.17"' }).join(';'), /fast_select_option/);
-  // networkIdle wait reads nothing; text-mode wait does
-  assert.match(gateProblems({ toolLog: log([['fast_click', true], ['fast_wait', true, { networkIdle: true }]]), corpus }, { evidence: '"£45.17"' }).join(';'), /no tool has read/);
-  assert.deepEqual(gateProblems({ toolLog: log([['fast_click', true], ['fast_wait', true, { text: 'Himalayas' }]]), corpus }, { evidence: '"£45.17"' }), []);
 });
 
 test('"default" and unset and FASTRUN_TOOLSET resolve the same file', () => {

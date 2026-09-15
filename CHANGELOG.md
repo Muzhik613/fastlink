@@ -19,6 +19,31 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — fast-runner: evidence gate checks the current URL + unretried failures
+- **What:** `runner.mjs` tracks `urlTrail` (distinct `url`s carried by tool results —
+  fast_tab/nav/click/snapshot/wait or their auto-snapshot) and tags every corpus entry
+  with the URL it was read on. `report_done` now also refuses when (2) the evidence
+  quote comes from a result read on an earlier URL than the last-seen one, and (3) a
+  failed call was never followed by a successful one of the same intent (same tool +
+  `text`/`field`/`match` target, or another tool on that target) — refused once
+  ("your last attempt to fast_click "x" failed and was never retried; retry it or
+  explain in `result` why it is not needed"); the next `report_done` passes but the
+  row records `unresolvedFailures:[{name,target,t}]`. Rows and `grok_status` carry
+  `urlTrail`. System prompt: one added sentence about unretried failures. Tests moved
+  to `test/gate.test.mjs` (5 tests, synthetic tool logs).
+- **Why:** cfworkers runs ae2428fc / d5c9ab8e (grok-4.3, phase2): the click into the
+  "fastlink-relay" Worker failed (`role:"a"`) and was never retried, yet `report_done`
+  passed because the evidence quoted a fresh `fast_text` of the list page — bench
+  scored 2/5 with `claimedComplete=true`.
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/README.md`, `fast-runner/test/gate.test.mjs`,
+  `fast-runner/test/toolset.test.mjs`.
+- **Watch out:** the failure check is intent-based, not task-based — a disabled
+  `fast_evaluate` that the model correctly abandoned also costs one refusal (then is
+  flagged, not blocked). Corpus entries are now `{text,url}` objects. A URL only enters
+  the trail from a result's top-level `url` or `snapshot.url`; `fast_text` carries none
+  and inherits the last-seen URL.
+- **Status:** in code / tests pass / committed.
+
 ## 2026-09-15 — Broker: ext listeners bind 0.0.0.0 only under WSL (loopback elsewhere), `FASTLINK_BROKER_BIND` override
 - **What:** `broker/config.js` `resolveExtBind(env, procVersion)` → `FASTLINK_BROKER_BIND`
   if set, else `0.0.0.0` when `/proc/version` mentions microsoft/WSL, else `127.0.0.1`;

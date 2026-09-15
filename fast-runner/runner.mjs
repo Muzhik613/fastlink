@@ -30,12 +30,17 @@ Rules:
 - A result that starts with truncated:true is partial: never answer or report_done from it — call fast_snapshot full:true / fast_text / limit:N first.
 - Call ask_caller ONLY when a decision genuinely needs the caller (missing info, ambiguous choice, risky/irreversible action). Never ask for things you can find on the page.
 - Never claim success without reading it back from the page (snapshot/text/value).
-- When finished call report_done with a concise result and evidence (what you read back, URL). report_done is refused unless a read (fast_snapshot/fast_text) followed your last action and evidence quotes that result verbatim. Do not end your turn without calling report_done or ask_caller.`;
+- When finished call report_done with a concise result and evidence (what you read back, URL). report_done is refused unless a read (fast_snapshot/fast_text) followed your last action and evidence quotes that result verbatim. A tool call that failed and was never retried also blocks report_done — retry it, or say in result why it is not needed. Do not end your turn without calling report_done or ask_caller.`;
 
-// Evidence gate for report_done (a caller-facing contract, every toolset): the
-// run must have READ the page after its last state-changing call, and
-// `evidence` must quote a tool result of this run — otherwise the model is
-// told exactly what is missing and continues. Refusals are logged per run.
+// Evidence gate for report_done (a caller-facing contract, every toolset):
+//  1. the run must have READ the page after its last state-changing call;
+//  2. `evidence` must quote a tool result of this run, taken on the CURRENT
+//     (last-seen) URL — a quote from an earlier page is not evidence for this one;
+//  3. a failed call never retried (same tool+target, or another tool on that
+//     target) is refused ONCE; the next report_done passes but the row records
+//     `unresolvedFailures` for the bench.
+// Otherwise the model is told exactly what is missing and continues. Refusals
+// are logged per run.
 const STATE_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_select_option', 'fast_key_press', 'fast_key',
   'fast_type', 'fast_nav', 'fast_tab', 'fast_reload', 'fast_scroll', 'fast_wheel', 'fast_drag', 'fast_drag_xy',
@@ -47,6 +52,37 @@ const isStateChanging = (e) => STATE_TOOLS.has(e.name);
 const isRead = (e) => READ_TOOLS.has(e.name) || (e.name === 'fast_wait' && !!(e.args && e.args.text));
 // Tool-result JSON vs. what the model copies from it: unescape \n and \", collapse whitespace, lowercase.
 const normQuote = (s) => String(s ?? '').replace(/\\n/g, ' ').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_, h) => String.fromCharCode(parseInt(h, 16))).replace(/\s+/g, ' ').trim().toLowerCase();
+const currentUrl = (run) => (run.urlTrail || [])[run.urlTrail?.length - 1] || '';
+
+// Every tool result passes through here. FastLink reports failures as {"error":…}
+// in the text payload (not MCP isError). A result carrying `url` (fast_tab/nav/
+// click/snapshot/wait, or its auto-snapshot's) extends urlTrail; a successful
+// text joins the evidence corpus tagged with the URL it was read on.
+export function recordResult(run, text, isError) {
+  let o = null;
+  if (text.startsWith('{')) { try { o = JSON.parse(text); } catch {} }
+  const ok = !isError && typeof o?.error !== 'string';
+  const url = typeof o?.url === 'string' ? o.url : typeof o?.snapshot?.url === 'string' ? o.snapshot.url : '';
+  if (url && currentUrl(run) !== url) run.urlTrail.push(url);
+  if (ok) run.corpus.push({ text, url: currentUrl(run) });
+  return ok;
+}
+
+// What a call was aimed at; the same target under another tool still counts as a retry.
+const target = (e) => String(e.args?.text ?? e.args?.field ?? e.args?.match ?? '');
+const describe = (f) => f.name + (f.target ? ` ${JSON.stringify(f.target)}` : '');
+// Failed calls whose intent never succeeded afterwards (latest attempt per tool+target).
+export function unresolvedFailures(log) {
+  const out = new Map();
+  log.forEach((e, i) => {
+    if (e.ok) return;
+    const tg = target(e);
+    const retried = log.slice(i + 1).some(x => x.ok && (x.name === e.name ? target(x) === tg : tg !== '' && target(x) === tg));
+    if (!retried) out.set(`${e.name}\0${tg}`, { name: e.name, target: tg, t: e.t });
+  });
+  return [...out.values()];
+}
+
 export function gateProblems(run, args) {
   const log = run.toolLog || [];
   const problems = [];
@@ -63,14 +99,20 @@ export function gateProblems(run, args) {
   const ev = String(args?.evidence ?? '').trim();
   if (!ev) problems.push('evidence is empty — quote what you read back from the page, plus the URL');
   else {
-    const corpus = normQuote((run.corpus || []).join('\n'));
     const frags = [];
     for (const m of ev.matchAll(/["“”'‘’`]([^"“”'‘’`]{4,300})["“”'‘’`]/g)) frags.push(m[1]);
     const words = normQuote(ev).split(' ').filter(Boolean);
     for (let n = 6; n >= 3; n--) for (let i = 0; i + n <= words.length; i++) frags.push(words.slice(i, i + n).join(' '));
     for (const w of words) if (/\d/.test(w) && w.length >= 6) frags.push(w);
-    const quoted = frags.some(f => { const q = normQuote(f).replace(/[.,;:]+$/, ''); return q.length >= 4 && corpus.includes(q); });
-    if (!quoted) problems.push('evidence does not quote any tool result of this run — copy a phrase exactly as the last fast_snapshot/fast_text result showed it (a content text, a field value, a number), then report again');
+    const qs = frags.map(f => normQuote(f).replace(/[.,;:]+$/, '')).filter(q => q.length >= 4);
+    const hits = (run.corpus || []).filter(c => { const t = normQuote(c.text); return qs.some(q => t.includes(q)); });
+    const now = currentUrl(run);
+    if (!hits.length) problems.push('evidence does not quote any tool result of this run — copy a phrase exactly as the last fast_snapshot/fast_text result showed it (a content text, a field value, a number), then report again');
+    else if (now && !hits.some(c => c.url === now)) problems.push(`evidence quotes a result read on ${hits[hits.length - 1].url || 'an earlier page'}, but the page is now at ${now}; read the current page (fast_snapshot/fast_text) and quote that result`);
+  }
+  // one refusal per run: a prior refusal that recorded unresolvedFailures already said this
+  if (!(run.gateRefusals || []).some(r => r.unresolvedFailures)) {
+    for (const f of unresolvedFailures(log)) problems.push(`your last attempt to ${describe(f)} failed and was never retried; retry it or explain in \`result\` why it is not needed`);
   }
   return problems;
 }
@@ -145,12 +187,6 @@ function toolResultContent(res) {
   return out;
 }
 
-// FastLink reports failures as {"error": ...} in the text payload, not MCP isError.
-function isPayloadError(text) {
-  if (!text.startsWith('{')) return false;
-  try { const o = JSON.parse(text); return typeof o?.error === 'string'; } catch { return false; }
-}
-
 function lastAssistantText(run) {
   for (let i = run.messages.length - 1; i >= 0; i--) {
     const m = run.messages[i];
@@ -214,7 +250,7 @@ function snapshot(run) {
   const base = { status: run.status, run_id: run.id };
   if (run.status === 'question') return { ...base, question: run.question, so_far: soFar(run) };
   if (run.status === 'running') return base;
-  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined };
+  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined, unresolvedFailures: run.unresolvedFailures || undefined };
 }
 
 function notify(run) {
@@ -232,8 +268,8 @@ function finish(run, status, fields = {}) {
       run_id: run.id, task: run.task, transport: run.transport, browser: run.browser, model: MODEL,
       toolset: run.toolset.name, status, startedAt: new Date(run.startedAt).toISOString(), wallMs: run.endedAt - run.startedAt,
       toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog, turns: run.turns,
-      result: run.result, evidence: run.evidence, error: run.error, usage: run.usage,
-      gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined,
+      result: run.result, evidence: run.evidence, error: run.error, usage: run.usage, urlTrail: run.urlTrail,
+      gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined, unresolvedFailures: run.unresolvedFailures || undefined,
     }) + '\n');
   } catch {}
   run.client?.close().catch(() => {});
@@ -285,14 +321,15 @@ async function loop(run) {
       const args = u.input || {};
       if (u.name === 'report_done') {
         const problems = gateProblems(run, args);
+        const unresolved = unresolvedFailures(run.toolLog);
         if (problems.length && run.gateRefusals.length < MAX_GATE_REFUSALS) {
-          run.gateRefusals.push({ turn: run.turns.length, t: Date.now() - t0, problems });
+          run.gateRefusals.push({ turn: run.turns.length, t: Date.now() - t0, problems, ...(unresolved.length ? { unresolvedFailures: unresolved } : {}) });
           onEvent?.({ type: 'gate', problems });
           results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: `report_done refused: ${problems.join('; ')}. Fix that, then call report_done again.` }] });
           continue;
         }
         if (problems.length) run.gateOverridden = problems;
-        return finish(run, 'done', { result: args.result ?? '', evidence: args.evidence ?? '' });
+        return finish(run, 'done', { result: args.result ?? '', evidence: args.evidence ?? '', unresolvedFailures: unresolved.length ? unresolved : null });
       }
       if (u.name === 'ask_caller') {
         run.question = String(args.question ?? '');
@@ -315,13 +352,12 @@ async function loop(run) {
       }
       const ms = Date.now() - t1;
       const firstText = res?.content?.find(c => c.type === 'text')?.text || '';
-      ok = !res?.isError && !isPayloadError(firstText);
+      ok = recordResult(run, firstText, !!res?.isError); // urlTrail + evidence corpus (corpus is memory only, not written to runs.jsonl)
       // 1200 chars: enough of a result to post-mortem a fumble from runs.jsonl
       // (an error's candidates / a batch's per-step results); 160 showed only the
       // first key of a snapshot.
       const preview = firstText.slice(0, 1200);
       run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview });
-      if (ok) run.corpus.push(firstText); // full text, for the evidence gate (memory only, not written to runs.jsonl)
       onEvent?.({ type: 'tool', name: real || u.name, args, ms, ok, preview });
       run.consecutiveErrors = ok ? 0 : run.consecutiveErrors + 1;
       results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResultContent(res), ...(ok ? {} : { is_error: true }) });
@@ -345,7 +381,7 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
     id: randomBytes(4).toString('hex'), task, transport, browser, toolset, status: 'running',
     messages: [{ role: 'user', content: [{ type: 'text', text: `TASK: ${task}` }] }],
     system: buildSystem(toolset, client.instructions),
-    tools, back, client, toolLog: [], turns: [], corpus: [], gateRefusals: [], gateOverridden: null, question: null, waiters: [], pendingAnswer: null,
+    tools, back, client, toolLog: [], turns: [], corpus: [], urlTrail: [], gateRefusals: [], gateOverridden: null, unresolvedFailures: null, question: null, waiters: [], pendingAnswer: null,
     budgets: { ...DEFAULT_BUDGETS, ...budgets }, onEvent, startedAt: Date.now(), consecutiveErrors: 0,
     usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, modelMs: 0 }, abort: new AbortController(), cancelled: false, done: false,
   };
