@@ -12,14 +12,68 @@ const RUNS_FILE = join(STATE_DIR, 'runs.jsonl');
 const DEFAULT_BUDGETS = { maxToolCalls: 60, maxWallMs: 600_000, maxConsecutiveErrors: 3 };
 const RESULT_CAP = 80_000; // chars per tool result fed back to Grok
 const MAX_NUDGES = 2;      // end_turn without report_done -> nudge, then fail
+const MAX_GATE_REFUSALS = 3; // report_done refused this many times -> accepted, flagged gateOverridden
+const TZ = 'America/Chicago';
 
+// Today's date is in the prompt so a model never guesses the year for "a month
+// from today" (both Grok models reached for fast_evaluate to get it, 4.3 typed 2024).
+const todayLine = () => {
+  const d = new Date();
+  const date = d.toLocaleDateString('en-CA', { timeZone: TZ });
+  const dow = d.toLocaleDateString('en-US', { timeZone: TZ, weekday: 'long' });
+  return `Today is ${dow} ${date} (${TZ}). Compute relative dates from this; never guess the year.`;
+};
 const SYSTEM = `You are the operator of a real Chrome browser. The tools below drive it directly (FastLink). Work autonomously until the task is finished.
 Rules:
 - Read pages with fast_snapshot; act with DOM tools; use fast_batch when the next steps are already known.
 - Action results already include a fresh snapshot; do not re-snapshot right after an action. No artificial waits.
+- A result that starts with truncated:true is partial: never answer or report_done from it — call fast_snapshot full:true / fast_text / limit:N first.
 - Call ask_caller ONLY when a decision genuinely needs the caller (missing info, ambiguous choice, risky/irreversible action). Never ask for things you can find on the page.
 - Never claim success without reading it back from the page (snapshot/text/value).
-- When finished call report_done with a concise result and evidence (what you read back, URL). Do not end your turn without calling report_done or ask_caller.`;
+- When finished call report_done with a concise result and evidence (what you read back, URL). report_done is refused unless a read (fast_snapshot/fast_text) followed your last action and evidence quotes that result verbatim. Do not end your turn without calling report_done or ask_caller.`;
+
+// Evidence gate for report_done (a caller-facing contract, every toolset): the
+// run must have READ the page after its last state-changing call, and
+// `evidence` must quote a tool result of this run — otherwise the model is
+// told exactly what is missing and continues. Refusals are logged per run.
+const STATE_TOOLS = new Set([
+  'fast_click', 'fast_click_xy', 'fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_key_press', 'fast_key',
+  'fast_type', 'fast_nav', 'fast_tab', 'fast_reload', 'fast_scroll', 'fast_wheel', 'fast_drag', 'fast_drag_xy',
+  'fast_upload', 'fast_hover', 'fast_switch', 'fast_close', 'fast_batch', 'fast_do', 'fast_fill_vision',
+  'fast_macro_run', 'fast_network_replay',
+]);
+const READ_TOOLS = new Set(['fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_evaluate', 'fast_marks', 'fast_scout', 'fast_list', 'fast_console', 'fast_network']);
+const isStateChanging = (e) => STATE_TOOLS.has(e.name);
+const isRead = (e) => READ_TOOLS.has(e.name) || (e.name === 'fast_wait' && !!(e.args && e.args.text));
+// Tool-result JSON vs. what the model copies from it: unescape \n and \", collapse whitespace, lowercase.
+const normQuote = (s) => String(s ?? '').replace(/\\n/g, ' ').replace(/\\"/g, '"').replace(/\\u([0-9a-f]{4})/gi, (_, h) => String.fromCharCode(parseInt(h, 16))).replace(/\s+/g, ' ').trim().toLowerCase();
+export function gateProblems(run, args) {
+  const log = run.toolLog || [];
+  const problems = [];
+  if (!log.length) problems.push('no tool has been called — the page has not been read');
+  else {
+    let last = -1;
+    for (let i = log.length - 1; i >= 0; i--) if (isStateChanging(log[i])) { last = i; break; }
+    if (!log.slice(last + 1).some(e => e.ok && isRead(e))) {
+      problems.push(last >= 0
+        ? `no tool has read the page since your last ${log[last].name}; call fast_snapshot or fast_text (its own auto-snapshot is not a read-back) and cite what it returned`
+        : 'no successful read of the page yet; call fast_snapshot or fast_text and cite what it returned');
+    }
+  }
+  const ev = String(args?.evidence ?? '').trim();
+  if (!ev) problems.push('evidence is empty — quote what you read back from the page, plus the URL');
+  else {
+    const corpus = normQuote((run.corpus || []).join('\n'));
+    const frags = [];
+    for (const m of ev.matchAll(/["“”'‘’`]([^"“”'‘’`]{4,300})["“”'‘’`]/g)) frags.push(m[1]);
+    const words = normQuote(ev).split(' ').filter(Boolean);
+    for (let n = 6; n >= 3; n--) for (let i = 0; i + n <= words.length; i++) frags.push(words.slice(i, i + n).join(' '));
+    for (const w of words) if (/\d/.test(w) && w.length >= 6) frags.push(w);
+    const quoted = frags.some(f => { const q = normQuote(f).replace(/[.,;:]+$/, ''); return q.length >= 4 && corpus.includes(q); });
+    if (!quoted) problems.push('evidence does not quote any tool result of this run — copy a phrase exactly as the last fast_snapshot/fast_text result showed it (a content text, a field value, a number), then report again');
+  }
+  return problems;
+}
 
 const NATIVE_TOOLS = [
   {
@@ -75,13 +129,16 @@ export function buildTools(mcpTools, toolset) {
 // The server's MCP `instructions` essay rides along ONLY on the default toolset, so the baseline
 // stays byte-identical; a triaged toolset carries its own tight descriptions instead.
 export function buildSystem(toolset, instructions) {
-  return toolset.name === 'default' && instructions ? `${SYSTEM}\n\nTool guidance from FastLink:\n${instructions}` : SYSTEM;
+  const base = `${SYSTEM}\n${todayLine()}`;
+  return toolset.name === 'default' && instructions ? `${base}\n\nTool guidance from FastLink:\n${instructions}` : base;
 }
 
 function toolResultContent(res) {
   const out = [];
   for (const c of res?.content || []) {
-    if (c.type === 'text') out.push({ type: 'text', text: c.text.length > RESULT_CAP ? c.text.slice(0, RESULT_CAP) + '\n[truncated]' : c.text });
+    if (c.type === 'text') out.push({ type: 'text', text: c.text.length > RESULT_CAP
+      ? `[truncated:true — this result was ${c.text.length} chars, only the first ${RESULT_CAP} follow; narrow it (fast_text selector/maxLen, fast_snapshot limit:N) before relying on it]\n${c.text.slice(0, RESULT_CAP)}`
+      : c.text });
     else if (c.type === 'image') out.push({ type: 'image', source: { type: 'base64', media_type: c.mimeType, data: c.data } });
   }
   if (!out.length) out.push({ type: 'text', text: JSON.stringify(res?.structuredContent ?? res ?? null) });
@@ -157,7 +214,7 @@ function snapshot(run) {
   const base = { status: run.status, run_id: run.id };
   if (run.status === 'question') return { ...base, question: run.question, so_far: soFar(run) };
   if (run.status === 'running') return base;
-  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name };
+  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined };
 }
 
 function notify(run) {
@@ -176,6 +233,7 @@ function finish(run, status, fields = {}) {
       toolset: run.toolset.name, status, startedAt: new Date(run.startedAt).toISOString(), wallMs: run.endedAt - run.startedAt,
       toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog, turns: run.turns,
       result: run.result, evidence: run.evidence, error: run.error, usage: run.usage,
+      gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined,
     }) + '\n');
   } catch {}
   run.client?.close().catch(() => {});
@@ -226,6 +284,14 @@ async function loop(run) {
       if (run.cancelled) return;
       const args = u.input || {};
       if (u.name === 'report_done') {
+        const problems = gateProblems(run, args);
+        if (problems.length && run.gateRefusals.length < MAX_GATE_REFUSALS) {
+          run.gateRefusals.push({ turn: run.turns.length, t: Date.now() - t0, problems });
+          onEvent?.({ type: 'gate', problems });
+          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: `report_done refused: ${problems.join('; ')}. Fix that, then call report_done again.` }] });
+          continue;
+        }
+        if (problems.length) run.gateOverridden = problems;
         return finish(run, 'done', { result: args.result ?? '', evidence: args.evidence ?? '' });
       }
       if (u.name === 'ask_caller') {
@@ -255,6 +321,7 @@ async function loop(run) {
       // first key of a snapshot.
       const preview = firstText.slice(0, 1200);
       run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview });
+      if (ok) run.corpus.push(firstText); // full text, for the evidence gate (memory only, not written to runs.jsonl)
       onEvent?.({ type: 'tool', name: real || u.name, args, ms, ok, preview });
       run.consecutiveErrors = ok ? 0 : run.consecutiveErrors + 1;
       results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResultContent(res), ...(ok ? {} : { is_error: true }) });
@@ -278,7 +345,7 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
     id: randomBytes(4).toString('hex'), task, transport, browser, toolset, status: 'running',
     messages: [{ role: 'user', content: [{ type: 'text', text: `TASK: ${task}` }] }],
     system: buildSystem(toolset, client.instructions),
-    tools, back, client, toolLog: [], turns: [], question: null, waiters: [], pendingAnswer: null,
+    tools, back, client, toolLog: [], turns: [], corpus: [], gateRefusals: [], gateOverridden: null, question: null, waiters: [], pendingAnswer: null,
     budgets: { ...DEFAULT_BUDGETS, ...budgets }, onEvent, startedAt: Date.now(), consecutiveErrors: 0,
     usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, modelMs: 0 }, abort: new AbortController(), cancelled: false, done: false,
   };

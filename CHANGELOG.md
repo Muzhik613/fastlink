@@ -19,6 +19,31 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Runner: `report_done` evidence gate, dated system prompt, loud 80k cap
+- **What:** `fast-runner/runner.mjs` — (1) **evidence gate** (every toolset; it is the
+  caller-facing contract): `report_done` is refused unless a successful READ
+  (fast_snapshot / fast_text / text-mode fast_wait / screenshot / evaluate…) came AFTER
+  the run's last state-changing call (an action's own auto-snapshot is not a read-back),
+  and unless `evidence` quotes a tool result of this run verbatim (a quoted fragment,
+  any 3–6-word window, or a ≥6-char number, matched against the normalized full result
+  texts). The refusal names what is missing ("no tool has read the page since your last
+  fast_fill; call fast_snapshot or fast_text and cite it"); after 3 refusals the report
+  is accepted and flagged `gateOverridden`. Refusals are logged per run
+  (`gateRefusals[]` in `runs.jsonl` + the run snapshot). (2) The system prompt carries
+  today's date + weekday in America/Chicago ("never guess the year") and the rule "a
+  result that starts with truncated:true is partial — never report from it". (3) The
+  80k result cap now PREFIXES `[truncated:true — N chars, first 80000 follow; narrow it]`
+  instead of appending `[truncated]` at the end.
+- **Why:** grok-4.3 overclaimed 4 of 8 cells (overlay / extract / mapsdir / cfworkers)
+  by reporting without reading back; both models called fast_evaluate for today's date
+  and 4.3 typed 2024.
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/test/toolset.test.mjs`
+  (`gateProblems` unit-tested).
+- **Watch out:** the date line changes the cached prefix once a day — expected. Gate
+  cost = one extra read per run when the model stops one call short; watch
+  `gateRefusals` in the bench doc.
+- **Status:** committed; unit tests pass.
+
 ## 2026-09-15 — Extension: verified state on mutating tools, bounded auto-wait on misses, truncation-first, settled snapshots, `fast_key_press` in page.js
 - **What:** `fast-ext/src/actions/page.js` (+ `index.js`, `text.js`; `key.js` deleted):
   1. **Verified state leads every mutating result.** `fast_fill` → `{ verified, value,
