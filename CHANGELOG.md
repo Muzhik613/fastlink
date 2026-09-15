@@ -49,7 +49,7 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   `fast-runner/test/holdout-replay.test.mjs`.
 - **Watch out:** a date/masked field that always reformats now costs one gate refusal per run
   unless the model re-reads/explains it (the one-refusal rule still applies).
-- **Status:** committed; unit tests pass; live: see the second holdout n=2 in the report doc.
+- **Status:** committed; unit tests pass; live by tool call on hvm (no model — xAI credits ran out): Form.io "Dependant" no index → refused (rows Joe/Mary/new), index:2 → only the new row ticked, Joe stays true; (N) SurveyJS dynamic matrix "Yes" → refused (11), index:2 → exactly that radio; jQuery UI Next role:"link" → month advances; GOV.UK distinct-label radio still clicks. Holdout n=2 on 9d18d4d: docs/GROK_RUNNER_HOLDOUT_2026-09-15.md.
 
 ## 2026-09-15 — holdout gaps 1-4, 6: live proof (hvm rig, fixed build loaded unpacked, tools called in-process via bench/fastlink.js)
 Non-holdout sites marked (N). Every row is a before/after page read through fast_evaluate.

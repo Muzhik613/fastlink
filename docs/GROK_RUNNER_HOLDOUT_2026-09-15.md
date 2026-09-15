@@ -135,3 +135,22 @@ Clean: header click ×2 + page button; search fill → result click → Files ta
 Model-side (not tool): repeating an identical failing call instead of the fallback the diagnostic
 names (h_conditional, h_datepicker), and reporting values the tool marked `verified:false`
 (h_repeat).
+
+## After the fixes — n=2 on 9d18d4d (f2cf7ba + 9d18d4d), same rig/model/toolset, gate on
+
+Rows since 2026-09-15T21:39:53Z in hvm `bench/results.jsonl`. Cell = score/total wall calls; ! overclaim, ~ reported not-done.
+
+| test | baseline (n=1) | pass 1 | pass 2 |
+|---|---|---|---|
+| h_conditional | 1/6 | 6/6 5.7s 5c | 6/6 5.0s 4c |
+| h_datepicker | 1/4 | 1/4~ 7.8s 5c | 4/4 5.4s 7c |
+| h_combobox | 1/4 ! | 4/4 5.0s 4c | 4/4 4.3s 4c |
+| h_table | 6/6 | 5/6 ! 9.0s 7c | 6/6 6.1s 6c |
+| h_repeat | 3/7 ! | 5/7 ! 20.2s 8c | 5/7 ! 20.3s 8c |
+| h_spa | 5/5 | 5/5 8.8s 9c | 5/5 12.5s 8c |
+
+Totals: **56/64** (baseline 18/32 at n=1), 3 overclaims (baseline 2).
+- h_datepicker p1 — TOOL: `fast_click {text:"Next", role:"link"}` ×3 refused (a no-href `<a>` had only the implicit role "generic") → runner stopped. Fixed in 8837e49 (a script `<a>` answers to "link"); proven live by tool call (Next with role:"link" → month advances).
+- h_table p1 — MODEL: clicked Salary once (ascending), reported "Salary desc"; the gate refused once for an unretried `fast_click "Salary" index:1`, then accepted.
+- h_repeat p1+p2 — TOOL + gate: `fast_click {text:"Dependant", role:"checkbox"}` without index unticked Joe's seeded row (repeated-row click); the Birthdate fill read back `verified:false` (the date widget never committed it) and was reported as set. Fixed in 8837e49: fast_click refuses a check-type control whose label repeats across rows (candidates name rows; live: Form.io refused Joe/Mary/new, index:2 ticked only the new row; SurveyJS dynamic matrix refused 11 "Yes" radios, index:2 checked exactly that one), and the gate counts a top-level `verified:false` write as an unresolved action (unit test).
+- 8837e49 itself has NOT been through a model run: the xAI account hit its spending limit at 21:43:35Z (`403 personal-team-blocked:spending-limit`), which also invalidated the regression run on the original six (pass 1: multipage 6/6, staticform 12/12, overlay 3/3, extract valid; flightsearch died after 2 calls; everything after = 0 calls). hvm keeps that run's commit on the local branch `holdoutfix-invalid-regression` (c271a5c), unpushed.
