@@ -19,6 +19,74 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — `fast_profile` description: pin required on the local broker when >1 profile is connected
+- **What:** one sentence added to `fast_profile` in `fast-dxt/server/tools.js` and the
+  `fastlink-relay/tools.js` mirror (kept byte-identical): with more than one local
+  profile connected, every tool except fast_status/fast_profile errors until the
+  connection pins a label or "auto"; "auto" = most recent browser (relay) / active
+  slot (local).
+- **Why:** the broker now refuses unpinned calls in that state (entry below); the
+  description said calls "go to the most recently connected browser".
+- **Files:** `fast-dxt/server/tools.js`, `fastlink-relay/tools.js`.
+- **Watch out:** relay routing unchanged; wording only. Needs `wrangler deploy` for
+  the relay and an MCP restart / `.mcpb` rebuild locally.
+- **Status:** committed (7219ab7).
+
+## 2026-09-15 — Broker: an unpinned MCP session is REFUSED while >1 profile is connected (no more silent landing on the owner's main profile)
+- **What:** `broker/router.js` `resolveSocket`: envelope `install` = label → that slot
+  only (unchanged, BUG-5); `"auto"` → ACTIVE-then-any-connected (only when a session
+  EXPLICITLY pinned "auto"); absent → one slot connected: use it; >1 connected:
+  `{error:"2 Chrome profiles are connected (primary, work) and this session has not
+  pinned one — call fast_profile {install:"<label>"} first (or install:"auto" …)",
+  connectedInstalls, installs}` — mirrors the pinned-but-offline error.
+  `server/brokerClient.js` now sends `install:"auto"` only after an explicit
+  `fast_profile "auto"` (`explicitAuto`); a fresh session sends no `install`.
+  `state.snapshot()` adds `connectedInstalls:[…]` + `pinRequired:boolean`
+  (`routedInstall` still names the "auto" target). `fast_status` / `fast_profile`
+  never go through the router, so they stay callable unpinned.
+- **Why:** today a second session's first calls landed on the owner's main profile
+  before it called fast_profile — `getExtensionSocket()` picked ACTIVE for any
+  unpinned call.
+- **Files:** `fast-dxt/broker/router.js`, `state.js`, `fast-dxt/server/brokerClient.js`,
+  `fast-dxt/test/broker.test.mjs` (new), `docs/BUG-5-multi-install-routing.md`.
+- **Watch out:** takes effect only after the running broker AND the MCP server restart
+  (an OLD broker answers `install:"auto"` with "Unknown install"; a NEW broker with an
+  old server still refuses unpinned sessions correctly). `handlers.js` `statusReport`
+  hint still says "calls default to <routedInstall>" when >1 slot is connected — it
+  should say calls are refused until `fast_profile`. Single-profile setups see no change.
+- **Status:** committed (8498cbe); `npm test` in `fast-dxt/` (router unit test +
+  throwaway broker on 19870/19876/19877).
+
+## 2026-09-15 — Broker: durable log file + per-slot connection history (`recent[]`) in `fast_status`
+- **What:** (1) `broker/lifecycle.js` `log()` appends every line to
+  `os.tmpdir()/fastlink-broker.log` (`/tmp/fastlink-broker.log` under WSL; ISO
+  timestamp per line; truncated when it passes 5 MB) and echoes to stderr only on a
+  TTY; `server/brokerClient.js` spawns the broker with stdout/stderr on that same
+  file (was `stdio:'ignore'`) so crash stacks land there too. `extBridge.js` logs
+  `hello install= raw=`, `connect install= reason=` (hello / no-hello-default /
+  replaced stale socket), `slotBusy install=`, `disconnect install= reason=`
+  (close code+text, `heartbeat timeout`, `replaced by respawn`, `slotBusy`).
+  (2) `broker/state.js` keeps per slot the last 20
+  `{t:ISO, event:'connect'|'disconnect'|'slotBusy', reason}` (newest first) and
+  `snapshot()` exposes it as `installs.<label>.recent` — what `fast_status` returns.
+  (3) New `broker/config.js` owns the ports + pid/log paths: `FASTLINK_BROKER_PORT`
+  (mcp, same var the server reads) and `FASTLINK_EXT_PORTS="9876,9877"` give a
+  throwaway broker for tests — a non-default mcp port suffixes the pid/log files
+  (`fastlink-broker-<port>.*`) and skips the cloudflared tunnel. `EXT_PORTS` moved
+  out of state.js.
+- **Why:** today's investigation could not date 7 reconnects — the broker had no
+  record (stderr of a detached `stdio:'ignore'` child), and lifetime
+  `totalConnections=7` was misread as "7 in ten minutes".
+- **Files:** `fast-dxt/broker/config.js` (new), `lifecycle.js`, `state.js`,
+  `extBridge.js`, `heartbeat.js`, `mcpBridge.js`, `tunnel.js`,
+  `fast-dxt/server/brokerClient.js`, `fast-dxt/package.json` (`npm test`).
+- **Watch out:** the RUNNING broker (pid from `pgrep -af broker/index.js`) keeps the
+  old code until restarted — restart only when no bench cell is running and both
+  profiles' sessions are idle. The log is shared by every broker instance on the
+  machine (one file, append); a foreground run still prints to the terminal.
+- **Status:** committed (e0ee7eb); `fast-dxt/test/broker.test.mjs` proves log lines
+  + `recent[]`.
+
 ## 2026-09-15 — Open suggestion lists are reported (`suggestions` + hint) on fast_key_press / fast_fill; bench trail poll 3s → 0.5s
 - **What:** `openSuggestions(el)` (page.js): when the active/written control names an
   open panel via `aria-controls`/`aria-owns` (Google Maps' `role=grid` of rows, ARIA
