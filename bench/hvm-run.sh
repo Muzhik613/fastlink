@@ -10,6 +10,9 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 PASSES=${PASSES:-3}
+PASS_START=${PASS_START:-1}       # continue an earlier run: PASS_START=4 PASSES=1 SINCE=<its start ts>
+SINCE=${SINCE:-}
+TOOLSET=${TOOLSET:-}              # fast-runner toolset name (default = all tools); FASTRUN_MODEL is inherited by cli.mjs
 TESTS=${TESTS:-"multipage staticform overlay extract flightsearch mapsdir"}
 DOC=${DOC:-docs/GROK_RUNNER_BENCH_hvm_$(date -u +%F).md}
 export GIT_AUTHOR_NAME=Turetsky GIT_AUTHOR_EMAIL=yjturetsky@gmail.com GIT_COMMITTER_NAME=Turetsky GIT_COMMITTER_EMAIL=yjturetsky@gmail.com
@@ -25,20 +28,21 @@ fixer_check() {
 }
 fixer_check
 rig_up || exit 1
-SINCE=$(date -u +%FT%T.000Z)
-echo "=== run start $SINCE  passes=$PASSES  tests=[$TESTS]  doc=$DOC"
-for p in $(seq 1 "$PASSES"); do
-  NOTES="$NOTES pass $p on $(git rev-parse --short HEAD);"
-  echo "=== pass $p/$PASSES starts on $(git rev-parse --short HEAD)"
+[ -n "$SINCE" ] || SINCE=$(date -u +%FT%T.000Z)
+LAST=$((PASS_START + PASSES - 1))
+echo "=== run start $SINCE  passes=$PASS_START..$LAST  tests=[$TESTS]  doc=$DOC  model=${FASTRUN_MODEL:-grok-4.6} toolset=${TOOLSET:-default}"
+for p in $(seq "$PASS_START" "$LAST"); do
+  NOTES="$NOTES pass $p on $(git rev-parse --short HEAD) (${FASTRUN_MODEL:-grok-4.6}, toolset ${TOOLSET:-default});"
+  echo "=== pass $p/$LAST starts on $(git rev-parse --short HEAD)"
   for t in $TESTS; do
-    echo "=== pass $p/$PASSES  $t  $(date -u +%FT%TZ)"
+    echo "=== pass $p/$LAST  $t  $(date -u +%FT%TZ)"
     rig_up > /dev/null || { echo "!!! rig down before $t (pass $p); skipping cell"; continue; }
-    node bench/run.js --client grok_runner --transport local --test "$t" || echo "!!! cell $t failed (pass $p)"
+    node bench/run.js --client grok_runner --transport local --test "$t" ${TOOLSET:+--toolset "$TOOLSET"} || echo "!!! cell $t failed (pass $p)"
   done
-  node bench/hvm-report.js --since "$SINCE" --passes "$PASSES" --notes "$NOTES" --out "$DOC" || echo "!!! report failed"
+  node bench/hvm-report.js --since "$SINCE" --passes "$LAST" --notes "$NOTES" --out "$DOC" || echo "!!! report failed"
   node bench/drive-runner.js usage > /dev/null
   git add bench/tool-usage.md "$DOC"   # results*.jsonl / tool-usage.jsonl are gitignored run artefacts
-  git commit -q -m "bench(hvm): grok_runner local-transport pass $p/$PASSES" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" && echo "=== committed pass $p: $(git rev-parse --short HEAD)"
+  git commit -q -m "bench(hvm): grok_runner local-transport pass $p/$LAST" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" && echo "=== committed pass $p: $(git rev-parse --short HEAD)"
   fixer_check
 done
 echo "=== DONE $(date -u +%FT%TZ)"
