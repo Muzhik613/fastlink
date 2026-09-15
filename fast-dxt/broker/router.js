@@ -5,33 +5,42 @@ import { log } from './lifecycle.js';
 const REQUEST_TIMEOUT_MS = 30_000;
 const pending = new Map();
 
-export function dispatchCall(mcpClient, mcpId, action, args, install) {
-  // `install` (optional) pins this call to a specific install slot's ext socket.
-  // When set, routing is DETERMINISTIC: we never fall back to another slot —
-  // an unreachable target must surface as a clear error, not silently land on
-  // `primary` (BUG-5). When absent, fall through to the auto resolver
-  // (ACTIVE-then-any-connected).
-  let ext;
-  if (install) {
+// Resolve the ext socket for a call. `install` (envelope, set by fast_profile):
+//   label  → exactly that slot, no fallback (BUG-5): unreachable = clear error.
+//   'auto' → ACTIVE-then-any-connected (explicit opt-in only).
+//   absent → one slot connected: use it. >1: refuse and name them — a session
+//            that never pinned must not land on someone else's profile.
+function resolveSocket(install) {
+  if (install && install !== 'auto') {
     if (!state.knownInstalls().includes(install)) {
-      return reply(mcpClient, mcpId, {
-        error: `Unknown install "${install}". Known installs: ${state.knownInstalls().join(', ')}.`,
-      });
+      return { error: `Unknown install "${install}". Known installs: ${state.knownInstalls().join(', ')}.` };
     }
-    ext = state.getSocketForInstall(install);
+    const ext = state.getSocketForInstall(install);
     if (!ext || ext.readyState !== 1) {
-      return reply(mcpClient, mcpId, {
+      return {
         error: `Install "${install}" is not connected — open/reload FastLink in that Chrome profile, or switch to a connected slot with fast_profile.`,
         routedInstall: null,
         installs: state.snapshot().installs,
-      });
+      };
     }
-  } else {
-    ext = state.getExtensionSocket();
-    if (!ext || ext.readyState !== 1) {
-      return reply(mcpClient, mcpId, { error: 'Chrome extension not connected.' });
-    }
+    return { ext };
   }
+  const connected = state.connectedInstalls();
+  if (!connected.length) return { error: 'Chrome extension not connected.' };
+  if (install !== 'auto' && connected.length > 1) {
+    return {
+      error: `${connected.length} Chrome profiles are connected (${connected.join(', ')}) and this session has not pinned one — call fast_profile {install:"<label>"} first (or install:"auto" for the active slot "${state.getRoutedInstall()}").`,
+      routedInstall: null,
+      connectedInstalls: connected,
+      installs: state.snapshot().installs,
+    };
+  }
+  return { ext: state.getExtensionSocket() };
+}
+
+export function dispatchCall(mcpClient, mcpId, action, args, install) {
+  const { ext, ...refusal } = resolveSocket(install);
+  if (!ext) return reply(mcpClient, mcpId, refusal);
   const extId = randomUUID();
   const timer = setTimeout(() => {
     if (!pending.has(extId)) return;

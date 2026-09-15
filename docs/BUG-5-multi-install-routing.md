@@ -2,6 +2,8 @@
 
 Severity: **high**. Blocks driving a second Chrome profile while the first is still connected. Hit live on 2026-06-21 while driving an Oracle signup in a `secondary`-slot profile.
 
+> **2026-09-15 addendum:** an UNPINNED session is now refused (error naming the connected slots) whenever more than one slot is connected; only an explicit `fast_profile "auto"` gets ACTIVE-then-any. `fast_status.installs.<label>.recent[]` holds the last 20 connect/disconnect/slotBusy events; the broker logs to `os.tmpdir()/fastlink-broker.log`. See CHANGELOG 2026-09-15.
+
 > **STATUS: fixed 2026-06-21** (fast-dxt) — added `fast_profile` (sticky per-session routing, fix direction 2) + envelope-tagged dispatch (fix direction 1's plumbing) + deterministic broker routing with a clear "not connected" error (fix direction 3). Takes effect after a broker + MCP-server restart. Implementation notes at the bottom. Relay (option 4) intentionally untouched — slots are a local-broker concept.
 
 ## Symptom

@@ -28,10 +28,14 @@ const eventHandlers = new Set();
 // Per-session routed install (BUG-5). fast_profile sets this label; we tag every
 // call envelope with it so routing is deterministic across the label-keyed slots
 // and survives a broker reconnect (selection lives here, not in broker state).
-// null = auto (broker picks ACTIVE-then-any-connected).
+// null = no label. An EXPLICIT fast_profile "auto" sends install:"auto" (broker
+// picks ACTIVE-then-any-connected); a session that never pinned sends nothing,
+// and the broker refuses it while >1 slot is connected.
 let selectedInstall = null;
-export const setSelectedInstall = (id) => { selectedInstall = id || null; };
+let explicitAuto = false;
+export const setSelectedInstall = (id) => { selectedInstall = id || null; explicitAuto = !id; };
 export const getSelectedInstall = () => selectedInstall;
+const envelopeInstall = () => selectedInstall ?? (explicitAuto ? 'auto' : null);
 
 // Subscribe to unsolicited broker→server events (e.g. page-load 'navigated').
 export function onBrokerEvent(fn) { eventHandlers.add(fn); }
@@ -41,7 +45,7 @@ export function onBrokerEvent(fn) { eventHandlers.add(fn); }
 let lastDisconnectAt = null;
 
 export const callExtension = (action, args = {}) =>
-  rpc({ type: 'call', action, args, ...(selectedInstall ? { install: selectedInstall } : {}) }, REQUEST_TIMEOUT_MS);
+  rpc({ type: 'call', action, args, ...(envelopeInstall() ? { install: envelopeInstall() } : {}) }, REQUEST_TIMEOUT_MS);
 export const getStatus     = () => rpc({ type: 'status' }, STATUS_TIMEOUT_MS);
 
 export function getBrokerLinkInfo() {
