@@ -19,6 +19,8 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — docs: Grok runner phase-2 tool triage draft (`docs/TOOL_TRIAGE_DRAFT.md`) — 45-tool inventory + use counts, overlap map, ≤15-tool toolset (core/fold/internal/drop), Grok-tuned descriptions, no-cdp profile, phase-3 risks; source only, no code touched.
+
 ## 2026-09-15 — fast-runner phase 0b + 1: relay transport (OAuth client) + bench runner driver
 - **What:** `fast-runner/relay-transport.mjs` — `connectRelay({browser})` is an MCP
   Streamable-HTTP client to `relay.ytx.app/mcp` authenticated the way claude.ai/grok.com
