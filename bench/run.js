@@ -177,7 +177,7 @@ export async function runCell({
       source = new RelayTrace({ token, since: Date.now() });
     }
     const trailWatcher = new TrailWatcher({ install });
-    await trailWatcher.poll(); // baseline so pre-existing tabs are not read as navigation
+    await trailWatcher.baseline(); // read 1 of 2: pre-existing tabs are not navigation
 
     // Drive the chat.
     let site = null;
@@ -194,19 +194,17 @@ export async function runCell({
     }
     const startedAt = Date.now();
 
-    // From here until the run is FINISHED we touch nothing but read-only tab polls.
+    // From here until the run is FINISHED we touch NOTHING in the browser: liveness
+    // is the trace (runner stderr rows / relay /trace / the local timing log), and
+    // the extension records the URL trail passively for the one read after.
     process.stderr.write(`recording ${cl.label} × ${transport} × ${test.id} …\n`);
     let approvals = 0;
     const onTick = ({ elapsed, quietFor, calls, timeouts, lastError }) =>
       process.stderr.write(`\r  ${(elapsed / 1000).toFixed(0)}s  ${calls} calls  quiet ${(quietFor / 1000).toFixed(0)}s  timeouts ${timeouts}${lastError ? `  [${lastError}]` : ''}    `);
-    // Runner: process exit is the finish signal (drive-runner.watch); the trail
-    // watcher still samples URLs here so `trail` checkpoints score identically.
-    const watch = handle ? await (async () => {
-      const trailTimer = setInterval(() => trailWatcher.poll(), DEFAULTS.trailPollMs);
-      try { return await runner.watch(handle, { ceilingMs, onTick, startedAt }); }
-      finally { clearInterval(trailTimer); await trailWatcher.poll(); }
-    })() : await watchRun({
-      source, trailWatcher, quietMs, ceilingMs, startedAt, onTick,
+    // Runner: process exit is the finish signal (drive-runner.watch), STUCK /
+    // NO_ACTIVITY from the runner's own call rows. Chat: the relay/local trace.
+    const watch = handle ? await runner.watch(handle, { ceilingMs, onTick, startedAt }) : await watchRun({
+      source, quietMs, ceilingMs, startedAt, onTick,
       // A "quiet" run may just be blocked on claude.ai's per-tool permission dialog,
       // which halts the turn until a human clicks. Clear it and let the run resume
       // rather than recording a stall as NO_ACTIVITY / a low score.
@@ -219,6 +217,8 @@ export async function runCell({
         : null,
     });
     process.stderr.write('\n');
+    await trailWatcher.collect(); // read 2 of 2: everything the run navigated
+    notes.push(`trail: ${trailWatcher.reads} fast_list read(s)`);
 
     if (watch.outcome === 'NO_ACTIVITY') { valid = false; invalidReason = watch.reason; }
     notes.push(`${watch.outcome}: ${watch.reason}`);

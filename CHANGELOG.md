@@ -33,6 +33,23 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — bench: the URL trail is read twice per cell (baseline + after exit), never polled mid-run
+- **What:** `bench/monitor.js` `TrailWatcher` has `baseline()` (before the run) and `collect()`
+  (after it) and counts its `reads`; `watchRun` no longer takes a trail watcher or touches the
+  browser; `DEFAULTS.trailPollMs` deleted. `bench/run.js`: the runner branch drops its
+  `setInterval(trailWatcher.poll, 3000)`; every cell calls `collect()` once after the watch
+  returns and notes `trail: N fast_list read(s)`. The monitor CLI reads the trail once at exit.
+- **Why:** recording #4: the FastLink panel showed "Listing tabs" every 3s during a cell — the
+  bench's fast_list poll going through the service worker the run drives. Since 982ae6d the
+  extension records each tab's URL trail passively (ring of 50), so polling added nothing.
+  Liveness never came from it: runner cells derive STUCK / NO_ACTIVITY from the runner's own
+  call rows (drive-runner `RunnerTrace`), chat cells from the relay /trace or the local timing
+  log.
+- **Files:** `bench/monitor.js`, `bench/run.js`, `bench/drive-web.js` (comment).
+- **Watch out:** a tab that changes URL more than 50 times in one cell loses its earliest stops
+  (the extension ring); none of the six cells comes close.
+- **Status:** committed; hvm cells below.
+
 ## 2026-09-15 — fast-runner gate: evidence matcher normalizes both sides and matches values, not raw JSON; refused reports are stored
 - **What:** runner.mjs. (1) `normQuote` is the ONE normalization for result and quote: JSON
   escapes unescaped (\uXXXX \n \t \" \\ \/), NFKC, curly quotes → straight, dash variants →

@@ -19,9 +19,12 @@
 //
 // SECOND SIGNAL: a URL trail read from the LOCAL connector. It answers "did the
 // run ever reach the Travel category page" for steps a final-state read can no
-// longer see. The extension records every tab's URL changes with timestamps
-// (fast_list → per-tab `trail`), so one fast_list every few seconds reconstructs
-// every stop — a 500ms poll used to flood the service worker mid-run.
+// longer see. The extension records every tab's URL changes PASSIVELY with
+// timestamps (fast_list → per-tab `trail`, ring of the last 50 per tab), so the
+// trail is read exactly twice: once before the run (baseline) and once after it.
+// Nothing polls fast_list while the run works — every mid-run poll went through
+// the same service worker the run drives (the panel showed "Listing tabs" every
+// 3s in recording #4, and a 500ms poll once flooded it).
 import { readFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
@@ -41,8 +44,7 @@ const TIMEOUT_ROWS_FOR_STUCK = 2;
 export const DEFAULTS = {
   quietMs: 25_000,      // no new tool call for this long → the run is FINISHED
   ceilingMs: 300_000,   // hard ceiling → STUCK
-  pollMs: 3_000,
-  trailPollMs: 3_000,   // the extension's timestamped trail catches stops shorter than the poll
+  pollMs: 3_000,        // trace poll (relay /trace or the local timing log) — never the browser
 };
 
 /** Device token: env → --token → ~/fastlink-secrets.txt (the same KEY=VALUE file
@@ -207,16 +209,14 @@ export function mergeTrail(list, events, seen) {
   return added;
 }
 export class TrailWatcher {
-  // The first poll is the BASELINE: entries already present are marked seen so
-  // pre-existing tabs are never read as navigation.
-  constructor({ install = null, list = tabs } = {}) { this.install = install; this._list = list; this.events = []; this._seen = new Set(); this._baselined = false; }
+  // Two reads per run, never more: baseline() before the run marks every entry
+  // already present as seen (pre-existing tabs are not navigation); collect()
+  // after the run exits merges what the extension recorded meanwhile.
+  constructor({ install = null, list = tabs } = {}) { this.install = install; this._list = list; this.events = []; this._seen = new Set(); this.reads = 0; }
   get trail() { return this.events.map((e) => e.url); }
-  async poll() {
-    let list;
-    try { list = await this._list(); } catch { return; }
-    if (!this._baselined) { mergeTrail(list, [], this._seen); this._baselined = true; return; }
-    mergeTrail(list, this.events, this._seen);
-  }
+  async _read() { this.reads++; try { return await this._list(); } catch { return null; } }
+  async baseline() { const list = await this._read(); if (list) mergeTrail(list, [], this._seen); }
+  async collect() { const list = await this._read(); if (list) mergeTrail(list, this.events, this._seen); }
 }
 
 // ---------------------------------------------------------------------------
@@ -237,14 +237,13 @@ export class TrailWatcher {
  * the run continues. Called ONLY during quiet, because that is the one moment
  * nothing is driving the browser and touching the chat tab is safe. */
 export async function watchRun({
-  source, trailWatcher = null, quietMs = DEFAULTS.quietMs, ceilingMs = DEFAULTS.ceilingMs,
+  source, quietMs = DEFAULTS.quietMs, ceilingMs = DEFAULTS.ceilingMs,
   pollMs = DEFAULTS.pollMs, onTick = null, startedAt = Date.now(), onQuiet = null,
 }) {
   let lastActivityAt = startedAt;
   for (;;) {
     await new Promise((r) => setTimeout(r, pollMs));
     const added = await source.poll();
-    if (trailWatcher) await trailWatcher.poll();
     if (added > 0) lastActivityAt = Date.now();
 
     const now = Date.now();
@@ -290,14 +289,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (!token) { console.error(TOKEN_HELP); process.exit(2); }
     source = new RelayTrace({ token, since });
   }
+  // --since is in the past, so there is no baseline: every trail entry after it counts
   const trailWatcher = new TrailWatcher({ install });
   console.error(`watching ${transport} since ${new Date(since).toISOString()} — Ctrl-C to stop`);
   const res = await watchRun({
-    source, trailWatcher, startedAt: since,
+    source, startedAt: since,
     onTick: ({ elapsed, quietFor, calls, timeouts, lastError }) =>
       process.stderr.write(`\r  ${(elapsed / 1000).toFixed(0)}s elapsed  ${calls} calls  quiet ${(quietFor / 1000).toFixed(0)}s  timeouts ${timeouts}${lastError ? `  [${lastError}]` : ''}   `),
   });
   process.stderr.write('\n');
+  await trailWatcher.collect();
   console.log(`${res.outcome}: ${res.reason}`);
   console.log(renderTiming(source.rows, [...source.clients][0] || 'Chat'));
   console.log(`\n  URL trail (${trailWatcher.trail.length}):`);

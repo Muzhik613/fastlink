@@ -12,8 +12,8 @@
 // the run and its timing.
 // The contract is therefore strictly phased:
 //     openChat → newChat → sendPrompt   (we own the browser)
-//     …run…                             (WE TOUCH NOTHING but read-only fast_list
-//                                        polling in monitor.js's TrailWatcher)
+//     …run…                             (WE TOUCH NOTHING — the URL trail is read
+//                                        once after the run, monitor.js TrailWatcher)
 //     readFinalMessage                  (only AFTER the relay trace goes quiet)
 // readFinalMessage is the only post-submit call, and it is the one that switches
 // back to the chat tab.
