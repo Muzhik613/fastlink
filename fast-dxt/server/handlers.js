@@ -5,6 +5,7 @@ import { execFileSync } from 'child_process';
 import { Buffer } from 'buffer';
 import { callExtension, getStatus, getBrokerLinkInfo, setSelectedInstall, getSelectedInstall } from './brokerClient.js';
 import { HTTP_ENABLED, HTTP_PORT, TOKEN, SCOUT_ENABLED } from './config.js';
+import { runBatch } from './batch.js';
 import { scout, warm as warmScout, locateByImage, pointByImage, boxByImage, pickMarks, visualMap, getVisualMap, planByImage } from './scout.js';
 
 const text = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
@@ -30,7 +31,7 @@ const CAPTURE_TOOLS = new Set([
 // safe to repeat), but guard explicitly so a future edit that adds a write tool
 // to CAPTURE_TOOLS can't silently start double-writing. (BUG-4)
 const NON_IDEMPOTENT = new Set([
-  'fast_fill_form', 'fast_fill', 'fast_fill_vision', 'fast_type', 'fast_do',
+  'fast_fill', 'fast_fill_vision', 'fast_type', 'fast_do',
   'fast_click', 'fast_click_xy', 'fast_select_option', 'fast_drag', 'fast_drag_xy',
   'fast_key', 'fast_key_press', 'fast_nav', 'fast_reload',
 ]);
@@ -102,7 +103,7 @@ async function dispatchCall(name, args) {
     if (name === 'fast_prewarm') return text(prewarmStatus());
     if (name === 'fast_profile') return text(await handleUseInstall(args));
     if (name === 'fast_status') return text(await statusReport());
-    if (name === 'fast_batch')  return text(await runBatch(args));
+    if (name === 'fast_batch')  return text(await runBatch(args, { call: callExtension, gate: batchGate }));
     if (name === 'fast_scout')  return text(await handleScout(args));
     if (name === 'fast_point')  return text(await handlePoint(args));
     if (name === 'fast_point_som') return text(await handlePointSom(args));
@@ -468,7 +469,7 @@ const warmCaptures = new Map();      // url -> { capture, ts }
 // dispatchCall to invalidate warmCaptures after a mutating action.
 const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_type', 'fast_key', 'fast_key_press',
-  'fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_nav', 'fast_reload',
+  'fast_fill', 'fast_select_option', 'fast_nav', 'fast_reload',
   'fast_scroll', 'fast_wheel', 'fast_drag', 'fast_drag_xy', 'fast_hover',
   'fast_fill_vision', 'fast_do', 'fast_upload',
 ]);
@@ -813,7 +814,7 @@ async function handlePoint(args) {
 //
 // DOM-FILL FALLBACK for the vision tier. When Gemini can't locate a field —
 // because it's genuinely off-screen OR because the vision provider is down after
-// retries — many forms are still reachable via the DOM: fast_fill_form walks open
+// retries — many forms are still reachable via the DOM: fast_fill {fields} walks open
 // shadow roots AND same-origin iframes, so "iframe" fields that are actually
 // same-origin widgets fill fine. This REUSES that existing DOM-fill internal (no
 // reimplementation); the plain-language field descriptions double as
@@ -825,15 +826,15 @@ async function domFillFallback(fieldsSubset) {
   const keys = Object.keys(fieldsSubset || {});
   if (!keys.length) return new Set();
   try {
-    // verify:true → fast_fill_form re-reads each field after filling and flags any
-    // whose value reverted, so a DOM-fallback success is genuinely confirmed (not
-    // a silent false-positive). Only count a field done if it filled AND held.
-    const res = await callExtension('fast_fill_form', { fields: fieldsSubset, noSnapshot: true, verify: true });
-    const results = res?.result?.results || {};
+    // fast_fill {fields} re-reads each field after filling (verified per field), so
+    // a DOM-fallback success is genuinely confirmed. Only count a field done if it
+    // filled AND held.
+    const res = await callExtension('fast_fill', { fields: fieldsSubset, noSnapshot: true });
+    const results = res?.result?.fields || {};
     const done = new Set();
     for (const k of keys) {
       const r = results[k];
-      if (r && !r.error && !r.skipped && !r.reverted) done.add(k);
+      if (r && !r.error && !r.skipped && r.verified !== false) done.add(k);
     }
     return done;
   } catch {
@@ -942,7 +943,7 @@ async function handleFillVision(args) {
 
   // DOM-FILL RESCUE: any field vision couldn't locate (below the fold, or low
   // confidence) may still be DOM-reachable — prefer DOM over giving up. Reuse
-  // fast_fill_form on just the missed fields; move successes from missed→filled.
+  // fast_fill {fields} on just the missed fields; move successes from missed→filled.
   // Genuinely non-DOM fields (cross-origin iframe, canvas) won't match and stay
   // missed. `missed` holds only field keys here (submit is added later).
   if (missed.length) {
@@ -1382,146 +1383,12 @@ async function refinePoint(target, xCss, yCss, full) {
 }
 
 // Same diagnostic-only set the extension enforces for macros — keep in sync.
+// The batch runner itself (every step runs, ifFound branches, one snapshot,
+// nav settle) lives in batch.js — shared with the relay mirror.
 const DIAGNOSTIC_ONLY_STEPS = new Set(['fast_status', 'fast_profile', 'fast_batch', 'fast_scout', 'fast_point', 'fast_point_som', 'fast_fill_vision', 'fast_do', 'fast_locate']);
-
-// --- Batch inter-step navigation re-bind (BUG-2) ---------------------------
-// LIVE-SMOKE BUG: in fast_batch, when an earlier step navigates the tab (e.g. a
-// submit-button fast_click → results page), the NEXT step (notably fast_wait)
-// timed out at the 30s broker limit even though the navigation completed fine.
-// Cause: the click navigated the tab, the content script servicing the next step
-// died with the old page, and the next step fired into the dying/old document
-// (racing teardown), so its promise "waited on a corpse" and never resolved.
-//
-// The earlier fix keyed the settle off `willNavigate`, but that flag MISPREDICTS
-// — a form-submit click reported willNavigate:false yet DID navigate, so the
-// settle never fired. So the re-bind now triggers off ACTUAL navigation: we
-// capture the tab URL BEFORE a possibly-navigating step and watch for it to
-// change AFTER. On a real change we run the fast_nav-style settle (wait for the
-// NEW document to reach interactive|complete) BEFORE dispatching the next step,
-// so the next step binds to the live new page. `willNavigate`/nav-actions are
-// only a HINT that widens the detection window — never the trigger. All bounded,
-// so we can never re-introduce a 30s hang.
-const SETTLE_READY_BUDGET_MS = 8000;     // wait for the NEW doc to become ready
-const NAV_DETECT_MS = 2500;              // predicted/nav-action: window to observe the commit
-const NAV_DETECT_UNPREDICTED_MS = 700;   // backstop window for a MISPREDICTED nav
-const SETTLE_PROBE_TIMEOUT_MS = 1500;    // per readyState probe deadline (orphan, don't wait 30s)
-const SETTLE_POLL_GAP_MS = 150;          // gap between polls
-const SETTLE_INITIAL_GAP_MS = 100;       // let teardown/commit begin before first poll
-
-// Inherently-navigating actions whose result carries no willNavigate flag.
-const NAV_ACTIONS = new Set(['fast_nav', 'fast_reload']);
-
-// Steps that can drive a SAME-TAB navigation (so their inter-step result must be
-// checked for an actual URL change). Read-only steps and tab-switching steps
-// (fast_tab/fast_switch change the ACTIVE tab, not the page) are excluded so they
-// add zero latency and never trigger a false "navigated".
-const POSSIBLY_NAVIGATING = new Set([
-  'fast_click', 'fast_click_xy', 'fast_key', 'fast_key_press',
-  'fast_nav', 'fast_reload', 'fast_select_option', 'fast_drag', 'fast_drag_xy',
-]);
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// One bounded readyState probe. Resolves to the readyState string (or null on
-// timeout/error). Never rejects, and never blocks past `ms`: a late broker
-// resolution after the race is swallowed so it can't leak an unhandled
-// rejection or stall the poll loop.
-function probeReadyState(ms) {
-  const p = callExtension('fast_evaluate', { fn: '() => document.readyState' });
-  p.catch(() => {}); // swallow a late rejection once the race has moved on
-  return Promise.race([
-    p.then((r) => (r && typeof r === 'object' ? r.result : null)).catch(() => null),
-    sleep(ms).then(() => null),
-  ]);
-}
-
-// Read the target tab's current URL WITHOUT attaching the debugger (fast_list is
-// a plain chrome.tabs query → no "FastLink is debugging" banner toggle, so it
-// can't shift the viewport between batch steps the way fast_evaluate would).
-// Prefers the pinned target tab, else the active tab. '' on any failure.
-async function batchTabUrl() {
-  try {
-    const r = await callExtension('fast_list');
-    const tabs = r?.result;
-    if (!Array.isArray(tabs)) return '';
-    const t = tabs.find((x) => x && x.targetTab) || tabs.find((x) => x && x.active);
-    return t?.url || '';
-  } catch {
-    return '';
-  }
-}
-
-// Detect whether a step ACTUALLY navigated the tab and, if so, wait (bounded)
-// for the new document to be ready before the next step runs. `urlBefore` is the
-// tab URL captured BEFORE the step. `willNavigateHint` (the click's prediction)
-// and nav-actions only WIDEN the detection window — the trigger is the observed
-// URL change, never the hint. Returns the new URL on a settled navigation, else
-// null (no navigation → caller adds ~the detect window and moves on).
-async function settleIfNavigated(stepName, urlBefore, willNavigateHint) {
-  const isNavAction = NAV_ACTIONS.has(stepName);
-  const predicted = willNavigateHint === true || isNavAction;
-  const detectBudget = predicted ? NAV_DETECT_MS : NAV_DETECT_UNPREDICTED_MS;
-  await sleep(SETTLE_INITIAL_GAP_MS);
-  // Phase 1 — watch the committed URL change away from urlBefore (real nav).
-  let navUrl = null;
-  const detectDeadline = Date.now() + detectBudget;
-  while (Date.now() < detectDeadline) {
-    const url = await batchTabUrl();
-    if (url && urlBefore && url !== urlBefore) { navUrl = url; break; }
-    await sleep(SETTLE_POLL_GAP_MS);
-  }
-  // No URL change: no real navigation (covers a plain non-navigating click AND an
-  // over-predicted willNavigate that turned out to be an in-page / AJAX submit).
-  // Only a same-URL nav-action (reload / re-nav to the same URL) still needs a
-  // readyState settle even though the URL didn't change.
-  if (!navUrl && !isNavAction) return null;
-  // Phase 2 — wait until the (new) document answers interactive|complete so the
-  // next step binds to the live page, mirroring fast_nav's post-nav health-check.
-  const readyDeadline = Date.now() + SETTLE_READY_BUDGET_MS;
-  while (Date.now() < readyDeadline) {
-    const state = await probeReadyState(SETTLE_PROBE_TIMEOUT_MS);
-    if (state === 'interactive' || state === 'complete') break;
-    await sleep(SETTLE_POLL_GAP_MS);
-  }
-  return navUrl || (await batchTabUrl()) || urlBefore || '';
-}
-
-async function runBatch(args) {
-  const actions = Array.isArray(args?.actions) ? args.actions : [];
-  const continueOnError = !!args?.continueOnError;
-  const results = [];
-  for (let i = 0; i < actions.length; i++) {
-    const step = actions[i] || {};
-    if (!step.name || DIAGNOSTIC_ONLY_STEPS.has(step.name)) {
-      results.push({ step: i, name: step.name || null, error: step.name ? `"${step.name}" is a diagnostic-only tool (not allowed as a batch step)` : 'Invalid step (missing name)' });
-      if (!continueOnError) break;
-      continue;
-    }
-    // Capture the URL BEFORE a possibly-navigating step that has a follower, so we
-    // can detect an ACTUAL navigation afterward (the in-flight commit may lag the
-    // step's own return, so before-vs-after is the only reliable signal).
-    const navCandidate = i < actions.length - 1 && POSSIBLY_NAVIGATING.has(step.name);
-    const urlBefore = navCandidate ? await batchTabUrl() : null;
-    try {
-      const r = await callExtension(step.name, step.args || {});
-      if (r && r.error) {
-        results.push({ step: i, name: step.name, ok: false, ...r });
-        if (!continueOnError) break;
-      } else {
-        results.push({ step: i, name: step.name, ok: true, result: r.result });
-        // If this step actually navigated the tab, settle on the new document
-        // before dispatching the next step so it binds to the live page (BUG-2).
-        if (navCandidate) {
-          await settleIfNavigated(step.name, urlBefore, r.result && r.result.willNavigate);
-        }
-      }
-    } catch (e) {
-      results.push({ step: i, name: step.name, ok: false, error: e.message });
-      if (!continueOnError) break;
-    }
-  }
-  return { ran: results.length, total: actions.length, results };
-}
+const batchGate = (step) => DIAGNOSTIC_ONLY_STEPS.has(step.name)
+  ? { error: `"${step.name}" is a diagnostic-only tool (not allowed as a batch step)` }
+  : null;
 
 function saveScreenshot(result) {
   const ext = (result.format || 'png').toLowerCase();

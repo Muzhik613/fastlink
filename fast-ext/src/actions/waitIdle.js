@@ -41,6 +41,12 @@ export async function waitForDomReady(args = {}) {
 // request it never settles, so at the (hard-capped) timeout we resolve with a
 // flag — NOT an error — so the caller can just proceed. Routes to domready when
 // asked (so a single fast_wait entry point covers both modes).
+// In-flight request count on the target tab right now (for a text wait that
+// also asked about the network).
+export async function pendingNow() {
+  try { const tab = await getTargetTab(); return tab ? pendingNetCount(tab.id) : null; } catch { return null; }
+}
+
 export async function waitForNetworkIdle(args = {}) {
   if (args.domready && !args.networkIdle) return waitForDomReady(args);
 

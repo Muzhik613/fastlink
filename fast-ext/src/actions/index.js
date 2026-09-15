@@ -6,7 +6,7 @@ import { clickXY, typeText, pressKeyChord, wheelScroll, dragXY } from './input.j
 import { uploadFile }      from './upload.js';
 import { readConsole }     from './console.js';
 import { readNetwork }     from './network.js';
-import { waitForNetworkIdle } from './waitIdle.js';
+import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { saveMacro, listMacros, runMacro, deleteMacro } from './macros.js';
 import { captureMarks }    from './marks.js';
 import { visionCapture, annotateBoxes } from './vision.js';
@@ -14,7 +14,7 @@ import { isInjectableUrl } from '../util.js';
 
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_reload', 'fast_list', 'fast_close', 'fast_switch']);
 const PAGE_ACTIONS = new Set([
-  'fast_snapshot', 'fast_click', 'fast_fill', 'fast_fill_form', 'fast_wait',
+  'fast_snapshot', 'fast_click', 'fast_fill', 'fast_wait',
   'fast_select_option', 'fast_hover', 'fast_drag', 'fast_scroll',
   'fast_key_press', 'fast_network_replay',
 ]);
@@ -139,7 +139,17 @@ async function runOne(action, args) {
   if (action === 'fast_upload')     return uploadFile(args);
   if (action === 'fast_console')    return readConsole(args);
   if (action === 'fast_network')    return readNetwork(args);
-  if (action === 'fast_wait' && (args?.networkIdle || args?.domready)) return waitForNetworkIdle(args);
+  if (action === 'fast_wait' && (args?.networkIdle || args?.domready)) {
+    // text/selector + networkIdle: the text is the real signal (SPAs long-poll,
+    // so pure idle can time out forever); resolve on it and REPORT the network
+    // state instead of waiting for it. A bare networkIdle wait still times out.
+    if (args.text || args.selector) {
+      const r = await injectPageAction('fast_wait', { ...args, timeoutMs: args.timeoutMs || 10000 });
+      if (r && typeof r === 'object' && !r.error) { const pending = await pendingNow(); return { ...r, networkIdle: pending === 0, pending }; }
+      return r;
+    }
+    return waitForNetworkIdle(args);
+  }
   if (action === 'fast_macro_save')   return saveMacro(args);
   if (action === 'fast_macro_list')   return listMacros();
   if (action === 'fast_macro_run')    return runMacro(args, dispatchAction);

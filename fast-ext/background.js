@@ -106,7 +106,7 @@ const STUCK_LONG_MS = 50000;                // form / vision / long actions get 
 // A late settlement after eviction is harmless: finish() only Map.deletes by id.
 const STUCK_HARD_CAP_MS = 180000;
 const STUCK_LONG_ACTIONS = new Set([
-  'fast_fill_form', 'fast_fill_vision', 'fast_fill', 'fast_do',
+  'fast_fill_vision', 'fast_fill', 'fast_do',
   'fast_scout', 'fast_locate', 'fast_point',
 ]);
 function stuckThreshold(action) {
@@ -646,7 +646,7 @@ const TVERB = {
   fast_snapshot: 'Reading page', fast_marks: 'Reading page', fast_text: 'Reading text',
   fast_vision_capture: 'Looking at page', fast_screenshot: 'Capturing screenshot',
   fast_click: 'Clicking', fast_click_xy: 'Clicking', fast_fill: 'Typing', fast_type: 'Typing',
-  fast_fill_vision: 'Typing', fast_fill_form: 'Filling form', fast_select_option: 'Selecting',
+  fast_fill_vision: 'Typing', fast_select_option: 'Selecting',
   fast_nav: 'Navigating', fast_reload: 'Reloading', fast_scroll: 'Scrolling', fast_wheel: 'Scrolling',
   fast_hover: 'Hovering', fast_drag: 'Dragging', fast_upload: 'Uploading file', fast_wait: 'Waiting', fast_key: 'Pressing key',
   fast_tab: 'Switching tab', fast_switch: 'Switching tab', fast_evaluate: 'Running script',
