@@ -9,6 +9,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
+    "timing": "node relay-timing-report.js",
     "d1:create": "wrangler d1 create fastlink-relay",
     "migrate:local": "wrangler d1 migrations apply fastlink-relay --local",
     "migrate": "wrangler d1 migrations apply fastlink-relay --remote",
