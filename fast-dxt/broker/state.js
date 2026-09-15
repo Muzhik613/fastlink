@@ -15,12 +15,12 @@ const LIVENESS_MS = 30_000;
 // `recent`), so lifetime `totalConnections` is never read as a burst.
 const RECENT_MAX = 20;
 
-const slots = new Map(); // installId -> { ws, lastConnectedAt, lastDisconnectedAt, lastPingAt, totalConnections, recent[] }
+const slots = new Map(); // installId -> { ws, build, lastConnectedAt, lastDisconnectedAt, lastPingAt, totalConnections, recent[], helloWaiters[] }
 
 function ensureSlot(installId) {
   let s = slots.get(installId);
   if (!s) {
-    s = { ws: null, lastConnectedAt: null, lastDisconnectedAt: null, lastPingAt: null, totalConnections: 0, recent: [] };
+    s = { ws: null, build: null, lastConnectedAt: null, lastDisconnectedAt: null, lastPingAt: null, totalConnections: 0, recent: [], helloWaiters: [] };
     slots.set(installId, s);
   }
   return s;
@@ -42,12 +42,32 @@ export const state = {
   knownInstalls() { return [...new Set([...LISTENER_INSTALLS, ...slots.keys()])]; },
   connectedInstalls() { return [...slots.entries()].filter(([, s]) => isOpen(s)).map(([id]) => id); },
 
-  setExtensionSocket(installId, ws, reason) {
+  // `build` = the hello's build id (git short sha from build.json, "dev", or
+  // null for an older extension) — fast_status `installs.<label>.build`.
+  setExtensionSocket(installId, ws, reason, build = null) {
     const s = ensureSlot(installId);
     s.ws = ws;
+    s.build = build;
     s.lastConnectedAt = Date.now();
     s.totalConnections += 1;
     noteEvent(s, 'connect', reason);
+    const waiters = s.helloWaiters.splice(0);
+    for (const w of waiters) w({ build });
+  },
+  getBuild(installId) { return slots.get(installId)?.build ?? null; },
+  // Resolves {build} on the NEXT connect for this label (ext-reload waits on
+  // it), or null after timeoutMs.
+  awaitHello(installId, timeoutMs) {
+    const s = ensureSlot(installId);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const i = s.helloWaiters.indexOf(done);
+        if (i >= 0) s.helloWaiters.splice(i, 1);
+        resolve(null);
+      }, timeoutMs);
+      const done = (v) => { clearTimeout(timer); resolve(v); };
+      s.helloWaiters.push(done);
+    });
   },
   clearExtensionSocket(installId, ws, reason) {
     const s = slots.get(installId);
@@ -113,6 +133,7 @@ export const state = {
       const s = slots.get(id);
       installs[id] = {
         connected: isOpen(s),
+        build: s?.build ?? null,
         totalConnections: s?.totalConnections ?? 0,
         lastConnectedAt: s?.lastConnectedAt ? new Date(s.lastConnectedAt).toISOString() : null,
         lastConnectedAgo: ago(s?.lastConnectedAt),

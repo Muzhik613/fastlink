@@ -4,6 +4,7 @@ import { startBufferListeners }                  from './src/buffers.js';
 import { dispatchAction }                         from './src/actions/index.js';
 import { isInjectableUrl }                        from './src/util.js';
 import { checkForUpdate }                         from './src/updateCheck.js';
+import { reloadSelf, SELF_RELOAD_LOG_KEY }        from './src/reloadSelf.js';
 import './src/edgeTts.js';   // Edge neural TTS engine for the "Read aloud" widget (self-registering)
 
 startBufferListeners();
@@ -502,7 +503,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 // fallback in case the popup is ever removed. Reloading picks up code edits and
 // a transport toggle made in the options page; content scripts in already-open
 // tabs still need a tab refresh to pick up the new injection.
-chrome.action.onClicked.addListener(() => chrome.runtime.reload());
+chrome.action.onClicked.addListener(() => reloadSelf('toolbar-click'));
 
 // ---------------------------------------------------------------------------
 // Auto-update CHECK (notify-only). Reads the latest published version from the
@@ -606,7 +607,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // way back from stopRelay(). Acceptable here since it's an explicit user action.
   if (msg?.type === 'fastlink:relay-reconnect') {
     chrome.storage.local.set({ relayEnabled: true, fastlinkMode: 'relay' })
-      .then(() => chrome.runtime.reload());
+      .then(() => reloadSelf('relay-reconnect'));
     sendResponse({ ok: true });
     return true;
   }
@@ -959,7 +960,7 @@ rebindOverlaysOnStartup();
 // ===========================================================================
 // NO-CLICK SELF-UPDATE — startup handshake + driven-tab refresh.
 // ---------------------------------------------------------------------------
-// src/updateCheck.js may have called chrome.runtime.reload() to apply a pulled
+// src/updateCheck.js may have called reloadSelf('update') to apply a pulled
 // update (auto-update on). That reload re-reads the on-disk files and restarts
 // THIS worker, so the only place to observe the result is on the next startup.
 // updateCheck left a `fastlinkSelfReloaded = { toVersion, at }` handshake; here
@@ -976,7 +977,7 @@ rebindOverlaysOnStartup();
 // ===========================================================================
 const SELF_RELOADED_KEY = 'fastlinkSelfReloaded';
 const SELF_ATTEMPT_KEY  = 'fastlinkLastSelfReloadAttempt';
-const SELF_RELOAD_LOG_KEY = 'fastlinkSelfReloadLog';   // circuit-breaker log (see updateCheck.js)
+// SELF_RELOAD_LOG_KEY ({at, reason} ring, the breaker's input) comes from src/reloadSelf.js.
 
 // Reload the pinned/driven tab so it picks up the freshly-installed content
 // script. Only the tab Claude is actively driving (fastlink.targetTabId) — never

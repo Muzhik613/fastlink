@@ -18,6 +18,10 @@ function sanitizeInstallId(raw) {
   const id = raw.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').replace(/^[-_]+/, '').slice(0, 32);
   return id || null;
 }
+// Build id from the hello (git short sha / "dev"); null for an older extension.
+function sanitizeBuild(raw) {
+  return typeof raw === 'string' && /^[A-Za-z0-9._-]{1,40}$/.test(raw) ? raw : null;
+}
 
 const extSockets = {
   *[Symbol.iterator]() { yield* state.allConnectedSockets(); },
@@ -47,8 +51,8 @@ function startOne(defaultId, port) {
       assign(defaultId, ws, 'no-hello-default');
     }, HELLO_TIMEOUT_MS);
 
-    // `reason` rides into the slot's recent[] ring + the log line.
-    function assign(id, socket, reason) {
+    // `reason` rides into the slot's recent[] ring + the log line; `build` into the slot.
+    function assign(id, socket, reason, build = null) {
       if (installId) return;
       // Same-slot arbitration. A prior socket on this install is EITHER a stale
       // socket from a service-worker respawn (adopt the newcomer, replace it) OR
@@ -71,12 +75,12 @@ function startOne(defaultId, port) {
       // Stale prev (respawn) → replace. Distinct labels = distinct slots even on
       // shared port 9876, so cross-install never collides.
       if (prevForId && prevForId !== socket) {
-        prevForId.__closeReason = 'replaced by respawn';
+        prevForId.__closeReason ||= 'replaced by respawn';   // keeps an earlier reason (ext-reload)
         reason += ' (replaced stale socket)';
         try { prevForId.close(); } catch {}
       }
-      state.setExtensionSocket(id, socket, reason);
-      log(`connect install="${id}" on :${port} reason=${reason}`);
+      state.setExtensionSocket(id, socket, reason, build);
+      log(`connect install="${id}" on :${port} reason=${reason} build=${build ?? 'n/a'}`);
       attachHeartbeat(socket);
       try { socket.send(JSON.stringify({ type: 'mcpClients', count: mcpClientCount() })); } catch {}
     }
@@ -88,12 +92,13 @@ function startOne(defaultId, port) {
         clearTimeout(helloTimer);
         // Sanitizable label → dynamic slot; empty/garbage → port default.
         const id = sanitizeInstallId(msg.installId);
-        log(`hello install="${id ?? defaultId}" raw="${msg.installId}" on :${port}`);
+        const build = sanitizeBuild(msg.build);
+        log(`hello install="${id ?? defaultId}" raw="${msg.installId}" build=${build ?? 'n/a'} on :${port}`);
         if (!id) {
           log(`unusable installId "${msg.installId}" on :${port}, falling back to "${defaultId}"`);
-          assign(defaultId, ws, `hello unusable "${msg.installId}" → port default`);
+          assign(defaultId, ws, `hello unusable "${msg.installId}" → port default`, build);
         } else {
-          assign(id, ws, 'hello');
+          assign(id, ws, 'hello', build);
         }
         return;
       }

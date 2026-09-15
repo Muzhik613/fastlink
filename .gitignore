@@ -33,6 +33,8 @@ fastlink-extension-key.b64.txt
 
 # Extension build output
 fast-ext/dist/
+# Sync stamp written by scripts/ship-ext.sh ({sha, syncedAt}); absent = "dev" build
+fast-ext/build.json
 
 # OS / editor
 .DS_Store

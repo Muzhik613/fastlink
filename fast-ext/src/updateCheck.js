@@ -18,6 +18,8 @@
 // Everything here is best-effort: any network/parse error just skips the cycle
 // (never throws into the service worker), and the fetch is capped by a timeout.
 
+import { reloadSelf, SELF_RELOAD_LOG_KEY } from './reloadSelf.js';
+
 const REPO          = 'Turetsky/fastlink';
 const RELEASES_API  = `https://api.github.com/repos/${REPO}/releases/latest`;
 const RAW_MANIFEST  = `https://raw.githubusercontent.com/${REPO}/main/fast-ext/manifest.json`;
@@ -27,11 +29,11 @@ const STORE_KEY    = 'fastlinkUpdate';          // chrome.storage.local — read
 const NOTIFIED_KEY = 'fastlinkUpdateNotified';  // last version we fired a desktop notification for
 const FETCH_TIMEOUT_MS = 8000;
 
-// --- NO-CLICK self-apply (chrome.runtime.reload re-reads the unpacked folder) ---
+// --- NO-CLICK self-apply (reloadSelf re-reads the unpacked folder) ---
 // A background process keeps the unpacked extension folder current (pulled from
-// GitHub). chrome.runtime.reload() re-reads those on-disk files, so when GitHub's
-// latest > the RUNNING version AND the user hasn't opted out, we can apply the
-// update with zero user action by reloading ourselves.
+// GitHub). reloadSelf('update') (src/reloadSelf.js, the worker's single reload
+// path) re-reads those on-disk files, so when GitHub's latest > the RUNNING
+// version AND the user hasn't opted out, we apply the update with zero user action.
 const AUTO_KEY          = 'fastlinkAutoUpdate';              // chrome.storage.local — default TRUE
 const SELF_RELOADED_KEY = 'fastlinkSelfReloaded';           // { toVersion, at } — handshake read on the next startup
 const LAST_ATTEMPT_KEY  = 'fastlinkLastSelfReloadAttempt';  // { version, at } — the loop-prevention guard
@@ -47,10 +49,11 @@ const SELF_RELOAD_RETRY_MS = 30 * 60 * 1000;   // 30 min
 // CIRCUIT BREAKER (the backstop on top of the 30-min per-version delay guard).
 // Real-world testing showed chrome.runtime.reload() CAN end up in a tight reload
 // loop. A self-updater that can loop is worse than none, so make a runaway loop
-// impossible BY DESIGN: keep a log of recent self-reload timestamps; if too many
-// land inside a short window, HALT auto-update entirely (no reload), surface it,
-// and require the user to re-enable. Survives reloads because it lives in storage.
-const SELF_RELOAD_LOG_KEY = 'fastlinkSelfReloadLog';      // chrome.storage.local — [timestamps]
+// impossible BY DESIGN: reloadSelf keeps a ring of {at, reason} in
+// SELF_RELOAD_LOG_KEY; if too many reason:'update' entries land inside a short
+// window (broker/toolbar reloads never count — a dev shipping 3 builds in 10 min
+// is not a loop), HALT auto-update entirely (no reload), surface it, and require
+// the user to re-enable. Survives reloads because it lives in storage.
 const HALTED_KEY          = 'fastlinkAutoUpdateHalted';   // chrome.storage.local — breaker tripped
 const BREAKER_WINDOW_MS   = 10 * 60 * 1000;   // look back 10 min
 const BREAKER_MAX         = 3;                 // ≥3 self-reloads in the window → trip
@@ -173,19 +176,15 @@ async function maybeSelfApply(latest) {
 
     const now = Date.now();
 
-    // CIRCUIT BREAKER (checked first, before any decision to reload). Prune the
-    // self-reload log to the last BREAKER_WINDOW_MS; if it's already at the limit,
-    // a runaway loop is underway → HALT: turn auto-update off, set the halt flag,
-    // do NOT reload, notify, and persist the pruned log. By design this caps the
-    // total number of self-reloads, so a loop is impossible no matter what.
-    const log = (Array.isArray(o?.[SELF_RELOAD_LOG_KEY]) ? o[SELF_RELOAD_LOG_KEY] : [])
-      .filter((t) => typeof t === 'number' && now - t < BREAKER_WINDOW_MS);
-    if (log.length >= BREAKER_MAX) {
-      await chrome.storage.local.set({
-        [SELF_RELOAD_LOG_KEY]: log,   // store the pruned log
-        [HALTED_KEY]: true,
-        [AUTO_KEY]: false,
-      });
+    // CIRCUIT BREAKER (checked first, before any decision to reload). Count the
+    // reason:'update' reloads inside BREAKER_WINDOW_MS; at the limit a runaway
+    // loop is underway → HALT: turn auto-update off, set the halt flag, do NOT
+    // reload, notify. By design this caps the total number of update reloads, so
+    // a loop is impossible no matter what.
+    const recentUpdates = (Array.isArray(o?.[SELF_RELOAD_LOG_KEY]) ? o[SELF_RELOAD_LOG_KEY] : [])
+      .filter((e) => e?.reason === 'update' && typeof e.at === 'number' && now - e.at < BREAKER_WINDOW_MS);
+    if (recentUpdates.length >= BREAKER_MAX) {
+      await chrome.storage.local.set({ [HALTED_KEY]: true, [AUTO_KEY]: false });
       notifyHalted();
       return false;
     }
@@ -199,16 +198,14 @@ async function maybeSelfApply(latest) {
       return false;
     }
 
-    // Record the attempt + append this timestamp to the breaker log BEFORE
-    // reloading so BOTH survive the reload (the count is what makes a runaway loop
-    // impossible), and leave a handshake the next startup reads to confirm success.
-    log.push(now);
+    // Record the attempt + leave a handshake the next startup reads to confirm
+    // success, BEFORE reloading so both survive it. reloadSelf appends the
+    // {at, reason:'update'} breaker entry itself.
     await chrome.storage.local.set({
       [LAST_ATTEMPT_KEY]:    { version: latest, at: now },
       [SELF_RELOADED_KEY]:   { toVersion: latest, at: now },
-      [SELF_RELOAD_LOG_KEY]: log,
     });
-    chrome.runtime.reload();   // re-reads the (pulled) on-disk files; tears down this worker
+    await reloadSelf('update');   // re-reads the (pulled) on-disk files; tears down this worker
     return true;
   } catch {
     return false;   // never throw into the SW — fall back to banner/notify

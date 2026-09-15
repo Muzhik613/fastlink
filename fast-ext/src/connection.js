@@ -1,6 +1,8 @@
 // Reconnect via chrome.alarms — service workers get killed and revived,
 // alarms survive the death.
 
+import { reloadSelf } from './reloadSelf.js';
+
 // Slot LABEL (chrome.storage.local 'fastlinkInstallId', default 'primary') sent
 // in `hello` → broker demuxes N profiles by label. Ports: primary/custom → 9876
 // (shared, demuxed by label), secondary → 9877 (legacy). Set via options page.
@@ -29,6 +31,23 @@ async function resolveInstallId() {
   } catch {}
   installResolved = true;
   return installId;
+}
+
+// Build id sent in `hello` → broker `installs.<label>.build` (fast_status), so a
+// ship can be verified without opening chrome://extensions. build.json
+// {sha, syncedAt} is stamped by scripts/ship-ext.sh (gitignored); a plain dev
+// tree has none → "dev". Read once per worker life; a reload re-reads it.
+let build = 'dev';
+let buildResolved = false;
+async function resolveBuild() {
+  if (buildResolved) return build;
+  try {
+    const res = await fetch(chrome.runtime.getURL('build.json'), { cache: 'no-store' });
+    const sha = res.ok ? String((await res.json())?.sha || '') : '';
+    if (/^[A-Za-z0-9._-]{1,40}$/.test(sha)) build = sha;
+  } catch {}
+  buildResolved = true;
+  return build;
 }
 
 // Broker port for this slot: 'secondary' → 9877, else shared 9876 (demuxed by label).
@@ -162,6 +181,7 @@ async function connectOnce() {
     return;
   }
   await resolveInstallId();   // resolve this profile's slot (cached) before dialing
+  await resolveBuild();       // build id for the hello (cached)
   recycle();   // drop any stale/zombie socket before dialing a fresh one
 
   // Previous dial never opened → that host is unreachable right now; rotate to
@@ -183,7 +203,7 @@ async function connectOnce() {
     lastDialOpened = true;                             // this host works — keep dialing it
     backoffMs = BACKOFF_MIN_MS;                        // healthy connection — reset backoff
     lastRxTs = Date.now();
-    try { ws.send(JSON.stringify({ type: 'hello', installId })); } catch {}
+    try { ws.send(JSON.stringify({ type: 'hello', installId, build })); } catch {}
     startPingLoop(ws);
   };
   ws.onmessage = (e) => onMessage(ws, e);
@@ -271,6 +291,9 @@ async function onMessage(ws, e) {
   if (msg.pong) { pongCapable = true; return; }        // broker echoes our keepalive — enables staleness detection
   if (msg.ping) return;
   if (msg.type === 'slotBusy') return onSlotBusy(msg);
+  // Broker `ext-reload` (fast_ext_reload, pinned to this slot): re-read the
+  // unpacked folder. The broker answers on our next hello (with the new build).
+  if (msg.type === 'reload') { clog('reload requested by broker'); return reloadSelf('broker'); }
   // mcpClients is only sent when the broker ADOPTED us → proof this slot is ours;
   // clear any stale slot-busy cooldown/flag from a prior collision.
   if (msg.type === 'mcpClients') { clearSlotBusy(); return setBadgeForCount(msg.count); }
