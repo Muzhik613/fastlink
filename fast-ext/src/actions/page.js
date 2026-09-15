@@ -1734,6 +1734,30 @@ async function runPageAction(action, args) {
     }
     return out;
   };
+  // An autocomplete/suggestion list the control just opened (aria-controls /
+  // aria-owns → a visible listbox/grid/menu with options): Enter or a fill alone
+  // does not commit such a value — the model must pick an entry.
+  const openSuggestions = (el) => {
+    try {
+      if (!el || el.nodeType !== 1) return null;
+      for (const id of ariaPanelIds(el)) {
+        const panel = lookupId(el, id) || document.getElementById(id);
+        if (!panel) continue;
+        let r; try { r = panel.getBoundingClientRect(); } catch { continue; }
+        if (!visible(panel, r)) continue;
+        const seen = [];
+        for (const o of panel.querySelectorAll('[role="option"],[role="row"],[role="menuitem"],[role="treeitem"]')) {
+          if (seen.length >= 6) break;
+          let or; try { or = o.getBoundingClientRect(); } catch { continue; }
+          if (!visible(o, or)) continue;
+          const t = cleanLabel(o.textContent).slice(0, 80);
+          if (t && !seen.includes(t)) seen.push(t);
+        }
+        if (seen.length) return { suggestions: seen, hint: `a suggestion list is open (${seen.length} shown) — the value is not committed until one entry is chosen: fast_click its text (or press ArrowDown then Enter)` };
+      }
+    } catch {}
+    return null;
+  };
   // Bring an offscreen target into view before acting on it (a heavy page's
   // match pool now includes offscreen controls).
   const revealIfOffscreen = (it, el) => {
@@ -1901,7 +1925,10 @@ async function runPageAction(action, args) {
     el.dispatchEvent(new KeyboardEvent('keypress', opts));
     el.dispatchEvent(new KeyboardEvent('keyup', opts));
     const out = await withSnap({ keyDispatched: key });
-    return frontload(out, { keyDispatched: key, target: describeEl(el), url: location.href, urlChanged: location.href !== urlBefore });
+    const head = { keyDispatched: key, target: describeEl(el), url: location.href, urlChanged: location.href !== urlBefore };
+    const sug = openSuggestions(document.activeElement);
+    if (sug) Object.assign(head, sug);
+    return frontload(out, head);
   }
 
   if (action === 'fast_wait') {
@@ -2836,7 +2863,9 @@ async function runPageAction(action, args) {
       }
       const { el, r } = written.get(sp);
       const out = await withSnap(r, snap);
-      return calmIfVerified(frontload(out, verifyOne(sp, el, r)));
+      const head = verifyOne(sp, el, r);
+      const sug = openSuggestions(el); if (sug) Object.assign(head, sug);
+      return calmIfVerified(frontload(out, head));
     }
 
     // Multi-field result: { verified, filled, missed, fields:{label:{…}}, snapshot }.
@@ -2853,7 +2882,7 @@ async function runPageAction(action, args) {
     for (const sp of specs) {
       if (written.has(sp)) {
         const { el, r } = written.get(sp);
-        fields[sp.match] = { ...verifyOne(sp, el, r), ...r };
+        fields[sp.match] = { ...verifyOne(sp, el, r), ...(openSuggestions(el) || {}), ...r };
         filled++;
       } else {
         fields[sp.match] = enrichMiss(sp, res.misses.get(sp) || { error: 'not filled' });

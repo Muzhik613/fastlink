@@ -40,7 +40,7 @@ export const DEFAULTS = {
   quietMs: 25_000,      // no new tool call for this long → the run is FINISHED
   ceilingMs: 300_000,   // hard ceiling → STUCK
   pollMs: 3_000,
-  trailPollMs: 3_000,
+  trailPollMs: 500,     // 3s missed a 2s stop on the Travel page once runs got fast (batch build)
 };
 
 /** Device token: env → --token → ~/fastlink-secrets.txt (the same KEY=VALUE file
