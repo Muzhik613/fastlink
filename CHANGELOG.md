@@ -19,6 +19,95 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Grok-runner bench fumbles → tool fixes: actionable misses, titled/emotion react-select, portal listbox sweep, storm-safe fast_wait
+- **What:** Four tool defects surfaced by the 2026-09-15 Grok runner pass (local bench,
+  8/8 cells, every fumble classified from `~/.local/state/fastrun/runs.jsonl`), all in
+  `fast-ext/src/actions/page.js`:
+  1. **`fast_fill` miss is now actionable.** A miss returns `candidates` (the visible
+     fillable fields with label/placeholder/aria/name) and `hiddenMatches` + `hint` when
+     a label-matching field EXISTS but is hidden, read straight from the live DOM
+     (bounded, `FILLABLE_SEL`, ≤500 elements). `fast_fill_form` attaches the same
+     report once per call when a field is `not found`. The match logic is unchanged —
+     Wikipedia's `fast_fill {match:"Search"}` miss was CORRECT (the `#searchInput` is
+     `display:none` behind Vector's `.search-toggle` at that width); the error just
+     said nothing, so Grok guessed.
+  2. **`fast_select_option` finds heading-titled and emotion-styled react-selects.**
+     `findField` falls through to a document-outline section lookup (`resolveSection`
+     with a new `DROPDOWN_SEL`): "Single" → `<h4>Single</h4>` → the first combobox /
+     select / `react-select-*-input` in that section. React-select detection no longer
+     needs a classNamePrefix: with none set, classes are emotion hashes
+     (`css-1y6m8t7-control`) and both `[class*="select__control"]` and
+     `[class*="__control"]` missed, so the control fell into the generic-ARIA branch;
+     now the nearest ancestor whose class token ends in `control` is the control,
+     open-state is read from the input's `aria-expanded` (the `--menu-is-open`
+     modifier only exists with a prefix), and the menu is opened with a real
+     `mousedown` (react-select opens on `onControlMouseDown`, not click — a bare
+     `.click()` only ever worked when typed filter text opened the menu, which a
+     non-searchable dummy-input select never does). A miss returns `candidates`
+     (every visible dropdown-ish control with label/aria/placeholder/name/id + its
+     `section` heading). Non-searchable react-selects render a 1px opacity-0 dummy
+     input, so section resolution and the candidate list measure the CONTROL's
+     visibility for `react-select-*-input`s (`fieldVisible`).
+  3. **Generic-ARIA dropdown poll sweeps portals.** Options mounted in a portal
+     (Angular `cdk-overlay-container`, end-of-body `[role=listbox]`) were only reached
+     through the mutation drain, which on a storm-tripped / backlogged page (GCP) never
+     indexed them → 3s to `no listbox detected` while a plain `fast_click` on the
+     option worked because snapshots sweep overlays. The poll now calls
+     `collectOverlayEls()` every 4th tick (bounded 60ms / 500 elements).
+  4. **`fast_wait` on storm-tripped pages.** With the observer disconnected (Maps after
+     "Directions": thousands of mutations), nothing new was ever indexed, and the
+     body-textContent fallback cannot see attribute text (aria-label / placeholder), so
+     `fast_wait {text:"Choose starting point"}` timed out at 6.8s while the input was
+     on screen. The poll now re-seeds the resumable DOM walk when storm-tripped (same
+     rule as `serializeSnapshot`), drains 2000/30ms like a snapshot, and probes
+     `aria-label` / `placeholder` directly (bounded 1500 elements, every other poll),
+     returning the element with coords + a stable id. The fallback also stops matching
+     text that lives ONLY inside `<script>/<style>/<template>/<noscript>` bodies
+     (`body.textContent` includes inline JSON state blobs) — that was a latent false
+     "found".
+  - `fast-runner/runner.mjs`: tool-log `preview` 160 → 1200 chars so a fumble can be
+    post-mortemed from `runs.jsonl` (an error's candidates, a batch's per-step results);
+    this hunk was swept into `f3d8b20` (another agent's runner commit) — noted here, not
+    a separate commit. Touched `fast-runner/` per the owner's "change any code" word.
+- **Why:** classification of tonight's runs: `overlay` (react-select.com) cost 24 calls /
+  125s wall after one `field "Single" not found` (→ scout, xy-clicks, fast_do, typing);
+  `gcpform` lost a 7s batch to `no listbox detected`; `mapsdir` lost 6.8s to the wait
+  timeout; phase-0 Wikipedia lost 2 calls to the bare fill error. Not tool defects:
+  `fast_evaluate` "disabled for this account" (relay setting, ×2 — a toolset item),
+  `fast_click "Ocean"` hitting `Remove Ocean` (ranking picked the role=button; model
+  choice), `fast_wait {text:"From"}` resolving on "Offers from our partners" (substring
+  semantics as documented). No GLITCH-class failures tonight: 0 timeouts, 0 STUCK, no
+  broker drops in any of the 8 local or 6 hvm pass-1 cells.
+- **Files:** `fast-ext/src/actions/page.js` (only). No tool description changed, so
+  `fast-dxt/server/tools.js` / `fastlink-relay/tools.js` are untouched.
+- **Watch out:** a `fast_fill` / `fast_select_option` miss is STILL a hard error — the
+  reports are advisory, nothing auto-reveals or auto-falls-back (a hidden match is
+  reported, not filled). `fieldVisible` widens visibility ONLY for
+  `input[id^="react-select-"]`; do not generalise it or hidden inputs become fill
+  targets. The fast_wait attribute probe runs only on the fallback (odd) polls and only
+  after the index scan misses — keep it there or every poll pays a querySelectorAll.
+  `fast_wait`'s storm re-seed must keep the "only when nothing pending" guard (same
+  reason as the snapshot's: nulling the cursor restarts DFS from `<body>` every poll).
+  The hvm rig loads `fast-ext` UNPACKED, so shipping = copy the file + restart that
+  Chrome; the runner spawns a fresh `fast-dxt/server` per cell, the broker is untouched.
+- **Status:** committed / verified on an ISOLATED hvm rig (own Xvfb :97, patched-port
+  broker 9886/9880, Chrome for Testing + this `fast-ext`, no contact with the bench rig):
+  test page — hidden "Search" → `hiddenMatches` + `candidates`; portal listbox
+  `Application type → Web application` picked (`kind:aria-listbox`, read back);
+  storm + late aria-label input → `fast_wait` found it with coords in 1.9s; live
+  react-select.com/home — `fast_select_option {field:"Single", option:"Forest"}` →
+  `picked:"Forest"` (`kind:react-select`), first `singleValue` reads "Forest".
+  **hvm bench passes:** pass 1 = unfixed baseline (`8eaff09`). The first fix build
+  (this entry minus items "script-only text" and `fieldVisible`; file md5
+  `2b1465f5…`, committed as-is) reached the rig 9s INTO pass 2 cell 1 — my boundary
+  watcher started after the pass-1 commit line had already been written — so
+  **pass 2 `multipage` (06:16:48Z, score 0/6, 48 calls, marked valid) is a rig
+  restart artifact, exclude it**; pass 2 cells 2–6 ran on `2b1465f5…`. Pass 3 runs
+  on the final file (`cd7af46a…`), shipped by the watcher at the pass-2 → 3 boundary
+  (see the follow-up commit's Status). **Windows extension copy NOT synced tonight**
+  (the local bench stays on unfixed tools); `chrome://extensions` reload still needed
+  there later.
+
 ## 2026-09-15 — fast-runner: per-model-turn instrumentation (`turns[]` in runs.jsonl)
 - **What:** every model call is logged to the run row as `turns[]`: `{turn, t, latencyMs,
   attempts, requestChars, inputTokens, cacheRead, cacheCreate, outputTokens, toolResultChars,
