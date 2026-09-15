@@ -19,6 +19,18 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — fast-runner: per-model-turn instrumentation (`turns[]` in runs.jsonl)
+- **What:** every model call is logged to the run row as `turns[]`: `{turn, t, latencyMs,
+  attempts, requestChars, inputTokens, cacheRead, cacheCreate, outputTokens, toolResultChars,
+  stop_reason, tools, thinking, …any extra xAI usage keys}`; `usage` gains `cacheCreate` +
+  `modelMs`. `createMessage` returns `_timing` on the body. No request/behaviour change.
+- **Why:** the runner's per-turn latency (5–11s on heavy cells vs grok.com's ~2.6s) could only
+  be inferred from toolLog gaps; result sizes were not stored at all (1200-char previews).
+- **Files:** `fast-runner/xai.mjs`, `fast-runner/runner.mjs`.
+- **Watch out:** the bench spawns `cli.mjs` per cell, so cells started after this commit carry
+  `turns[]`; older rows don't. `bench/drive-runner.js` ignores the new keys.
+- **Status:** committed; in flight on the pass-2/3 cells that start after it.
+
 ## 2026-09-15 — Grok runner bench, phase 1: full suite ×3 over the relay + tool-usage data
 - **What:** All 8 bench tests run through `bench/run.js --client grok_runner --browser
   yaakovschrome` (fast-runner over relay.ytx.app, grok-4.6 effort low). Pass 1: **70/70,

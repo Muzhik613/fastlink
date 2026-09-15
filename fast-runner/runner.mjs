@@ -101,6 +101,40 @@ function lastAssistantText(run) {
   return '';
 }
 
+// Chars of tool_result text the model had to ingest fresh this turn (the last user message).
+function toolResultChars(messages) {
+  const m = messages[messages.length - 1];
+  if (m?.role !== 'user') return 0;
+  let n = 0;
+  for (const c of m.content) {
+    if (c.type !== 'tool_result') continue;
+    for (const p of c.content || []) n += p.type === 'text' ? p.text.length : (p.source?.data?.length || 0);
+  }
+  return n;
+}
+
+// One row per model call -> run.turns (written to runs.jsonl). latencyMs is the whole
+// createMessage (proxy + retries); `t` is the call's start offset, like toolLog.t.
+function recordTurn(run, resp, content) {
+  const u = resp.usage || {}, tm = resp._timing || {};
+  const row = {
+    turn: run.turns.length + 1, t: Date.now() - run.startedAt - (tm.latencyMs || 0),
+    latencyMs: tm.latencyMs ?? null, attempts: tm.attempts ?? null, requestChars: tm.requestChars ?? null,
+    inputTokens: u.input_tokens ?? null, cacheRead: u.cache_read_input_tokens ?? null,
+    cacheCreate: u.cache_creation_input_tokens ?? null, outputTokens: u.output_tokens ?? null,
+    toolResultChars: toolResultChars(run.messages), stop_reason: resp.stop_reason ?? null,
+    tools: content.filter(c => c.type === 'tool_use').map(c => c.name),
+    thinking: (resp.content || []).some(c => c.type === 'thinking' || c.type === 'redacted_thinking'),
+  };
+  // xAI usage extras (e.g. reasoning tokens) keep their upstream names, unknown shape today.
+  for (const k of Object.keys(u)) if (!/^(input_tokens|output_tokens|cache_read_input_tokens|cache_creation_input_tokens)$/.test(k)) row[k] = u[k];
+  run.turns.push(row);
+  const s = run.usage; s.turns++;
+  s.input += u.input_tokens || 0; s.output += u.output_tokens || 0;
+  s.cacheRead += u.cache_read_input_tokens || 0; s.cacheCreate += u.cache_creation_input_tokens || 0;
+  s.modelMs += tm.latencyMs || 0;
+}
+
 function histogram(run) {
   const h = {};
   for (const e of run.toolLog) h[e.name] = (h[e.name] || 0) + 1;
@@ -137,7 +171,7 @@ function finish(run, status, fields = {}) {
     appendFileSync(RUNS_FILE, JSON.stringify({
       run_id: run.id, task: run.task, transport: run.transport, browser: run.browser, model: MODEL,
       toolset: run.toolset.name, status, startedAt: new Date(run.startedAt).toISOString(), wallMs: run.endedAt - run.startedAt,
-      toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog,
+      toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog, turns: run.turns,
       result: run.result, evidence: run.evidence, error: run.error, usage: run.usage,
     }) + '\n');
   } catch {}
@@ -171,12 +205,8 @@ async function loop(run) {
       if (run.cancelled) return;
       return finish(run, 'error', { error: `model: ${e.message}` });
     }
-    if (resp.usage) {
-      const u = run.usage; u.turns++;
-      u.input += resp.usage.input_tokens || 0; u.output += resp.usage.output_tokens || 0;
-      u.cacheRead += resp.usage.cache_read_input_tokens || 0;
-    }
     const content = (resp.content || []).filter(c => c.type !== 'thinking' && c.type !== 'redacted_thinking');
+    recordTurn(run, resp, content);
     run.messages.push({ role: 'assistant', content: content.length ? content : [{ type: 'text', text: '' }] });
     for (const c of content) if (c.type === 'text' && c.text.trim()) onEvent?.({ type: 'text', text: c.text });
 
@@ -245,9 +275,9 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
     id: randomBytes(4).toString('hex'), task, transport, browser, toolset, status: 'running',
     messages: [{ role: 'user', content: [{ type: 'text', text: `TASK: ${task}` }] }],
     system: buildSystem(toolset, client.instructions),
-    tools, back, client, toolLog: [], question: null, waiters: [], pendingAnswer: null,
+    tools, back, client, toolLog: [], turns: [], question: null, waiters: [], pendingAnswer: null,
     budgets: { ...DEFAULT_BUDGETS, ...budgets }, onEvent, startedAt: Date.now(), consecutiveErrors: 0,
-    usage: { turns: 0, input: 0, output: 0, cacheRead: 0 }, abort: new AbortController(), cancelled: false, done: false,
+    usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, modelMs: 0 }, abort: new AbortController(), cancelled: false, done: false,
   };
   runs.set(run.id, run);
   loop(run).catch(e => finish(run, 'error', { error: `loop: ${e.message}` }));
