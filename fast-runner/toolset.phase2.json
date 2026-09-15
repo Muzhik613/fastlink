@@ -19,6 +19,7 @@
     "fast_tab": "Open `url` in a new tab and focus it.",
     "fast_nav": "Go to `url` in the current tab and wait for the load (waitMs, default 10s).",
     "fast_batch": "Run several tool calls in order in one round-trip (actions:[{name,args}]); stops at the first failure unless continueOnError. Use when the next steps are already certain.",
-    "fast_evaluate": "Run a JS function (`fn`, optional `args`) in the page and return its JSON result. May be disabled for this browser; if so use fast_text or fast_snapshot instead."
+    "fast_evaluate": "Run a JS function (`fn`, optional `args`) in the page and return its JSON result. May be disabled for this browser; if so use fast_text or fast_snapshot instead.",
+    "report_done": "Finish the task: result = the outcome in at most 3 short sentences (only what the task asked for), evidence = ONE short quote read back from the page plus its URL. Keep both terse; every output token costs latency."
   }
 }

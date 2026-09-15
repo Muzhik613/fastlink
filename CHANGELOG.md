@@ -19,6 +19,24 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Grok runner latency study + terse `report_done` behind phase2
+- **What:** `docs/GROK_LATENCY_2026-09-15.md`: 33-call synthetic matrix straight against
+  api.x.ai (grok-4.6 / grok-4.3 × effort low / medium × 7k / 30k / 70k ctx × stream, plus
+  sync and warm-cache controls) + per-turn evidence from the first instrumented live cells.
+  Runner change: `toolset.describe` now also applies to the native `ask_caller` /
+  `report_done`; `toolset.phase2.json` re-describes `report_done` as terse (≤3 sentences +
+  one quote). Baseline toolset output is byte-identical (test asserts it).
+- **Why:** the per-turn gap vs grok.com is **output tokens** on grok-4.6 (hidden reasoning +
+  JSON at ~70 tok/s: 100 tok = 1.4s, the 877-token report_done turn = 12.7s), not context
+  (warm-cache TTFT is 1.0s even at 72k tokens). `reasoning_effort` low ≈ medium; streaming
+  and a smaller result cap gain nothing; grok-4.3 is 2–3× faster and flat with context.
+- **Files:** `docs/GROK_LATENCY_2026-09-15.md`, `fast-runner/runner.mjs`,
+  `fast-runner/toolset.phase2.json`, `fast-runner/test/toolset.test.mjs`.
+- **Watch out:** recommended pass-3 order: phase2 on 4.6 first, then
+  `FASTRUN_MODEL=grok-4.3 --toolset phase2` (env var already exists; judge score before wall).
+  The report text is not what the bench scores, so the terse description cannot move scores.
+- **Status:** committed; not yet benched.
+
 ## 2026-09-15 — Grok-runner bench fumbles → tool fixes: actionable misses, titled/emotion react-select, portal listbox sweep, storm-safe fast_wait
 - **What:** Four tool defects surfaced by the 2026-09-15 Grok runner pass (local bench,
   8/8 cells, every fumble classified from `~/.local/state/fastrun/runs.jsonl`), all in

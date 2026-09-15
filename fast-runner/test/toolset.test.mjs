@@ -24,6 +24,7 @@ test('default toolset = every server tool + native, descriptions untouched, inst
     assert.equal(seen.input_schema, t.inputSchema);
     assert.equal(back.get(t.name), t.name);
   }
+  assert.match(tools.find(t => t.name === 'report_done').description, /^Finish the task\. result = concise/, 'baseline native descriptions untouched');
   assert.match(buildSystem(ts, 'ESSAY'), /Tool guidance from FastLink:\nESSAY$/);
 });
 
@@ -50,7 +51,10 @@ test('phase2: 13 FastLink + 2 native = 15, every allowed tool re-described, inst
     assert.equal(back.get(t.name), t.name);
     assert.ok(TOOLS.some(s => s.name === t.name), `${t.name} exists on the server`);
   }
-  for (const k of Object.keys(ts.describe)) assert.ok(ts.allow.includes(k), `describe key ${k} is allowed`);
+  for (const k of Object.keys(ts.describe)) assert.ok(ts.allow.includes(k) || NATIVE.includes(k), `describe key ${k} is allowed or native`);
+  // report_done is re-described in phase2 (terse report = fewer output tokens per run); ask_caller keeps the baseline text.
+  assert.equal(tools.find(t => t.name === 'report_done').description, ts.describe.report_done);
+  assert.ok(ts.describe.report_done && !ts.describe.ask_caller);
   assert.ok(!names(tools).includes('fast_status') && !names(tools).includes('fast_scout') && !names(tools).includes('fast_prewarm'));
   assert.equal(buildSystem(ts, 'ESSAY'), buildSystem(ts, ''));
   assert.doesNotMatch(buildSystem(ts, 'ESSAY'), /ESSAY/);

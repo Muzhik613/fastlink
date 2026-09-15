@@ -55,7 +55,9 @@ export function loadToolset(spec = process.env.FASTRUN_TOOLSET || 'default') {
   return { name, file, allow: ts.allow, rename: ts.rename || {}, describe: ts.describe || {} };
 }
 
-// allow-filter, rename (Grok-facing name -> real name on call), describe overrides (keyed by REAL name).
+// allow-filter, rename (Grok-facing name -> real name on call), describe overrides (keyed by REAL
+// name; ask_caller/report_done accept one too, so a toolset can tighten the report without
+// touching the baseline).
 export function buildTools(mcpTools, toolset) {
   const allowAll = toolset.allow.includes('*');
   const back = new Map();
@@ -66,7 +68,8 @@ export function buildTools(mcpTools, toolset) {
     back.set(name, t.name);
     tools.push({ name, description: toolset.describe[t.name] || t.description || '', input_schema: t.inputSchema || { type: 'object', properties: {} } });
   }
-  return { tools: [...tools, ...NATIVE_TOOLS], back };
+  const native = NATIVE_TOOLS.map(t => toolset.describe[t.name] ? { ...t, description: toolset.describe[t.name] } : t);
+  return { tools: [...tools, ...native], back };
 }
 
 // The server's MCP `instructions` essay rides along ONLY on the default toolset, so the baseline
