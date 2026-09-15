@@ -30,6 +30,7 @@ Rules:
 - A result that starts with truncated:true is partial: never answer or report_done from it — call fast_snapshot full:true / fast_text / limit:N first.
 - Call ask_caller ONLY when a decision genuinely needs the caller (missing info, ambiguous choice, risky/irreversible action). Never ask for things you can find on the page.
 - Never claim success without reading it back from the page (snapshot/text/value).
+- Do every step the task names, in order, before report_done; if you cannot do a step, say which and why in result.
 - When finished call report_done with a concise result and evidence (what you read back, URL). report_done is refused unless a read (fast_snapshot/fast_text) followed your last action and evidence quotes that result verbatim. A tool call that failed and was never retried also blocks report_done — retry it, or say in result why it is not needed. So does a result that claims an action (opened, clicked, selected, filled, submitted…) no successful tool call performed — say what you observed, not what you intended. Do not end your turn without calling report_done or ask_caller.`;
 
 // Evidence gate for report_done (a caller-facing contract, every toolset):
@@ -107,7 +108,8 @@ const CLAIMS = [
   { re: /\b(filled|entered|typed)\b/gi, family: 'fast_fill', tools: ['fast_fill', 'fast_fill_form', 'fast_type', 'fast_fill_vision', 'fast_do'] },
   { re: /\b(submitted)\b/gi, family: 'fast_click / fast_key_press Enter', tools: CLICKS, enter: true },
 ];
-const NEGATED_BEFORE = /(?:\b(?:not|never|no|nothing|none|neither|without|nor)|n't)\s+(?:[\w-]+\s+){0,2}$/i;
+const VERB_BASE = { opened: 'open', navigated: 'navigate', drilled: 'drill in', 'went to': 'go to', clicked: 'click', added: 'add', checked: 'check', selected: 'select', picked: 'pick', filled: 'fill', entered: 'enter', typed: 'type', submitted: 'submit' };
+const NEGATED_BEFORE =/(?:\b(?:not|never|no|nothing|none|neither|without|nor)|n't)\s+(?:[\w-]+\s+){0,2}$/i;
 const TAB_OPEN = /^opened\s+(?:a\s+)?(?:new\s+)?tab\b/i;
 // Successful calls, fast_batch steps flattened (incl. ifFound then/else), in log order.
 const successfulCalls = (log) => {
@@ -170,7 +172,7 @@ export function gateProblems(run, args) {
   }
   // same one-refusal rule for an action the result claims but no call performed
   if (!(run.gateRefusals || []).some(r => r.claimMismatch)) {
-    for (const c of claimMismatch(log, args?.result)) problems.push(`your result says "${c.verb}" but no ${c.family} call succeeded in this run; do it now, or rewrite result to say what you actually observed`);
+    for (const c of claimMismatch(log, args?.result)) problems.push(`your result says "${c.verb}" but no ${c.family} call succeeded. If the task asked you to ${VERB_BASE[c.verb] || c.verb}, do it now; only if it did not, rewrite result to say what you actually observed`);
   }
   return problems;
 }

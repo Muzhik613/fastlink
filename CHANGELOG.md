@@ -33,6 +33,19 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast-runner gate wording: "If the task asked you to <verb>, do it now"; system prompt "do every step the task names"
+- **What:** the claimMismatch refusal reads `your result says "<verb>" but no <family> call
+  succeeded. If the task asked you to <base verb>, do it now; only if it did not, rewrite result
+  to say what you actually observed`. `SYSTEM` (shared by every toolset) gains one rule: `Do
+  every step the task names, in order, before report_done; if you cannot do a step, say which
+  and why in result.` Unit test asserts the "If the task asked you to" text.
+- **Why:** cfworkers in the owner's Chrome 19:36:57Z (grok-4.3): refused once for "opened",
+  4.3 took the rewrite branch ("fast_tab opened …; snapshot shows Workers list") and never
+  drilled in — bench 2/5 with claimedComplete.
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/test/gate.test.mjs`.
+- **Watch out:** the default toolset's prompt changes by exactly that one rule line.
+- **Status:** committed; `node --test test/*.test.mjs`.
+
 ## 2026-09-15 — fast-runner gate: a result claiming an action no call performed is refused once (`claimMismatch`)
 - **What:** `claimMismatch(toolLog, result)` (runner.mjs) parses only the model's OWN `result`:
   verbs opened|navigated|drilled|went to → needs a fast_click/click_xy/do or a fast_tab/fast_nav

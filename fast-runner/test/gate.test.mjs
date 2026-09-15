@@ -146,7 +146,10 @@ test('check 4: an action the result claims but no call performed is refused once
   const evidence = `"fastlink-relay", "gauth-father", "gauth-broker-mt", "gauth-broker-staging", "fd-relay" at ${LIST}`;
   assert.deepEqual(claimMismatch(run.toolLog, result), [{ verb: 'opened', family: 'fast_click / fast_nav / fast_tab (beyond the first page load)' }]);
   const p = gateProblems(run, { result, evidence });
-  assert.deepEqual(p, ['your result says "opened" but no fast_click / fast_nav / fast_tab (beyond the first page load) call succeeded in this run; do it now, or rewrite result to say what you actually observed']);
+  assert.deepEqual(p, ['your result says "opened" but no fast_click / fast_nav / fast_tab (beyond the first page load) call succeeded. If the task asked you to open, do it now; only if it did not, rewrite result to say what you actually observed']);
+  assert.match(p[0], /If the task asked you to open, do it now/);   // the do-it branch leads (19:36:57Z: "or rewrite" invited the rewrite)
+  assert.match(gateProblems(runOf(rows), { result: 'Submitted the search', evidence }).join(), /If the task asked you to submit, do it now/);
+  assert.match(gateProblems(runOf(rows), { result: 'We went to the Worker', evidence }).join(), /If the task asked you to go to, do it now/);
   run.gateRefusals.push({ turn: 4, t: 15000, problems: p, claimMismatch: claimMismatch(run.toolLog, result) });
   assert.deepEqual(gateProblems(run, { result, evidence }), [], 'second report_done passes; the row carries claimMismatch');
   // a genuine click run with the same claim: no refusal
