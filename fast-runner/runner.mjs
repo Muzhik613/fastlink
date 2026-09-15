@@ -38,7 +38,8 @@ Rules:
 //     (last-seen) URL — a quote from an earlier page is not evidence for this one;
 //  3. a failed call never retried (same tool+target, or another tool on that
 //     target) is refused ONCE; the next report_done passes but the row records
-//     `unresolvedFailures` for the bench.
+//     `unresolvedFailures` for the bench. A failed read/wait also counts as
+//     resolved by a later successful action followed by a successful read.
 // Otherwise the model is told exactly what is missing and continues. Refusals
 // are logged per run.
 const STATE_TOOLS = new Set([
@@ -72,13 +73,20 @@ export function recordResult(run, text, isError) {
 const target = (e) => String(e.args?.text ?? e.args?.field ?? e.args?.match ?? '');
 const describe = (f) => f.name + (f.target ? ` ${JSON.stringify(f.target)}` : '');
 // Failed calls whose intent never succeeded afterwards (latest attempt per tool+target).
+// A failed ACTION needs a retry on its target (or another tool on it). A failed
+// READ/WAIT is also resolved when the page moved on: a later successful
+// state-changing call followed by a successful read (the wait for "min" that
+// timed out before Enter submitted the route is moot once the routes were read).
+const isReadOrWait = (e) => READ_TOOLS.has(e.name) || e.name === 'fast_wait';
 export function unresolvedFailures(log) {
   const out = new Map();
   log.forEach((e, i) => {
     if (e.ok) return;
     const tg = target(e);
-    const retried = log.slice(i + 1).some(x => x.ok && (x.name === e.name ? target(x) === tg : tg !== '' && target(x) === tg));
-    if (!retried) out.set(`${e.name}\0${tg}`, { name: e.name, target: tg, t: e.t });
+    const later = log.slice(i + 1);
+    const retried = later.some(x => x.ok && (x.name === e.name ? target(x) === tg : tg !== '' && target(x) === tg));
+    const overtaken = isReadOrWait(e) && later.some((x, j) => x.ok && isStateChanging(x) && later.slice(j + 1).some(y => y.ok && isRead(y)));
+    if (!retried && !overtaken) out.set(`${e.name}\0${tg}`, { name: e.name, target: tg, t: e.t });
   });
   return [...out.values()];
 }

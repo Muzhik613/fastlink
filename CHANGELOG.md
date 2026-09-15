@@ -45,6 +45,20 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   newline score differently from earlier runs; everything else is unchanged.
 - **Status:** committed; unit test.
 
+## 2026-09-15 — fast-runner gate: a failed read/wait is resolved by a later action + read
+- **What:** `unresolvedFailures` (runner.mjs): a failed READ/WAIT call (`fast_wait` or any
+  `READ_TOOLS` tool — fast_snapshot, fast_text, …) is resolved by a later successful
+  state-changing call followed by a successful read. A failed ACTION (click/fill/select/key/
+  batch) still needs a retry on the same target (or another tool on it). New case in
+  `test/gate.test.mjs`.
+- **Why:** mapsdir run 9555f5ff was refused for `fast_wait "min" failed and was never retried`
+  although the model had since pressed Enter and read the routes page (3ceec99d the same for
+  `"route options"`).
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/test/gate.test.mjs`.
+- **Watch out:** a failed read that was followed by ANY action + read counts as resolved even if
+  the action was unrelated — the evidence/URL checks still guard the report itself.
+- **Status:** committed; `node --test test/*.test.mjs`.
+
 ## 2026-09-15 — toolset test: 45 server tools (fast_ext_reload), asserted absent from phase2 / no-cdp
 - **What:** `fast-runner/test/toolset.test.mjs` `TOOLS.length` 44 → 45 plus: `fast_ext_reload`
   is on the server (default `"*"` toolset exposes it) and is NOT in the phase2 or no-cdp tool

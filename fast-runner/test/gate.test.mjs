@@ -108,6 +108,32 @@ test('check 3: a failed call never retried is refused once, then recorded as unr
   assert.deepEqual(unresolvedFailures(twice), [{ name: 'fast_click', target: 'Go', t: 1 }]);
 });
 
+test('check 3: a failed read/wait is resolved by a later action + read; a failed action is not', () => {
+  // mapsdir run 9555f5ff: two waits timed out, then Enter submitted the route and a snapshot read it
+  const ROUTE = 'https://www.google.com/maps/dir/JFK/Times+Square';
+  const rows = [
+    ['fast_tab', { url: 'https://www.google.com/maps' }, '{"id":1,"url":"https://www.google.com/maps"}'],
+    ['fast_fill', { fields: { 'Choose starting point': 'JFK', 'Choose destination': 'Times Square' } }, '{"verified":true}'],
+    ['fast_wait', { text: 'min', networkIdle: true }, '{"error":"Timed out waiting for \\"min\\""}'],
+    ['fast_wait', { text: 'min without traffic' }, '{"error":"Timed out waiting for \\"min without traffic\\""}'],
+  ];
+  const stuck = runOf(rows);
+  assert.deepEqual(unresolvedFailures(stuck.toolLog).map(f => f.target), ['min', 'min without traffic']);
+  const done = runOf([...rows, ['fast_key_press', { key: 'Enter' }, '{"keyDispatched":"Enter"}'], ['fast_snapshot', {}, snap(ROUTE, '1 hr 11 min', '14.9 miles')]]);
+  assert.deepEqual(unresolvedFailures(done.toolLog), []);
+  assert.equal(problems(done, `"1 hr 11 min" at ${ROUTE}`), '');
+  // a read alone after the failed wait does not resolve it (nothing changed the page)
+  assert.equal(unresolvedFailures(runOf([...rows, ['fast_snapshot', {}, snap(ROUTE, 'Delays')]]).toolLog).length, 2);
+  // an action with no read after it does not resolve it either
+  assert.equal(unresolvedFailures(runOf([...rows, ['fast_key_press', { key: 'Enter' }, '{}']]).toolLog).length, 2);
+  // failed snapshot / text reads follow the same rule
+  const readFail = [{ name: 'fast_text', ok: false, args: { selector: '#x' }, t: 0 }, { name: 'fast_click', ok: true, args: { text: 'Go' }, t: 1 }, { name: 'fast_text', ok: true, args: {}, t: 2 }];
+  assert.deepEqual(unresolvedFailures(readFail), []);
+  // a failed ACTION still needs a retry on its own target: another action + read is not enough
+  const actFail = [{ name: 'fast_click', ok: false, args: { text: 'Search' }, t: 0 }, { name: 'fast_key_press', ok: true, args: { key: 'Enter' }, t: 1 }, { name: 'fast_snapshot', ok: true, args: {}, t: 2 }];
+  assert.deepEqual(unresolvedFailures(actFail), [{ name: 'fast_click', target: 'Search', t: 0 }]);
+});
+
 test('system prompt tells the model an unretried failure blocks report_done', () => {
   assert.match(buildSystem(loadToolset('phase2'), ''), /A tool call that failed and was never retried also blocks report_done/);
 });
