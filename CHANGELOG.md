@@ -87,6 +87,22 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 - **Status:** committed (e0ee7eb); `fast-dxt/test/broker.test.mjs` proves log lines
   + `recent[]`.
 
+## 2026-09-15 — fast_click reaches open suggestion-list entries; fast_status says when a pin is required
+- **What:** `fast_click` whose text matches no index entry looks in the OPEN suggestion
+  list of the focused control (`aria-controls`/`aria-owns` panel: `[role=option|row|
+  menuitem|treeitem]`, visible, exact > startsWith > substring) and commits it with a
+  mousedown/mouseup/click sequence — result `clicked:{tag,role,text}, fromSuggestions:true,
+  url, urlChanged, focused` + snapshot. `statusReport` (handlers.js): with the broker's
+  `pinRequired:true` the hint reads "Multiple Chrome profiles connected (a, b); calls are
+  refused until this session pins one with fast_profile {install:\"<label>\"|\"auto\"}"
+  (uses `connectedInstalls`).
+- **Why:** batch-build iteration 3 (56/59): mapsdir 4/6 — the new `suggestions` hint
+  named "Times Square New York, Manhattan, NY", but Maps' rows are `role=row` divs in a
+  `role=grid`, not index entries, so six clicks on that text missed (3 consecutive
+  errors). Broker fixer's pin-required routing (8498cbe) needs the matching status line.
+- **Files:** `fast-ext/src/actions/page.js`, `fast-dxt/server/handlers.js`.
+- **Status:** committed; hvm iteration 4 below.
+
 ## 2026-09-15 — Open suggestion lists are reported (`suggestions` + hint) on fast_key_press / fast_fill; bench trail poll 3s → 0.5s
 - **What:** `openSuggestions(el)` (page.js): when the active/written control names an
   open panel via `aria-controls`/`aria-owns` (Google Maps' `role=grid` of rows, ARIA

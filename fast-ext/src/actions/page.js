@@ -1758,6 +1758,28 @@ async function runPageAction(action, args) {
     } catch {}
     return null;
   };
+  // The entry of an open suggestion list (aria-controls panel of the focused
+  // control) whose text matches — those rows/gridcells are not index entries, so
+  // fast_click reaches them through this. Exact > startsWith > substring.
+  const suggestionByText = (text) => {
+    try {
+      const t = String(text || '').toLowerCase().trim();
+      const el = document.activeElement;
+      if (!t || !el) return null;
+      for (const id of ariaPanelIds(el)) {
+        const panel = lookupId(el, id) || document.getElementById(id);
+        if (!panel) continue;
+        const opts = [];
+        for (const o of panel.querySelectorAll('[role="option"],[role="row"],[role="menuitem"],[role="treeitem"]')) {
+          let r; try { r = o.getBoundingClientRect(); } catch { continue; }
+          if (visible(o, r)) opts.push(o);
+        }
+        const target = pickByText(opts, (o) => cleanLabel(o.textContent).toLowerCase(), t);
+        if (target) return target;
+      }
+    } catch {}
+    return null;
+  };
   // Bring an offscreen target into view before acting on it (a heavy page's
   // match pool now includes offscreen controls).
   const revealIfOffscreen = (it, el) => {
@@ -2557,6 +2579,16 @@ async function runPageAction(action, args) {
       // "I agree to the <a>Policy</a>").
       matches = dropRedundantDescendantLinks(matches);
       if (matches.length) break;
+      // Not an index entry: an entry of the OPEN suggestion list (autocomplete
+      // rows on Google Maps) — commit it with a real mousedown/click sequence.
+      const sOpt = suggestionByText(args.text);
+      if (sOpt) {
+        const urlBefore0 = location.href;
+        flashEl(sOpt, 'click');
+        for (const type of ['mousedown', 'mouseup', 'click']) sOpt.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, button: 0 }));
+        const out0 = await withSnap({ clicked: { tag: sOpt.tagName.toLowerCase(), role: sOpt.getAttribute('role') || undefined, text: cleanLabel(sOpt.textContent).slice(0, 120) }, fromSuggestions: true }, snap);
+        return frontload(out0, { clicked: out0.clicked, fromSuggestions: true, url: location.href, urlChanged: location.href !== urlBefore0, focused: describeEl(document.activeElement) || undefined });
+      }
       if (nowMs() - t0 >= AUTO_WAIT_MS) {
         const act = pageActivity();
         const tail = { waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing when this gave up — the element may not be rendered yet: fast_wait for text that identifies its view, then click again' } : {}) };
