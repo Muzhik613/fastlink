@@ -1,8 +1,10 @@
 # fast-runner tool usage
 
-Aggregated over 24 cell(s), ALL passes (multipage×4, gcpform×1, staticform×4, overlay×4, flightsearch×3, mapsdir×3, extract×5) from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
+24 cell(s), ALL passes, one table per toolset, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
 
 fumble columns: `retry` = call immediately followed by the same tool on the same target; `switch` = followed by a different tool on the same target; `fumble %` = (retry+switch)/calls.
+
+## toolset `default` — 24 cell(s): multipage×4, gcpform×1, staticform×4, overlay×4, flightsearch×3, mapsdir×3, extract×5
 
 | tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
 |---|---:|---:|---:|---:|---:|---:|---|

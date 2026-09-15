@@ -1315,12 +1315,30 @@ async function runPageAction(action, args) {
   // ordering bit, which could place a field in the wrong section. One selector
   // query, no '*' walk.
   const FILLABLE_SEL = 'input:not([type="hidden"]),textarea,select,[contenteditable="true"],[contenteditable=""],[role="textbox"]';
+  // Dropdown-ish controls, for fast_select_option's titled-section lookup.
+  const DROPDOWN_SEL = 'select,[role="combobox"],[role="listbox"],input[id^="react-select-"],[aria-haspopup="listbox"],[aria-haspopup="menu"],[aria-haspopup="true"]';
   const MAX_SECTION_FIELDS = 500;
+  // Visibility of a FIELD, not its input: a non-searchable react-select renders a
+  // 1px opacity-0 "dummy input", so measuring the input alone hides the whole
+  // control. Measure the nearest ancestor whose class token ends in "control"
+  // (react-select's own naming, prefixed or emotion-hashed) for those.
+  const fieldVisible = (el, rect) => {
+    if (visible(el, rect)) return true;
+    if (!(el.matches && el.matches('input[id^="react-select-"]'))) return false;
+    let p = el.parentElement;
+    for (let hops = 0; p && hops < 6; hops++, p = p.parentElement) {
+      if (/(?:^|\s)[\w-]*control(?:\s|$)/i.test(String(p.className || ''))) {
+        let r; try { r = p.getBoundingClientRect(); } catch { return false; }
+        return visible(p, r);
+      }
+    }
+    return false;
+  };
   // Resolve a section request. ALWAYS returns a report — callers must NOT fall
   // back to the unscoped pool on a miss (a silent wrong-field write is worse than
   // an error), which is exactly what the old `if (scoped.length)` guard did.
   //   { matched: n, sections: [every section title on the page], items: [scoped] }
-  const resolveSection = (wantLo) => {
+  const resolveSection = (wantLo, sel = FILLABLE_SEL) => {
     let anchors;
     try { anchors = Array.from(document.querySelectorAll(SECTION_ANCHORS)).slice(0, MAX_ANCHORS); }
     catch { anchors = []; }
@@ -1349,13 +1367,13 @@ async function runPageAction(action, args) {
       && spans.some(({ start, end }) =>
         (start.contains(el) || follows(start, el)) && (!end || follows(el, end)));
     let fillable;
-    try { fillable = Array.from(document.querySelectorAll(FILLABLE_SEL)).slice(0, MAX_SECTION_FIELDS); }
+    try { fillable = Array.from(document.querySelectorAll(sel)).slice(0, MAX_SECTION_FIELDS); }
     catch { fillable = []; }
     const items = [];
     for (const el of fillable) {
       if (!inAnySpan(el)) continue;
       let rect; try { rect = el.getBoundingClientRect(); } catch { continue; }
-      if (!visible(el, rect)) continue;          // hidden fields are not fillable targets
+      if (!fieldVisible(el, rect)) continue;     // hidden fields are not fillable targets
       indexElement(el);                           // stable id + a fresh (live-value) entry
       const entry = INDEX.byEl.get(el);
       if (!entry || entry.kind !== 'click') continue;
@@ -1381,6 +1399,43 @@ async function runPageAction(action, args) {
       return { error: `section "${sectionArg}" was found but holds no visible fillable field, so nothing was filled (refusing to fall back to a page-wide match). The field may still be collapsed/unrendered (open the section first), or it may live in a shadow root / iframe, which section scoping cannot order reliably — use index:N there.`, sections: sec.sections.slice(0, 40) };
     }
     return { pool: sec.items };
+  };
+  // Why a fill missed. A bare "No fillable element" left the model guessing
+  // (Wikipedia: the search input EXISTS but is display:none until the header's
+  // search toggle is clicked — the fill was right to refuse, the error said
+  // nothing). Report (a) matching fields that exist but are hidden, straight from
+  // the live DOM, and (b) the visible fillable fields it could have meant.
+  // Bounded: one selector query, ≤MAX_SECTION_FIELDS elements, no full walk.
+  const fieldBrief = (it) => {
+    const o = { tag: it.tag };
+    if (it.label) o.label = it.label;
+    if (it.placeholder) o.placeholder = it.placeholder;
+    if (it.ariaLabel) o.ariaLabel = it.ariaLabel;
+    if (it.name) o.name = it.name;
+    if (it.type) o.type = it.type;
+    return o;
+  };
+  const fillMissReport = (m, pool) => {
+    const report = { candidates: pool.slice(0, 12).map(fieldBrief) };
+    const hidden = [];
+    try {
+      const all = Array.from(document.querySelectorAll(FILLABLE_SEL)).slice(0, MAX_SECTION_FIELDS);
+      for (const el of all) {
+        if (hidden.length >= 6) break;
+        const attrs = [labelFor(el), el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('name'), el.getAttribute('title'), el.id];
+        if (!attrs.some(a => a && String(a).toLowerCase().includes(m))) continue;
+        let rect; try { rect = el.getBoundingClientRect(); } catch { continue; }
+        if (visible(el, rect)) continue;   // visible ones are already in the pool (or capped out)
+        hidden.push({ tag: el.tagName.toLowerCase(), label: labelFor(el) || null, ariaLabel: el.getAttribute('aria-label'), placeholder: el.getAttribute('placeholder'), name: el.getAttribute('name'), id: el.id || null });
+      }
+    } catch {}
+    if (hidden.length) {
+      report.hiddenMatches = hidden;
+      report.hint = `${hidden.length} matching field(s) exist but are hidden (display:none / zero size) — a toggle, tab, or expander must reveal them first (fast_click the control that opens the search/form), then fill again.`;
+    } else if (!report.candidates.length) {
+      report.hint = 'no visible fillable field on this view at all — the form may sit in a cross-origin iframe (vision tier) or still be loading.';
+    }
+    return report;
   };
   const fillItem = (found, value, append) => {
     const el = elAt(found);
@@ -1558,16 +1613,31 @@ async function runPageAction(action, args) {
     // Cheap, bounded descent to the smallest element fully containing `t`, so a
     // content match can still carry coords. One child scan per level, depth-
     // capped — never a full-document walk.
+    // Returns null when the ONLY place the text lives is script/style/template
+    // text — body.textContent includes inline <script> bodies (JSON state blobs,
+    // templates), which are not "the view mounted". Skipping those subtrees keeps
+    // the descent on rendered content.
+    const NON_VIEW_TAGS = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT']);
     const smallestContaining = () => {
       try {
         let el = document.body;
         if (!el || !(el.textContent || '').toLowerCase().includes(t)) return null;
         for (let depth = 0; depth < 200; depth++) {
-          let next = null;
+          let next = null, onlyNonView = false;
           for (const child of el.children) {
-            if (child.nodeType === 1 && (child.textContent || '').toLowerCase().includes(t)) { next = child; break; }
+            if (child.nodeType !== 1 || !(child.textContent || '').toLowerCase().includes(t)) continue;
+            if (NON_VIEW_TAGS.has(child.tagName)) { onlyNonView = true; continue; }
+            next = child; break;
           }
-          if (!next) break;
+          if (!next) {
+            // Own text nodes may still hold it; if only a script/style child did, it is not on the page.
+            if (onlyNonView) {
+              let own = '';
+              for (const c of el.childNodes) if (c.nodeType === 3) own += c.data;
+              if (!own.toLowerCase().includes(t)) return null;
+            }
+            break;
+          }
           el = next;
         }
         return el;
@@ -1592,10 +1662,36 @@ async function runPageAction(action, args) {
         }
         return resolve(withSnap({ found }));
       };
+      // Attribute text the index scan cannot see when the observer is off: a
+      // combobox/search input's aria-label or placeholder ("Choose starting
+      // point, or click on the map..." on Google Maps) is not body textContent,
+      // so the fallback below never matched it. Bounded direct probe.
+      const ATTR_PROBE_SEL = 'input,textarea,[role="combobox"],[role="textbox"],[role="searchbox"],[aria-label],[placeholder]';
+      const probeAttrText = () => {
+        try {
+          const els = document.querySelectorAll(ATTR_PROBE_SEL);
+          const n = Math.min(els.length, 1500);
+          for (let i = 0; i < n; i++) {
+            const el = els[i];
+            const a = el.getAttribute('aria-label'), p = el.getAttribute('placeholder');
+            if ((a && a.toLowerCase().includes(t)) || (p && p.toLowerCase().includes(t))) return { el, text: a && a.toLowerCase().includes(t) ? a : p };
+          }
+        } catch {}
+        return null;
+      };
       let polls = 0;
       const poll = () => {
         polls++;
-        drainPendingSync(500, 15);
+        // Storm-tripped page (Maps, GCP): the observer is OFF, so nothing new is
+        // ever indexed unless a walk is re-seeded — snapshots do this on demand;
+        // fast_wait must too, or it polls a frozen index to the deadline while the
+        // awaited view is already on screen. Same resumable-cursor rule as
+        // serializeSnapshot: re-seed only when the previous walk fully drained.
+        if (INDEX.stormTripped && !hasPending()) {
+          const root = document.body || document.documentElement;
+          if (root) PENDING.adds.add(root);
+        }
+        drainPendingSync(2000, 30);
         const hit = findEntryByText();
         if (hit && hit.el && hit.el.isConnected) {
           const entry = INDEX.byEl.get(hit.el);
@@ -1629,9 +1725,24 @@ async function runPageAction(action, args) {
           try {
             const tc = document.body && document.body.textContent;
             if (tc && tc.toLowerCase().includes(t)) {
-              return resolveContent(smallestContaining(), args.text);
+              const host = smallestContaining();   // null → the text is only inside script/style, not on the page
+              if (host) return resolveContent(host, args.text);
             }
           } catch {}
+          const attrHit = probeAttrText();
+          if (attrHit) {
+            let rect; try { rect = attrHit.el.getBoundingClientRect(); } catch { rect = null; }
+            if (rect && visible(attrHit.el, rect)) {
+              indexElement(attrHit.el);   // give it a stable id so the agent can chain a fill/click off it
+              const entry = INDEX.byEl.get(attrHit.el);
+              const off = offsetFor(attrHit.el);
+              return resolve(withSnap({ found: {
+                i: entry ? entry.id : undefined, tag: attrHit.el.tagName.toLowerCase(), role: attrHit.el.getAttribute('role'),
+                text: attrHit.text, ariaLabel: attrHit.el.getAttribute('aria-label'), placeholder: attrHit.el.getAttribute('placeholder'),
+                x: Math.round(rect.x + off.ox), y: Math.round(rect.y + off.oy), w: Math.round(rect.width), h: Math.round(rect.height),
+              }}));
+            }
+          }
         }
         if (Date.now() > deadline) {
           // Direct DOM read (no snapshot/INDEX): give the agent a peek at the
@@ -1685,7 +1796,47 @@ async function runPageAction(action, args) {
         const ph = el.getAttribute && el.getAttribute('placeholder');
         if (ph && ph.toLowerCase().includes(fieldLo)) return el;
       }
+      // HEADING-TITLED dropdown: no label/aria/placeholder carries the name, but a
+      // heading does (react-select.com's demo: <h4>Single</h4> above an unlabelled
+      // combobox; docs/demo pages and card-per-field forms do the same). Resolve
+      // the name as a document-outline section and take its first dropdown-ish
+      // control — same resolver + same "never a page-wide guess" rule as
+      // fast_fill's `section`.
+      const sec = resolveSection(fieldLo, DROPDOWN_SEL);
+      if (sec.matched && sec.items.length) {
+        const el = elById(sec.items[0].i);
+        if (el) return el;
+      }
       return null;
+    };
+    // What a miss could have meant: every visible dropdown-ish control with the
+    // name it WOULD match on (label / aria / placeholder / titled section), so the
+    // model can retry with a real name instead of falling back to coordinates.
+    const dropdownCandidates = () => {
+      const out = [];
+      try {
+        for (const el of queryAllDeep(document, DROPDOWN_SEL)) {
+          if (out.length >= 12) break;
+          let rect; try { rect = el.getBoundingClientRect(); } catch { continue; }
+          if (!fieldVisible(el, rect)) continue;
+          const c = { tag: el.tagName.toLowerCase() };
+          const role = el.getAttribute('role'); if (role) c.role = role;
+          const lbl = labelFor(el) || containerLabel(el); if (lbl) c.label = lbl;
+          const al = el.getAttribute('aria-label'); if (al) c.ariaLabel = al;
+          const ph = el.getAttribute('placeholder') || (el.getAttribute('aria-describedby') ? resolveIdRefs(el, 'aria-describedby') : null); if (ph) c.placeholder = ph;
+          const nm = el.getAttribute('name'); if (nm) c.name = nm;
+          if (el.id) c.id = el.id;
+          // Nearest preceding heading = the name a titled-section lookup accepts.
+          let h = null;
+          try {
+            const hs = document.querySelectorAll(SECTION_ANCHORS);
+            for (let i = hs.length - 1; i >= 0; i--) { if (follows(hs[i], el)) { h = cleanLabel(hs[i].textContent).slice(0, 80); break; } }
+          } catch {}
+          if (h) c.section = h;
+          out.push(c);
+        }
+      } catch {}
+      return out;
     };
 
     const optText = (o) => (o.textContent || '').trim().toLowerCase();
@@ -1699,7 +1850,7 @@ async function runPageAction(action, args) {
       if (!fieldLo || !optionText) return { error: 'field and option required' };
 
       const field = findField(fieldRaw, fieldLo);
-      if (!field) return { error: `field "${fieldRaw}" not found` };
+      if (!field) return { error: `field "${fieldRaw}" not found — no dropdown/combobox/select carries that label, aria-label, placeholder, name, id, or titled section. Nothing was changed. Retry with one of the names in \`candidates\`.`, candidates: dropdownCandidates() };
 
       if (field.tagName === 'SELECT') {
         const all = Array.from(field.options);
@@ -1727,8 +1878,27 @@ async function runPageAction(action, args) {
         : (field.querySelector && field.querySelector('input[id^="react-select-"]')) || null;
       let ctrl = field.closest('[class*="select__control"]');
       if (!ctrl && rsInput) ctrl = rsInput.closest('[class*="__control"]');
+      // No classNamePrefix at all → emotion-only classes (`css-1y6m8t7-control`,
+      // react-select.com's own demos): the control is the nearest ancestor with a
+      // class token ENDING in "control". Bounded climb from the input.
+      if (!ctrl && rsInput) {
+        let p = rsInput.parentElement;
+        for (let hops = 0; p && hops < 6 && !ctrl; hops++, p = p.parentElement) {
+          if (/(?:^|\s)[\w-]*control(?:\s|$)/i.test(String(p.className || ''))) ctrl = p;
+        }
+      }
       if (ctrl) {
-        if (!/--menu-is-open/.test(ctrl.className)) ctrl.click();
+        // Open state: the `--menu-is-open` modifier only exists WITH a prefix;
+        // aria-expanded on the combobox input is always maintained.
+        const menuOpen = /--menu-is-open/.test(ctrl.className) || (rsInput && rsInput.getAttribute('aria-expanded') === 'true');
+        // react-select opens on the control's MOUSEDOWN (onControlMouseDown), not
+        // on click — a bare .click() only ever worked when the typed filter text
+        // opened the menu, which a non-searchable (dummy-input) select never does.
+        if (!menuOpen) {
+          ctrl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true, button: 0 }));
+          ctrl.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true, button: 0 }));
+          ctrl.click();
+        }
         await wait(250);
         const input = rsInput || ctrl.querySelector('input[id^="react-select-"]') || (field.tagName === 'INPUT' ? field : null);
         if (input) {
@@ -1788,8 +1958,16 @@ async function runPageAction(action, args) {
       };
       const deadline = Date.now() + (args.timeoutMs || 3000);
       let target = null;
+      let polls = 0;
       while (Date.now() < deadline) {
         drainPendingSync(2000, 30);
+        // Options mount in a PORTAL (Angular cdk-overlay-container, [role=listbox]
+        // at end of <body>). On a heavy page the observer is storm-tripped /
+        // backlogged, so the drain above never sees them and the poll ran the full
+        // 3s to "no listbox detected" (GCP "Application type" → cfc-select, while a
+        // plain fast_click on the option worked because snapshots sweep overlays).
+        // Sweep the known overlay containers directly, like the snapshot does.
+        if ((polls++ & 3) === 1) { try { collectOverlayEls(); } catch {} }
         target = findOptInIndex();
         if (target) break;
         await wait(50);
@@ -2110,8 +2288,8 @@ async function runPageAction(action, args) {
     const ranked = exact.length ? exact : pool.filter(it => fieldMatchesText(it, m));
     if (!ranked.length) {
       return sectionArg
-        ? { error: `No fillable element matching "${args.match}" inside section "${sectionArg}" — the section resolved but none of its ${pool.length} fillable field(s) carry that label. Nothing was filled.`, fieldsInSection: pool.slice(0, 12).map(it => ({ tag: it.tag, label: it.label, placeholder: it.placeholder, name: it.name })) }
-        : { error: `No fillable element matching "${args.match}"` };
+        ? { error: `No fillable element matching "${args.match}" inside section "${sectionArg}" — the section resolved but none of its ${pool.length} fillable field(s) carry that label. Nothing was filled.`, fieldsInSection: pool.slice(0, 12).map(fieldBrief) }
+        : { error: `No visible fillable element matching "${args.match}". Nothing was filled.`, ...fillMissReport(m, pool) };
     }
     // Optional occurrence index among the matches in STABLE DOM order.
     const ordered = ranked.slice().sort(docOrderCmp);
@@ -2210,6 +2388,17 @@ async function runPageAction(action, args) {
     }
 
     const out = { filled, missed, total: Object.keys(fields).length, results };
+    // Same miss report as fast_fill, once per call (not per field): the visible
+    // fillable fields plus any label-matching hidden ones, so a 'not found' is
+    // actionable instead of a dead end.
+    if (missed) {
+      const missedKeys = Object.keys(results).filter(k => results[k] && results[k].error === 'not found');
+      if (missedKeys.length) {
+        const rep = fillMissReport(String(missedKeys[0]).toLowerCase(), items.filter(it => isFillable(it) && !usedI.has(it.i)));
+        out.candidates = rep.candidates;
+        if (rep.hiddenMatches) { out.hiddenMatches = rep.hiddenMatches; out.hint = rep.hint; }
+      }
+    }
 
     // VERIFY: decoupled + time-bounded (BUG-4). The fills above are DONE and are
     // the load-bearing result. Verification is ADVISORY — it re-reads each filled

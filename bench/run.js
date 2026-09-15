@@ -89,7 +89,7 @@ export function inferClaim(text) {
 
 // ---------------------------------------------------------------------------
 export async function runCell({
-  client, testId, transport = 'relay', driver = 'web', install = null, browser = null,
+  client, testId, transport = 'relay', driver = 'web', install = null, browser = null, toolset = null,
   claimed = null, quietMs = DEFAULTS.quietMs, ceilingMs = DEFAULTS.ceilingMs,
   reset = true, force = false, dryRun = false, deviceToken = null,
 }) {
@@ -166,7 +166,7 @@ export async function runCell({
     // Trace source + watermark BEFORE anything can generate a row.
     let source;
     let handle = null; // runner driver: the spawned cli.mjs (its trace is `source`)
-    if (driver === 'runner') { handle = runner.start(test.prompt, { browser, transport }); source = handle.trace; }
+    if (driver === 'runner') { handle = runner.start(test.prompt, { browser, transport, toolset }); source = handle.trace; }
     else if (transport === 'local') source = new LocalTrace({ since: Date.now() });
     else {
       const token = resolveDeviceToken(deviceToken);
@@ -180,7 +180,7 @@ export async function runCell({
     let site = null;
     const t0 = handle ? handle.startedAt : Date.now();
     if (driver === 'runner') {
-      notes.push(`runner spawned${browser ? ` (browser=${browser})` : ''}`);
+      notes.push(`runner spawned${browser ? ` (browser=${browser})` : ''}${toolset ? ` (toolset=${toolset})` : ''}`);
     } else if (driver === 'manual') {
       console.log(`\n=== PASTE THIS INTO ${cl.label} (a NEW conversation) ===\n${test.prompt}\n=== recording starts now ===\n`);
     } else {
@@ -278,10 +278,11 @@ export async function runCell({
       driver,
       install,
       browser,
+      toolset: handle ? (handle.final?.toolset || toolset || 'default') : null,
       notes: notes.join('; '),
     };
     appendFileSync(RESULTS, JSON.stringify(row) + '\n');
-    if (handle) runner.recordUsage(handle, { client: cl.id, testId: test.id });
+    if (handle) runner.recordUsage(handle, { client: cl.id, testId: test.id, toolset: row.toolset });
 
     console.log(renderTiming(source.rows, cl.label));
     console.log('');
@@ -317,6 +318,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     driver: flag('--driver', 'web'),
     install: flag('--install'),
     browser: flag('--browser'),
+    toolset: flag('--toolset'),
     deviceToken: flag('--token'),
     quietMs: Number(flag('--quiet-ms', DEFAULTS.quietMs)),
     ceilingMs: Number(flag('--ceiling-ms', DEFAULTS.ceilingMs)),
@@ -333,6 +335,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       '  --driver    web|manual    web = script the chat UI; manual = print the prompt and record',
       '                            (client grok_runner always uses the runner driver: fast-runner/cli.mjs; --transport picks relay or local)',
       '  --browser   <name>        runner only: relay browser name to pin via fast_profile (e.g. yaakovschrome)',
+      '  --toolset   <name|path>   runner only: fast-runner toolset (default | phase2 | no-cdp | file); recorded on the row',
       '  --install   <label>       Chrome profile to OBSERVE (reset/trail/scoring) via fast_profile.',
       '                            On --transport local it is also the driven profile. On relay,',
       '                            set it to the profile that chat\'s relay account drives',

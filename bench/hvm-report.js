@@ -28,6 +28,7 @@ const passes = Number(flag('--passes', 3));
 const client = flag('--client', 'grok_runner');
 const transport = flag('--transport', 'local');
 const out = flag('--out', null);
+const notes = flag('--notes', ''); // "pass 1 on <sha>; fixer applied: …;" from hvm-run.sh
 
 const inWindow = (r) => r.client === client && r.transport === transport && r.ts >= since;
 const rows = loadResults().filter(inWindow).sort((a, b) => a.ts.localeCompare(b.ts));
@@ -45,7 +46,15 @@ const secs = (ms) => (ms == null ? null : ms / 1000);
 const fmt = (s) => (s == null ? '–' : `${s.toFixed(1)}s`);
 const median = (xs) => { const s = xs.slice().sort((a, b) => a - b); return s.length ? (s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : null; };
 const flags = (r) => `${r.valid === false ? 'X' : ''}${r.stuck ? 'S' : ''}${r.claimedComplete === true && r.score < r.total ? '!' : ''}${r.claimedComplete === false ? '~' : ''}`;
-const cell = (r) => (r ? `${r.score}/${r.total} ${fmt(secs(r.wallMs))} ${r.toolCalls}c${flags(r) ? ` ${flags(r)}` : ''}` : '–');
+const runIdOf = (r) => (/run_id=(\w+)/.exec(r?.notes || '') || [])[1] || null;
+const recOf = (r) => runs.get(runIdOf(r)) || null;
+// model time = sum of per-turn latencyMs (runs.jsonl `turns`, present from a9a1cd0 on)
+const modelMs = (rec) => (rec?.turns?.length ? rec.turns.reduce((s, t) => s + (t.latencyMs || 0), 0) : null);
+const cell = (r) => {
+  if (!r) return '–';
+  const m = modelMs(recOf(r));
+  return `${r.score}/${r.total} ${fmt(secs(r.wallMs))} ${r.toolCalls}c${m != null ? ` m=${fmt(m / 1000)}` : ''}${flags(r) ? ` ${flags(r)}` : ''}`;
+};
 
 const targetOf = (a = {}) => {
   for (const k of ['target', 'selector', 'text', 'match', 'name', 'url', 'intent', 'near', 'to', 'value']) if (a[k] != null && a[k] !== '') return `${k}=${String(a[k]).slice(0, 60)}`;
@@ -82,7 +91,12 @@ md.push(`# Grok runner bench — hvm, ${transport} transport (${since.slice(0, 1
 md.push(`Client \`${client}\`, ${passes} pass(es) over ${tests.length} tests, driven by \`bench/hvm-run.sh\` on the hvm rig (Xvfb + Chrome for Testing + unpacked fast-ext + local broker; grokcode proxy :8791). Rows since ${since}.`, '');
 md.push('Baseline = the same cells over the RELAY transport from WSL (2026-09-15). Local vs relay changes hop latency only; the tool-choice data is what phase 1 needs.', '');
 md.push(`Skipped as environment-invalid (fresh profile, no login): ${Object.entries(SKIPPED).map(([k, v]) => `\`${k}\` (${v})`).join(', ')}.`, '');
-md.push('## Per test', '', 'Cell = `score/total wall calls` · flags: X invalid, S stuck, ! overclaim, ~ underclaim.', '');
+if (notes.trim()) md.push(`Runtime per pass: ${notes.trim()}`, '');
+// what the run store says each pass actually ran (model / toolset), independent of the notes
+const passRuntime = new Map();
+for (const list of byTest.values()) list.forEach((r, i) => { const rec = recOf(r); if (rec) { const k = `${rec.model || '?'}/${rec.toolset || 'default'}`; const s = passRuntime.get(i + 1) || new Set(); s.add(k); passRuntime.set(i + 1, s); } });
+if (passRuntime.size) md.push(`Run store per pass (model/toolset): ${[...passRuntime.entries()].sort((a, b) => a[0] - b[0]).map(([p, s]) => `pass ${p} = ${[...s].join(' + ')}`).join('; ')}.`, '');
+md.push('## Per test', '', 'Cell = `score/total wall calls [m=model time, sum of turn latencies]` · flags: X invalid, S stuck, ! overclaim, ~ underclaim.', '');
 md.push(`| test | ${Array.from({ length: passes }, (_, i) => `pass ${i + 1}`).join(' | ')} | best wall | median wall | median calls | score | baseline wall | best vs baseline |`);
 md.push(`|---|${'---|'.repeat(passes)}---:|---:|---:|---|---:|---:|`);
 for (const t of tests) {

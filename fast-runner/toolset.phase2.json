@@ -1,0 +1,25 @@
+{
+  "_comment": "Phase-2 triage (docs/TOOL_TRIAGE_DRAFT.md §3a): 13 raw FastLink tools + ask_caller/report_done = 15. fast_click_xy stays until the fast_click{x,y} fold lands in tools.js. Select with --toolset phase2. Descriptions keyed by REAL tool name.",
+  "allow": [
+    "fast_snapshot", "fast_text", "fast_click", "fast_click_xy", "fast_fill",
+    "fast_select_option", "fast_key_press", "fast_scroll", "fast_wait", "fast_tab", "fast_nav",
+    "fast_batch", "fast_evaluate"
+  ],
+  "rename": {},
+  "describe": {
+    "fast_snapshot": "Read the current page: interactive elements (text, label, live value, coords) plus readable content blocks. Pass overlay:true when an open menu's options are missing, full:true to lift the ~70-item cap, screenshot:true only to visually confirm.",
+    "fast_text": "Return the page's innerText (or one element's via selector; html:true for outerHTML). Use for data extraction such as tables and lists; maxLen caps the size.",
+    "fast_click": "Click the element whose text/label/placeholder matches `text` (narrow with role, tag, index). Returns a fresh snapshot, so do not call fast_snapshot right after.",
+    "fast_click_xy": "Trusted click at viewport CSS coordinates x,y; returns no snapshot. Only when fast_click cannot match the element (canvas, cross-origin iframe).",
+    "fast_fill": "Set one field by label/placeholder/name (`match`, `value`; disambiguate with index or section). Replaces the existing value and returns a fresh snapshot.",
+    "fast_select_option": "Choose `option` in the dropdown labelled `field` (native, react-select, Angular, ARIA). Use selections:{field:option} to set several in one call.",
+    "fast_key_press": "Press `key` (Enter, Escape, Tab, ArrowDown...) on the focused element.",
+    "fast_scroll": "Scroll the page or the nearest scroll container: to:\"top\"|\"bottom\"|\"50%\" or pixels (negative = up). Returns a fresh snapshot.",
+    "fast_wait": "Wait until `text` appears (default 5s) or, with networkIdle:true, until requests settle. Use only after an action that triggers async loading; returns the matched element and a snapshot.",
+    "fast_tab": "Open `url` in a new tab and focus it.",
+    "fast_nav": "Go to `url` in the current tab and wait for the load (waitMs, default 10s).",
+    "fast_batch": "Run several tool calls in order in one round-trip (actions:[{name,args}]); stops at the first failure unless continueOnError. Use when the next steps are already certain.",
+    "fast_evaluate": "Run a JS function (`fn`, optional `args`) in the page and return its JSON result. May be disabled for this browser; if so use fast_text or fast_snapshot instead.",
+    "report_done": "Finish the task: result = the outcome in at most 3 short sentences (only what the task asked for), evidence = ONE short quote read back from the page plus its URL. Keep both terse; every output token costs latency."
+  }
+}

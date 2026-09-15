@@ -13,7 +13,7 @@ caller (Claude)  ──grok_run / grok_answer──►  caller-mcp.mjs ──►
 - `runner.mjs` — agent loop + run store (`runTask`, `answer`, `status`, `cancel`). Native tools `ask_caller`, `report_done`. Budgets: 60 tool calls / 10 min / 3 consecutive errors. Every finished run appends one JSON line to `~/.local/state/fastrun/runs.jsonl` (tool log, histogram, usage).
 - `xai.mjs` — Anthropic-Messages client against the grokcode proxy (`Authorization: Bearer grokcode-local`; the proxy injects the real xAI OAuth token). Starts the proxy if nothing listens on :8790.
 - `fastlink-client.mjs` — `connect({transport, browser})` → `{listTools, callTool, close, instructions}`. `local` spawns `fast-dxt/server/index.js` over stdio; `relay` delegates to `relay-transport.mjs`.
-- `toolset.json` — `allow` / `rename` / `describe` applied to the tool list Grok sees (names mapped back on call).
+- `toolset.json` — `allow` / `rename` / `describe` applied to the tool list Grok sees (names mapped back on call). This is the **default / baseline** (all tools + the server's `instructions` essay in the system prompt). `toolset.phase2.json` (15 tools, tight descriptions, no essay) and `toolset.no-cdp.json` (no `chrome.debugger` tools) are the triaged sets from `docs/TOOL_TRIAGE_DRAFT.md`. Selection is explicit per run: `--toolset <name|path>` (CLI), `toolset` arg (`grok_run`), or `FASTRUN_TOOLSET` env; a bare name means `toolset.<name>.json` here. Each `runs.jsonl` row records `toolset`.
 - `caller-mcp.mjs` — MCP stdio server `fastrun`: `grok_run`, `grok_answer`, `grok_status`, `grok_cancel`.
 - `cli.mjs` — one task from the shell.
 
@@ -22,6 +22,9 @@ caller (Claude)  ──grok_run / grok_answer──►  caller-mcp.mjs ──►
 npm install                                   # once
 node cli.mjs --local "Open example.com and report the h1"
 node cli.mjs --browser browser-1 "..."        # relay (default transport)
+node cli.mjs --local --toolset phase2 "..."   # A/B: triaged tool list (default: toolset.json = all tools)
+node cli.mjs --toolset phase2 --dump-tools    # print exactly what Grok would see; touches no browser
+npm test                                      # toolset filter/rename/describe unit tests
 claude mcp add --scope user fastrun -- node /home/yaakov/code/Fastlink/fast-runner/caller-mcp.mjs
 ```
 `ask_caller` in the CLI reads the answer from stdin. `FASTRUN_DEBUG=1` shows the spawned server's stderr.

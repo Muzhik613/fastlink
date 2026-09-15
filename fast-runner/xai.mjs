@@ -33,9 +33,12 @@ export async function ensureProxy() {
   throw new Error(`grokcode proxy did not come up on ${BASE}; see ${PROXY_DIR}/proxy.log`);
 }
 
-// One non-streaming turn. Returns the Messages response body ({content, stop_reason, usage}).
+// One non-streaming turn. Returns the Messages response body ({content, stop_reason, usage})
+// plus `_timing` = {latencyMs (whole call incl. retries), attempts, requestChars} for the run log.
 export async function createMessage({ system, messages, tools, maxTokens = 4096, signal }) {
   const body = { model: MODEL, max_tokens: maxTokens, system, messages, tools };
+  const payload = JSON.stringify(body);
+  const t0 = Date.now();
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
     let res;
@@ -47,7 +50,7 @@ export async function createMessage({ system, messages, tools, maxTokens = 4096,
           'anthropic-version': '2023-06-01',
           authorization: 'Bearer grokcode-local', // real token injected by the proxy
         },
-        body: JSON.stringify(body),
+        body: payload,
         signal,
       });
     } catch (e) {
@@ -55,7 +58,11 @@ export async function createMessage({ system, messages, tools, maxTokens = 4096,
       lastErr = e; await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); continue;
     }
     const text = await res.text();
-    if (res.ok) return JSON.parse(text);
+    if (res.ok) {
+      const out = JSON.parse(text);
+      out._timing = { latencyMs: Date.now() - t0, attempts: attempt + 1, requestChars: payload.length };
+      return out;
+    }
     lastErr = new Error(`xai ${res.status}: ${text.slice(0, 500)}`);
     if (res.status === 429 || res.status >= 500) { await new Promise(r => setTimeout(r, 1500 * (attempt + 1))); continue; }
     throw lastErr;
