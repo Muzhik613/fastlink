@@ -1,0 +1,3 @@
+# Benchmark run artefacts — measurements of one machine on one day, not source.
+results*.jsonl
+.run.lock

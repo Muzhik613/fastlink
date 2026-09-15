@@ -1,0 +1,6 @@
+{
+  "name": "fastlink-bench",
+  "private": true,
+  "type": "module",
+  "description": "FastLink chat-client benchmark harness. Runs from the repo checkout; resolves fast-dxt deps via fast-dxt/node_modules."
+}
