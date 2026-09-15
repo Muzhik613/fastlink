@@ -37,7 +37,7 @@ for p in $(seq 1 "$PASSES"); do
   done
   node bench/hvm-report.js --since "$SINCE" --passes "$PASSES" --notes "$NOTES" --out "$DOC" || echo "!!! report failed"
   node bench/drive-runner.js usage > /dev/null
-  git add bench/results.jsonl bench/tool-usage.md "$DOC"
+  git add bench/tool-usage.md "$DOC"   # results*.jsonl / tool-usage.jsonl are gitignored run artefacts
   git commit -q -m "bench(hvm): grok_runner local-transport pass $p/$PASSES" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" && echo "=== committed pass $p: $(git rev-parse --short HEAD)"
   fixer_check
 done
