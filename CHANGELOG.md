@@ -19,6 +19,18 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — `toolset.phase2-eval.json`: phase2 + read-only `fast_evaluate` (owner A/B)
+- **What:** generated from `toolset.phase2.json` (test asserts it differs only by the
+  added tool); evaluate described as read-only DOM queries, never cookies/storage,
+  prefer fast_text for plain text. README lists the gate, the dated prompt and the
+  toolsets.
+- **Why:** the owner enabled evaluate on the relay account and wants to know whether it
+  helps 4.3 once phase2 scores clean without it.
+- **Files:** `fast-runner/toolset.phase2-eval.json`, `fast-runner/test/toolset.test.mjs`,
+  `fast-runner/README.md`.
+- **Watch out:** `no-cdp` never gets evaluate.
+- **Status:** committed; A/B pass recorded in the hvm feedback doc.
+
 ## 2026-09-15 — hvm rig: clear the extension service-worker ScriptCache on Chrome launch; snapshot `hint` survives the spread
 - **What:** `bench/hvm-rig.sh` removes `$RIG_PROFILE/Default/Service Worker/ScriptCache`
   before launching Chrome. `page.js` `markTruncated` always deletes the serializer's

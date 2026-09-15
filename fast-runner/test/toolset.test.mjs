@@ -80,6 +80,15 @@ test('phase2: 12 FastLink + 2 native = 14 (no fast_evaluate), every allowed tool
   assert.doesNotMatch(buildSystem(ts, 'ESSAY'), /ESSAY/);
 });
 
+test('phase2-eval = phase2 + fast_evaluate, nothing else differs', () => {
+  const a = loadToolset('phase2'), b = loadToolset('phase2-eval');
+  assert.deepEqual(b.allow, [...a.allow, 'fast_evaluate']);
+  assert.ok(b.describe.fast_evaluate && /READ-ONLY/.test(b.describe.fast_evaluate));
+  const { fast_evaluate, ...rest } = b.describe;
+  assert.deepEqual(rest, a.describe);
+  assert.equal(buildTools(TOOLS, b).tools.length, 15);
+});
+
 test('no-cdp: no tool that attaches chrome.debugger', () => {
   const ts = loadToolset('no-cdp');
   const { tools } = buildTools(TOOLS, ts);

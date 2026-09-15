@@ -10,10 +10,10 @@ caller (Claude)  ──grok_run / grok_answer──►  caller-mcp.mjs ──►
 ```
 
 ## Files
-- `runner.mjs` — agent loop + run store (`runTask`, `answer`, `status`, `cancel`). Native tools `ask_caller`, `report_done`. Budgets: 60 tool calls / 10 min / 3 consecutive errors. Every finished run appends one JSON line to `~/.local/state/fastrun/runs.jsonl` (tool log, histogram, usage).
+- `runner.mjs` — agent loop + run store (`runTask`, `answer`, `status`, `cancel`). Native tools `ask_caller`, `report_done`. Budgets: 60 tool calls / 10 min / 3 consecutive errors. `report_done` is gated: refused (up to 3×, then accepted and flagged `gateOverridden`) unless a read tool ran after the last state-changing call and `evidence` quotes a tool result verbatim; refusals are logged as `gateRefusals`. The system prompt carries today's date (America/Chicago). Every finished run appends one JSON line to `~/.local/state/fastrun/runs.jsonl` (tool log, histogram, usage, gate refusals).
 - `xai.mjs` — Anthropic-Messages client against the grokcode proxy (`Authorization: Bearer grokcode-local`; the proxy injects the real xAI OAuth token). Starts the proxy if nothing listens on :8790.
 - `fastlink-client.mjs` — `connect({transport, browser})` → `{listTools, callTool, close, instructions}`. `local` spawns `fast-dxt/server/index.js` over stdio; `relay` delegates to `relay-transport.mjs`.
-- `toolset.json` — `allow` / `rename` / `describe` applied to the tool list Grok sees (names mapped back on call). This is the **default / baseline** (all tools + the server's `instructions` essay in the system prompt). `toolset.phase2.json` (15 tools, tight descriptions, no essay) and `toolset.no-cdp.json` (no `chrome.debugger` tools) are the triaged sets from `docs/TOOL_TRIAGE_DRAFT.md`. Selection is explicit per run: `--toolset <name|path>` (CLI), `toolset` arg (`grok_run`), or `FASTRUN_TOOLSET` env; a bare name means `toolset.<name>.json` here. Each `runs.jsonl` row records `toolset`.
+- `toolset.json` — `allow` / `rename` / `describe` applied to the tool list Grok sees (names mapped back on call). This is the **default / baseline** (all tools + the server's `instructions` essay in the system prompt). `toolset.phase2.json` (14 tools, tight descriptions, no essay, no `fast_evaluate`), `toolset.phase2-eval.json` (phase2 + `fast_evaluate`, the A/B for accounts where evaluate is enabled) and `toolset.no-cdp.json` (no `chrome.debugger` tools) are the triaged sets from `docs/TOOL_TRIAGE_DRAFT.md`. Selection is explicit per run: `--toolset <name|path>` (CLI), `toolset` arg (`grok_run`), or `FASTRUN_TOOLSET` env; a bare name means `toolset.<name>.json` here. Each `runs.jsonl` row records `toolset`.
 - `caller-mcp.mjs` — MCP stdio server `fastrun`: `grok_run`, `grok_answer`, `grok_status`, `grok_cancel`.
 - `cli.mjs` — one task from the shell.
 
@@ -32,4 +32,4 @@ claude mcp add --scope user fastrun -- node /home/yaakov/code/Fastlink/fast-runn
 ## Notes
 - Reasoning effort is fixed when the proxy starts (`GROKCODE_EFFORT`, runner starts it with `low`). To change it, restart the proxy: `pkill -f grokcode/proxy.mjs`, then run again.
 - `grok_run` holds 240s; on `{status:"running"}` poll `grok_status` and (when it turns into a question) `grok_answer`.
-- Tool results over 80k chars are truncated before Grok sees them.
+- Tool results over 80k chars are truncated before Grok sees them, with a leading `[truncated:true — …]` line.
