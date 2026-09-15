@@ -1841,6 +1841,16 @@ async function runPageAction(action, args) {
   // grid shows ~0.3-1s after the input event), so a read right after the write
   // sees nothing. Bounded poll; returns at once for a non-autocomplete.
   const AC_PANEL_WAIT_MS = 1200;
+  // A value write fires input/change, but many autocompletes filter on the KEY
+  // events a person's typing produces (the W3C APG combobox opens on keyup,
+  // jQuery UI schedules its search on keydown). Send the last character's
+  // keydown/keyup after the write (Backspace for a cleared field) — no text is
+  // inserted by synthetic key events.
+  const typedKeys = (el, value) => {
+    const v = String(value ?? '');
+    const k = v ? v[v.length - 1] : 'Backspace';
+    try { const o = keyInit(k); el.dispatchEvent(new KeyboardEvent('keydown', o)); el.dispatchEvent(new KeyboardEvent('keyup', o)); } catch {}
+  };
   const awaitSuggestions = async (el) => {
     if (!isAutocomplete(el)) return null;
     const tEnd = nowMs() + AC_PANEL_WAIT_MS;
@@ -1855,9 +1865,11 @@ async function runPageAction(action, args) {
   // settled when the app took it: a suggestion pick / Enter that closed the
   // list, the live value changed from what was typed, or the URL moved.
   const acField = (el) => { const f = describeField(el); return f.label || f.ariaLabel || f.placeholder || f.name || f.id || 'the autocomplete input'; };
+  // "The URL moved" = origin + path; query-only replaceState noise (Google's ?zx=) is not a commit.
+  const pagePath = () => location.origin + location.pathname;
   const acRecord = (el, value) => {
     const list = (INDEX.acPending || []).filter(p => p.el !== el && p.el.isConnected).slice(-3);
-    list.push({ el, value: String(value), url: location.href, committed: false });
+    list.push({ el, value: String(value), url: pagePath(), committed: false });
     INDEX.acPending = list;
   };
   const acSettle = (el) => { for (const p of INDEX.acPending || []) if (p.el === el) p.committed = true; };
@@ -1873,7 +1885,7 @@ async function runPageAction(action, args) {
       const sug = openSuggestions(el);
       if (sug) return { hint: `${name} has an open suggestion list; submit it (Enter or pick a suggestion) before waiting`, field: acField(el), suggestions: sug.suggestions };
       const p = (INDEX.acPending || []).find(q => q.el === el);
-      if (p && !p.committed && liveValueOf(el) === p.value && location.href === p.url) return { hint: `${name} has an uncommitted value; submit it (Enter or pick a suggestion) before waiting`, field: acField(el) };
+      if (p && !p.committed && liveValueOf(el) === p.value && pagePath() === p.url) return { hint: `${name} has an uncommitted value; submit it (Enter or pick a suggestion) before waiting`, field: acField(el) };
     }
     return null;
   };
@@ -3147,7 +3159,7 @@ async function runPageAction(action, args) {
       // Autocomplete: capture ITS list before the next field's write moves focus
       // (which closes it) — a later field must not hide an earlier uncommitted one.
       let ac = null;
-      if (el && isAutocomplete(el)) { acRecord(el, sp.value); ac = await awaitSuggestions(el); }
+      if (el && isAutocomplete(el)) { typedKeys(el, sp.value); acRecord(el, sp.value); ac = await awaitSuggestions(el); }
       written.set(sp, { el, r, ac });
     }
     // Verified state: each field's LIVE value after the page settled, compared

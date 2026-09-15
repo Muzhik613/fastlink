@@ -55,6 +55,19 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   run — every such run had one.
 - **Status:** committed; `node --test test/*.test.mjs`.
 
+## 2026-09-15 — fast_fill autocomplete follow-up: typing key events after the write; path-only "URL moved"
+- **What:** after writing an autocomplete (`isAutocomplete`), fast_fill dispatches the last
+  character's keydown/keyup (Backspace for a cleared field) before polling for the popup;
+  `INDEX.acPending` compares origin+pathname, not the full URL.
+- **Why:** hvm probe on 7f20f26: the W3C APG combobox filters on `keyup`, so `fast_fill "Ala"`
+  verified but opened nothing (no suggestions, fast_click "Alabama" missed); Google's search page
+  `replaceState`s `?zx=…` after a write, which "settled" the pending record and hid the
+  fast_wait hint.
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** synthetic key events insert no text; a handler that acts on a bare printable
+  keydown would see one extra key.
+- **Status:** committed; live proof on hvm below.
+
 ## 2026-09-15 — fast_fill reports an uncommitted autocomplete (`committed:false` + suggestions), per field; fast_wait timeout names it
 - **What:** one autocomplete path in page.js: `isAutocomplete(el)` (typeable control with
   `role=combobox` on itself or its ARIA-1.1 wrapper, `aria-autocomplete` ≠ none,
