@@ -124,26 +124,28 @@ Tiers: **CORE** visible as-is · **FOLD** merged into a CORE tool (arg shape giv
 
 **Grok sees (phase-3 shape): 11 FastLink + `ask_caller` + `report_done` = 13.**
 
-### 3a. `fast-runner/toolset.json` — phase 2 (works with today's `runner.mjs`, no server change)
+### 3a. `fast-runner/toolset.phase2.json` — phase 2 (IMPLEMENTED; works with today's `runner.mjs`, no server change)
 
-Folds cannot be expressed by `allow/rename/describe`, so phase 2 allows the raw tools that make up the core; the two CDP companions (`fast_click_xy`, `fast_type`) stay visible until the fold lands. 13 FastLink + 2 native = 15.
+Folds cannot be expressed by `allow/rename/describe`, so phase 2 allows the raw tools that make up the core; the CDP companion `fast_click_xy` stays visible until the `fast_click{x,y}` fold lands (`fast_type` is left out: its only use was the react-select fumble [R]). 13 FastLink + 2 native = 15. `toolset.json` (all 45 + the server `instructions` essay) is untouched as the A/B baseline.
+
+Selection is explicit per run, never ambient: `node fast-runner/cli.mjs --toolset phase2 …` · `grok_run{toolset:"phase2"}` · `FASTRUN_TOOLSET=phase2`; a bare name means `fast-runner/toolset.<name>.json`, a path is used as given. Every `runs.jsonl` row carries `toolset`. `node fast-runner/cli.mjs --toolset phase2 --dump-tools` prints exactly what Grok receives without touching a browser.
 
 ```json
 {
   "allow": [
-    "fast_snapshot", "fast_text", "fast_click", "fast_click_xy", "fast_fill", "fast_type",
+    "fast_snapshot", "fast_text", "fast_click", "fast_click_xy", "fast_fill",
     "fast_select_option", "fast_key_press", "fast_scroll", "fast_wait", "fast_tab", "fast_nav",
     "fast_batch", "fast_evaluate"
   ],
   "rename": {},
-  "describe": { "<see §4 — one entry per allowed tool>": "" }
+  "describe": { "<one entry per allowed tool — §4 text, see the file>": "" }
 }
 ```
-(`fast_key_press` not `fast_key` because Grok's 4 key uses had no modifiers and key_press needs no CDP [R]; phase 3 collapses both into `fast_key`.) Also drop `client.instructions` from the runner system prompt in phase 2 — that essay is where "fast_scout can pre-read a page" and "call fast_status first" come from **[D:runner.mjs:218, MCP instructions]** **[J]**.
+(`fast_key_press` not `fast_key` because Grok's 4 key uses had no modifiers and key_press needs no CDP [R]; phase 3 collapses both into `fast_key`.) On any non-default toolset the runner drops `client.instructions` from the system prompt — that essay is where "fast_scout can pre-read a page" and "call fast_status first" come from **[D:runner.mjs buildSystem, MCP instructions]**; the baseline prompt stays byte-identical.
 
-### 3b. `no-cdp` profile (`fast-runner/toolset.no-cdp.json`, selected by `FASTRUN_PROFILE=no-cdp`)
+### 3b. `no-cdp` profile (`fast-runner/toolset.no-cdp.json`, `--toolset no-cdp`; IMPLEMENTED)
 
-For browsers without "Advanced control" (e.g. dad's laptop, tester installs): no tool that attaches `chrome.debugger`.
+For browsers without "Advanced control" (e.g. dad's laptop, tester installs): no tool that attaches `chrome.debugger`. 12 FastLink + 2 native = 14.
 
 ```json
 {
@@ -153,10 +155,10 @@ For browsers without "Advanced control" (e.g. dad's laptop, tester installs): no
     "fast_batch"
   ],
   "rename": {},
-  "describe": { "fast_snapshot": "…never pass fresh:true…", "fast_evaluate": null }
+  "describe": { "<same §4 text; fast_fill_form gets its own line>": "" }
 }
 ```
-Runner change needed: read `toolset.${FASTRUN_PROFILE}.json` when set, else `toolset.json` **[J]**. Post-fold, the same profile is expressed by hiding the CDP args (`x,y`, `focused`, `fresh`, `modifiers`) via `describe`.
+Post-fold, the same profile is expressed by hiding the CDP args (`x,y`, `focused`, `fresh`, `modifiers`) via `describe`.
 
 ## 4. Grok-tuned descriptions (CORE, ≤ 2 sentences)
 

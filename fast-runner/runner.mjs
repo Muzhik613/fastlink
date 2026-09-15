@@ -2,11 +2,11 @@
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createMessage, ensureProxy, MODEL } from './xai.mjs';
 import { connect } from './fastlink-client.mjs';
 
-const TOOLSET = JSON.parse(readFileSync(new URL('./toolset.json', import.meta.url), 'utf8'));
 const STATE_DIR = join(homedir(), '.local', 'state', 'fastrun');
 const RUNS_FILE = join(STATE_DIR, 'runs.jsonl');
 const DEFAULT_BUDGETS = { maxToolCalls: 60, maxWallMs: 600_000, maxConsecutiveErrors: 3 };
@@ -36,18 +36,43 @@ const NATIVE_TOOLS = [
 
 const runs = new Map();
 
-// toolset.json: allow-filter, rename (Grok-facing name -> real name on call), describe overrides.
-function buildTools(mcpTools) {
-  const allowAll = TOOLSET.allow.includes('*');
+// Toolset selection is EXPLICIT per run (--toolset / `toolset` arg / FASTRUN_TOOLSET), never ambient:
+//   unset or "default" -> ./toolset.json           (all tools, the A/B baseline)
+//   a bare name        -> ./toolset.<name>.json    (e.g. "phase2", "no-cdp")
+//   anything with "/" or ending in .json -> that file path
+// Returns { name, file, allow, rename, describe }. `name` is what runs.jsonl records.
+export function loadToolset(spec = process.env.FASTRUN_TOOLSET || 'default') {
+  spec = String(spec || 'default');
+  const isPath = spec.includes('/') || spec.endsWith('.json');
+  let name = isPath ? basename(spec, '.json') : spec;
+  if (name.startsWith('toolset.')) name = name.slice('toolset.'.length);
+  if (name === 'toolset') name = 'default';
+  const file = isPath ? resolve(spec) : fileURLToPath(new URL(name === 'default' ? './toolset.json' : `./toolset.${name}.json`, import.meta.url));
+  let ts;
+  try { ts = JSON.parse(readFileSync(file, 'utf8')); }
+  catch (e) { throw new Error(`toolset "${spec}": cannot read ${file} (${e.message})`); }
+  if (!Array.isArray(ts.allow) || !ts.allow.length) throw new Error(`toolset "${spec}": "allow" must be a non-empty array (use ["*"] for all)`);
+  return { name, file, allow: ts.allow, rename: ts.rename || {}, describe: ts.describe || {} };
+}
+
+// allow-filter, rename (Grok-facing name -> real name on call), describe overrides (keyed by REAL name).
+export function buildTools(mcpTools, toolset) {
+  const allowAll = toolset.allow.includes('*');
   const back = new Map();
   const tools = [];
   for (const t of mcpTools) {
-    if (!allowAll && !TOOLSET.allow.includes(t.name)) continue;
-    const name = TOOLSET.rename[t.name] || t.name;
+    if (!allowAll && !toolset.allow.includes(t.name)) continue;
+    const name = toolset.rename[t.name] || t.name;
     back.set(name, t.name);
-    tools.push({ name, description: TOOLSET.describe[t.name] || t.description || '', input_schema: t.inputSchema || { type: 'object', properties: {} } });
+    tools.push({ name, description: toolset.describe[t.name] || t.description || '', input_schema: t.inputSchema || { type: 'object', properties: {} } });
   }
   return { tools: [...tools, ...NATIVE_TOOLS], back };
+}
+
+// The server's MCP `instructions` essay rides along ONLY on the default toolset, so the baseline
+// stays byte-identical; a triaged toolset carries its own tight descriptions instead.
+export function buildSystem(toolset, instructions) {
+  return toolset.name === 'default' && instructions ? `${SYSTEM}\n\nTool guidance from FastLink:\n${instructions}` : SYSTEM;
 }
 
 function toolResultContent(res) {
@@ -95,7 +120,7 @@ function snapshot(run) {
   const base = { status: run.status, run_id: run.id };
   if (run.status === 'question') return { ...base, question: run.question, so_far: soFar(run) };
   if (run.status === 'running') return base;
-  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL };
+  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name };
 }
 
 function notify(run) {
@@ -111,7 +136,7 @@ function finish(run, status, fields = {}) {
     mkdirSync(STATE_DIR, { recursive: true });
     appendFileSync(RUNS_FILE, JSON.stringify({
       run_id: run.id, task: run.task, transport: run.transport, browser: run.browser, model: MODEL,
-      status, startedAt: new Date(run.startedAt).toISOString(), wallMs: run.endedAt - run.startedAt,
+      toolset: run.toolset.name, status, startedAt: new Date(run.startedAt).toISOString(), wallMs: run.endedAt - run.startedAt,
       toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog,
       result: run.result, evidence: run.evidence, error: run.error, usage: run.usage,
     }) + '\n');
@@ -192,7 +217,10 @@ async function loop(run) {
       const ms = Date.now() - t1;
       const firstText = res?.content?.find(c => c.type === 'text')?.text || '';
       ok = !res?.isError && !isPayloadError(firstText);
-      const preview = firstText.slice(0, 160);
+      // 1200 chars: enough of a result to post-mortem a fumble from runs.jsonl
+      // (an error's candidates / a batch's per-step results); 160 showed only the
+      // first key of a snapshot.
+      const preview = firstText.slice(0, 1200);
       run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview });
       onEvent?.({ type: 'tool', name: real || u.name, args, ms, ok, preview });
       run.consecutiveErrors = ok ? 0 : run.consecutiveErrors + 1;
@@ -207,15 +235,16 @@ async function loop(run) {
   }
 }
 
-export async function runTask({ task, transport = 'relay', browser, budgets = {}, holdMs = 240_000, onEvent } = {}) {
+export async function runTask({ task, transport = 'relay', browser, toolset: toolsetSpec, budgets = {}, holdMs = 240_000, onEvent } = {}) {
   if (!task) throw new Error('task required');
+  const toolset = loadToolset(toolsetSpec); // throws before any connect on a bad name/path
   await ensureProxy();
   const client = await connect({ transport, browser });
-  const { tools, back } = buildTools(await client.listTools());
+  const { tools, back } = buildTools(await client.listTools(), toolset);
   const run = {
-    id: randomBytes(4).toString('hex'), task, transport, browser, status: 'running',
+    id: randomBytes(4).toString('hex'), task, transport, browser, toolset, status: 'running',
     messages: [{ role: 'user', content: [{ type: 'text', text: `TASK: ${task}` }] }],
-    system: client.instructions ? `${SYSTEM}\n\nTool guidance from FastLink:\n${client.instructions}` : SYSTEM,
+    system: buildSystem(toolset, client.instructions),
     tools, back, client, toolLog: [], question: null, waiters: [], pendingAnswer: null,
     budgets: { ...DEFAULT_BUDGETS, ...budgets }, onEvent, startedAt: Date.now(), consecutiveErrors: 0,
     usage: { turns: 0, input: 0, output: 0, cacheRead: 0 }, abort: new AbortController(), cancelled: false, done: false,
