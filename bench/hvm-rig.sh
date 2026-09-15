@@ -4,7 +4,9 @@
 #   Xvfb :98 → Chrome for Testing + unpacked fast-ext → FastLink broker :9876 → grokcode proxy :8791.
 # Chrome for Testing, not /usr/bin/google-chrome: branded Chrome ≥137 silently ignores
 # --load-extension. --no-sandbox because Ubuntu 24.04's AppArmor blocks unprivileged user
-# namespaces (Chrome aborts with "No usable sandbox"). Proxy is on 8791 because 8790 on hvm
+# namespaces (Chrome aborts with "No usable sandbox"). --password-store=basic: without it every
+# SW network path (fetch/WS/broker) is frozen ~24.8s after launch by the os_crypt keyring D-Bus
+# timeout; with it the extension attaches in ~19ms. Proxy is on 8791 because 8790 on hvm
 # belongs to an unrelated service.
 # Everything starts via setsid+nohup so it outlives the ssh session that launched it.
 export GROKCODE_DIR=/home/dev/code/grokcode
@@ -37,7 +39,8 @@ rig_up() {
     RIG_LOG="$RIG_PROFILE/chrome.log" daemon "$RIG_CHROME" \
       --load-extension="$RIG_REPO/fast-ext" --user-data-dir="$RIG_PROFILE" \
       --no-first-run --no-default-browser-check --disable-features=ExtensionsToolbarMenu \
-      --no-sandbox --disable-gpu --disable-dev-shm-usage --window-size=1600,1000 about:blank
+      --no-sandbox --disable-gpu --disable-dev-shm-usage --password-store=basic \
+      --window-size=1600,1000 about:blank
     sleep 6
   fi
   # proof, not assumption: the extension must be on the broker before a cell starts

@@ -680,3 +680,10 @@ accidentally revert them:
 
 > These should be reviewed and committed in logical chunks so the history reflects
 > them; until then, treat them as load-bearing and don't overwrite.
+
+## 2026-09-15 — hvm rig: --password-store=basic
+- **What:** Chrome for Testing on the hvm rig launches with `--password-store=basic`.
+- **Why:** every service-worker network path (fetch, WS, broker dial) was frozen ~24.8s after launch — Chrome's os_crypt keyring D-Bus timeout on a headless box; with the flag the extension attaches in ~19ms. Root-caused by the fixer via CDP; it made the rig look like a slot-busy stall and cost a bench cell.
+- **Files:** `bench/hvm-rig.sh`.
+- **Watch out:** rig-only flag; not a FastLink change. The same symptom will appear in any headless container without a keyring — the box10 image needs the same flag.
+- **Status:** in code / rsynced to hvm; takes effect on the next Chrome restart there.
