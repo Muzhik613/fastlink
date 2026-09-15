@@ -1774,11 +1774,33 @@ async function runPageAction(action, args) {
           let r; try { r = o.getBoundingClientRect(); } catch { continue; }
           if (visible(o, r)) opts.push(o);
         }
-        const target = pickByText(opts, (o) => cleanLabel(o.textContent).toLowerCase(), t);
-        if (target) return target;
+        // Nested rows (a grid row wrapping a row) would double-count: keep outermost.
+        const outer = opts.filter(o => !opts.some(p => p !== o && p.contains(o)));
+        const target = pickByText(outer, (o) => cleanLabel(o.textContent).toLowerCase(), t);
+        if (target) return { el: target, input: el, index: outer.indexOf(target) };
       }
     } catch {}
     return null;
+  };
+  // Commit a suggestion the way a person does: ArrowDown to it, Enter — the
+  // control's own keyboard handler applies it (Maps ignores synthetic mouse
+  // events on its rows). Falls back to pointer/mouse events on the entry when
+  // the list is still open afterwards. Returns what changed.
+  const commitSuggestion = async (sug) => {
+    const { el, input, index } = sug;
+    const before = liveValueOf(input);
+    const key = (target, k) => { const o = { key: k, code: k, bubbles: true, cancelable: true, composed: true }; target.dispatchEvent(new KeyboardEvent('keydown', o)); target.dispatchEvent(new KeyboardEvent('keyup', o)); };
+    for (let i = 0; i <= index; i++) { key(input, 'ArrowDown'); await wait(40); }
+    key(input, 'Enter');
+    await wait(300);
+    if (liveValueOf(input) !== before || !openSuggestions(input)) return { via: 'keyboard' };
+    flashEl(el, 'click');
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      const Ev = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+      el.dispatchEvent(new Ev(type, { bubbles: true, cancelable: true, composed: true, button: 0 }));
+    }
+    await wait(300);
+    return { via: 'mouse' };
   };
   // Bring an offscreen target into view before acting on it (a heavy page's
   // match pool now includes offscreen controls).
@@ -2584,10 +2606,12 @@ async function runPageAction(action, args) {
       const sOpt = suggestionByText(args.text);
       if (sOpt) {
         const urlBefore0 = location.href;
-        flashEl(sOpt, 'click');
-        for (const type of ['mousedown', 'mouseup', 'click']) sOpt.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, button: 0 }));
-        const out0 = await withSnap({ clicked: { tag: sOpt.tagName.toLowerCase(), role: sOpt.getAttribute('role') || undefined, text: cleanLabel(sOpt.textContent).slice(0, 120) }, fromSuggestions: true }, snap);
-        return frontload(out0, { clicked: out0.clicked, fromSuggestions: true, url: location.href, urlChanged: location.href !== urlBefore0, focused: describeEl(document.activeElement) || undefined });
+        const clicked = { tag: sOpt.el.tagName.toLowerCase(), role: sOpt.el.getAttribute('role') || undefined, text: cleanLabel(sOpt.el.textContent).slice(0, 120) };
+        const how = await commitSuggestion(sOpt);
+        const out0 = await withSnap({ clicked, fromSuggestions: true }, snap);
+        const head0 = { clicked, fromSuggestions: true, via: how.via, url: location.href, urlChanged: location.href !== urlBefore0, value: maskIfPassword(sOpt.input, String(liveValueOf(sOpt.input) || '').slice(0, 200)) };
+        const still = openSuggestions(document.activeElement); if (still) Object.assign(head0, still);
+        return frontload(out0, head0);
       }
       if (nowMs() - t0 >= AUTO_WAIT_MS) {
         const act = pageActivity();
