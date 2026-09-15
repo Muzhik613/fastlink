@@ -7,6 +7,13 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-09-15 — status hint: delete the pre-pin-required fallback branch
+- **What:** `statusReport` (fast-dxt/server/handlers.js) keeps only the `pinRequired` hint; the "calls default to <routedInstall>" branch and its `connectedSlots` recomputation are deleted.
+- **Why:** that branch only fired against a broker older than 8498cbe. Both live brokers (WSL, hvm) now run pin-required code, so it was a dormant second source of truth that told the model calls would silently route.
+- **Files:** `fast-dxt/server/handlers.js`.
+- **Watch out:** an MCP server paired with a pre-8498cbe broker now shows no multi-profile hint at all; restart that broker.
+- **Status:** in code / tests pass; takes effect when each MCP server restarts.
+
 ## YYYY-MM-DD — <short title>
 - **What:** the change, in one or two lines.
 - **Why:** the symptom / feedback that prompted it.

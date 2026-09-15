@@ -271,14 +271,10 @@ async function statusReport() {
     hints.push('Extension NOT connected. Open chrome://extensions, find "FastLink", click its "service worker" link to see if it errored.');
   }
   // When >1 slot is connected, tell the LLM how to target a specific one.
-  const connectedSlots = Object.entries(broker?.installs || {}).filter(([, v]) => v?.connected).map(([k]) => k);
   if (selected) {
     hints.push(`This session is PINNED to install "${selected}" (fast_profile). Calls route only there; "auto" releases the pin.`);
-  } else if (broker?.pinRequired || connectedSlots.length > 1) {
-    const slots = (broker?.connectedInstalls && broker.connectedInstalls.length ? broker.connectedInstalls : connectedSlots).join(', ');
-    hints.push(broker?.pinRequired
-      ? `Multiple Chrome profiles connected (${slots}); calls are refused until this session pins one with fast_profile {install:"<label>"|"auto"}.`
-      : `Multiple Chrome profiles connected (${slots}); calls default to "${broker?.routedInstall}". Use fast_profile to target a specific profile.`);
+  } else if (broker?.pinRequired) {
+    hints.push(`Multiple Chrome profiles connected (${broker.connectedInstalls.join(', ')}); calls are refused until this session pins one with fast_profile {install:"<label>"|"auto"}.`);
   }
   if (justReconnected) {
     hints.push(`Broker link reconnected ${Math.round(link.lastDisconnectAgoMs / 1000)}s ago — if the last call failed with "Connection closed", retry it once.`);
