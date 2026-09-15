@@ -72,6 +72,38 @@ export function recordResult(run, text, isError) {
 
 // What a call was aimed at; the same target under another tool still counts as a retry.
 const target = (e) => String(e.args?.text ?? e.args?.field ?? e.args?.match ?? '');
+const stepTarget = (s) => String(s?.args?.text ?? s?.args?.field ?? s?.args?.match ?? '');
+// Failures INSIDE an ok result: each missed field of a fast_fill {fields} and each
+// failed fast_batch step (incl. a batch fill step's missed fields) is its own
+// failed ACTION, target = the field label / step target. Stored on the toolLog
+// entry as `partial` (the result is parsed once, here).
+export function partialFailures(name, args, text) {
+  let o = null;
+  try { o = JSON.parse(text); } catch { return []; }
+  const out = [];
+  const missedFields = (fields) => { if (fields && typeof fields === 'object') for (const [k, v] of Object.entries(fields)) if (v && typeof v.error === 'string') out.push({ name: 'fast_fill', target: k }); };
+  if (name === 'fast_fill') missedFields(o?.fields);
+  if (name === 'fast_batch' && Array.isArray(o?.results)) {
+    const steps = args?.actions || args?.steps || [];
+    for (const r of o.results) {
+      if (!r) continue;
+      const st = steps[r.step] || { name: r.name };
+      if (r.ok === false) out.push({ name: st.name || r.name, target: stepTarget(st) });
+      else if ((st.name || r.name) === 'fast_fill') missedFields(r.result?.fields);
+    }
+  }
+  return out;
+}
+// Targets a SUCCESSFUL call acted on: its own target, every {fields} / selections
+// label and every batch step target — minus what it reported as missed.
+const FILL_SELECT = new Set(['fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_type', 'fast_fill_vision', 'fast_batch']);
+const succeededTargets = (e) => {
+  if (!e.ok) return [];
+  const missed = new Set((e.partial || []).map(p => p.target));
+  const ts = [target(e), ...Object.keys(e.args?.fields || {}), ...Object.keys(e.args?.selections || {})];
+  for (const s of e.args?.actions || e.args?.steps || []) ts.push(stepTarget(s), ...Object.keys(s?.args?.fields || {}), ...Object.keys(s?.args?.selections || {}));
+  return ts.filter(t => t && !missed.has(t));
+};
 const describe = (f) => f.name + (f.target ? ` ${JSON.stringify(f.target)}` : '');
 // Failed calls whose intent never succeeded afterwards (latest attempt per tool+target).
 // A failed ACTION needs a retry on its target (or another tool on it). A failed
@@ -79,13 +111,21 @@ const describe = (f) => f.name + (f.target ? ` ${JSON.stringify(f.target)}` : ''
 // state-changing call followed by a successful read (the wait for "min" that
 // timed out before Enter submitted the route is moot once the routes were read).
 const isReadOrWait = (e) => READ_TOOLS.has(e.name) || e.name === 'fast_wait';
+// A missed {fields} label / failed batch step (entry.partial) is resolved only by a
+// later successful fill/select/batch that acted on that label.
 export function unresolvedFailures(log) {
   const out = new Map();
   log.forEach((e, i) => {
+    const later = log.slice(i + 1);
+    for (const p of e.partial || []) {
+      const retried = later.some(x => FILL_SELECT.has(x.name) && succeededTargets(x).includes(p.target))
+        || (!FILL_SELECT.has(p.name) && later.some(x => x.ok && x.name === p.name && target(x) === p.target));
+      if (!retried) out.set(`${p.name}\0${p.target}`, { name: p.name, target: p.target, t: e.t });
+    }
     if (e.ok) return;
     const tg = target(e);
-    const later = log.slice(i + 1);
-    const retried = later.some(x => x.ok && (x.name === e.name ? target(x) === tg : tg !== '' && target(x) === tg));
+    const retried = later.some(x => x.ok && (x.name === e.name ? target(x) === tg : tg !== '' && target(x) === tg))
+      || (tg !== '' && later.some(x => succeededTargets(x).includes(tg)));
     const overtaken = isReadOrWait(e) && later.some((x, j) => x.ok && isStateChanging(x) && later.slice(j + 1).some(y => y.ok && isRead(y)));
     if (!retried && !overtaken) out.set(`${e.name}\0${tg}`, { name: e.name, target: tg, t: e.t });
   });
@@ -419,7 +459,8 @@ async function loop(run) {
       // (an error's candidates / a batch's per-step results); 160 showed only the
       // first key of a snapshot.
       const preview = firstText.slice(0, 1200);
-      run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview });
+      const partial = ok ? partialFailures(real || u.name, args, firstText) : [];
+      run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview, ...(partial.length ? { partial } : {}) });
       onEvent?.({ type: 'tool', name: real || u.name, args, ms, ok, preview });
       run.consecutiveErrors = ok ? 0 : run.consecutiveErrors + 1;
       results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResultContent(res), ...(ok ? {} : { is_error: true }) });

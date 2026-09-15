@@ -1,7 +1,7 @@
 // node --test — the report_done evidence gate on synthetic tool logs (no browser, no model).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gateProblems, recordResult, unresolvedFailures, claimMismatch, buildSystem, loadToolset } from '../runner.mjs';
+import { gateProblems, recordResult, unresolvedFailures, claimMismatch, partialFailures, buildSystem, loadToolset } from '../runner.mjs';
 
 const LIST = 'https://dash.cloudflare.com/acc/workers-and-pages';
 const WORKER = 'https://dash.cloudflare.com/acc/workers/services/view/fastlink-relay/production';
@@ -11,7 +11,8 @@ function runOf(rows) {
   const run = { toolLog: [], corpus: [], urlTrail: [], gateRefusals: [] };
   rows.forEach(([name, args, text = '{}', isError = false], i) => {
     const ok = recordResult(run, text, isError);
-    run.toolLog.push({ t: i * 1000, name, args, ok, preview: text.slice(0, 100) });
+    const partial = ok ? partialFailures(name, args, text) : [];
+    run.toolLog.push({ t: i * 1000, name, args, ok, preview: text.slice(0, 100), ...(partial.length ? { partial } : {}) });
   });
   return run;
 }
@@ -172,6 +173,45 @@ test('check 4: an action the result claims but no call performed is refused once
   // a batch step named fast_fill_form (rewritten to fast_fill by the batch) backs "Filled"
   assert.deepEqual(claimMismatch([{ name: 'fast_batch', ok: true, args: { actions: [{ name: 'fast_fill_form', args: {} }] } }], 'Filled the form'), []);
   assert.deepEqual(claimMismatch([{ name: 'fast_key_press', ok: true, args: { key: 'Tab' } }], 'Submitted the search').map(c => c.verb), ['submitted']);
+});
+
+test('check 3: each missed field of fast_fill {fields} / failed batch step is its own failed action', () => {
+  // gcpform over relay 19:50:07Z (cc84b8b9): both fills logged ok:true, two labels were never filled, result said "(blank)"
+  const GCP = 'https://console.cloud.google.com/auth/clients/create?project=booming-argon-464605-n5';
+  const miss = (l) => ({ error: `No visible fillable element matching "${l}". Nothing was filled.`, candidates: [{ tag: 'input', type: 'search' }] });
+  const JS = 'Authorized JavaScript origins', RD = 'Authorized redirect URIs';
+  const rows = [
+    ['fast_tab', { url: GCP }, `{"id":1,"url":"${GCP}"}`],
+    ['fast_snapshot', { full: true }, snap(GCP, 'Create OAuth client ID')],
+    ['fast_snapshot', { full: true, screenshot: false }, snap(GCP, 'Application type')],
+    ['fast_fill', { fields: { 'Application type': 'Web application', Name: 'FastLink Bench', [JS]: 'https://bench.example.com', [RD]: 'https://bench.example.com/callback' } },
+      JSON.stringify({ verified: false, filled: 0, missed: 4, total: 4, fields: { 'Application type': miss('Application type'), Name: miss('Name'), [JS]: miss(JS), [RD]: miss(RD) } })],
+    ['fast_text', { selector: 'body' }, txt('Create OAuth client ID\nApplication type')],
+    ['fast_snapshot', { full: true, limit: 100 }, snap(GCP, 'Application type')],
+    ['fast_select_option', { field: 'Application type', option: 'Web application' }, JSON.stringify({ verified: true, picked: 'Web application', snapshot: { url: GCP, content: [] } })],
+    ['fast_fill', { fields: { Name: 'FastLink Bench', [JS]: 'https://bench.example.com', [RD]: 'https://bench.example.com/callback' } },
+      JSON.stringify({ verified: false, filled: 1, missed: 2, total: 3, fields: { Name: { verified: true, value: 'FastLink Bench' }, [JS]: miss(JS), [RD]: miss(RD) } })],
+    ['fast_text', { selector: 'body' }, txt('Application type\nWeb application\nName\nFastLink Bench')],
+  ];
+  const run = runOf(rows);
+  assert.equal(run.toolLog[3].ok, true, 'the fill call itself is ok');
+  assert.deepEqual(run.toolLog[3].partial.map(p => p.target), ['Application type', 'Name', JS, RD]);
+  // Application type ← fast_select_option; Name ← the second fill; the two URI sections never
+  assert.deepEqual(unresolvedFailures(run.toolLog), [{ name: 'fast_fill', target: JS, t: 7000 }, { name: 'fast_fill', target: RD, t: 7000 }]);
+  const p = gateProblems(run, { result: 'Application type=Web application, Name=FastLink Bench, Authorized JavaScript origins=(blank), Authorized redirect URIs=(blank). Did not click Create.', evidence: '"Web application" and "FastLink Bench"' });
+  assert.ok(p.includes(`your last attempt to fast_fill "${JS}" failed and was never retried; retry it or explain in \`result\` why it is not needed`), p.join('\n'));
+  assert.ok(p.includes(`your last attempt to fast_fill "${RD}" failed and was never retried; retry it or explain in \`result\` why it is not needed`));
+  // a later fill of the section (after "Add URI") resolves it; so does a batch step on that label
+  const fixed = runOf([...rows,
+    ['fast_click', { text: 'Add URI' }, '{"clicked":{}}'],
+    ['fast_fill', { match: JS, value: 'https://bench.example.com' }, '{"verified":true}'],
+    ['fast_batch', { actions: [{ name: 'fast_fill', args: { fields: { [RD]: 'https://bench.example.com/callback' } } }] }, JSON.stringify({ summary: '1/1 steps ok', results: [{ step: 0, name: 'fast_fill', ok: true, result: { verified: true, fields: { [RD]: { verified: true } } } }] })],
+  ]);
+  assert.deepEqual(unresolvedFailures(fixed.toolLog), []);
+  // a failed batch step (and a batch fill step's missed field) are partial failures too
+  const batch = partialFailures('fast_batch', { actions: [{ name: 'fast_click', args: { text: 'Add URI' } }, { name: 'fast_fill', args: { fields: { A: 'x', B: 'y' } } }] },
+    JSON.stringify({ results: [{ step: 0, name: 'fast_click', ok: false, error: 'nothing matched' }, { step: 1, name: 'fast_fill', ok: true, result: { fields: { A: { verified: true }, B: miss('B') } } }] }));
+  assert.deepEqual(batch, [{ name: 'fast_click', target: 'Add URI' }, { name: 'fast_fill', target: 'B' }]);
 });
 
 test('system prompt tells the model an unretried failure blocks report_done', () => {

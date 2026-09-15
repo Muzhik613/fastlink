@@ -33,6 +33,22 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast-runner gate: each missed `{fields}` label / failed batch step is its own failed action
+- **What:** `partialFailures(name, args, text)` (runner.mjs): a `fast_fill` result's `fields`
+  entries with `error`, and each `fast_batch` step with `ok:false` (plus a batch fill step's
+  missed fields) → `[{name, target}]`, stored on the toolLog entry as `partial` (the call itself
+  stays `ok:true`). `unresolvedFailures` treats each as a failed ACTION on that label, resolved
+  only by a later successful fill / select / batch that acted on it (`succeededTargets`: own
+  target + `fields` / `selections` keys + batch step targets, minus that call's own misses). A
+  failed single call is now also resolved by a later `{fields}` / batch that filled its target.
+- **Why:** cc84b8b9: two `fast_fill {fields}` calls missed "Authorized JavaScript origins" /
+  "Authorized redirect URIs", both logged ok:true, so the gate never saw them and "(blank)"
+  passed as done.
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/test/gate.test.mjs` (that exact log).
+- **Watch out:** rows written before this change carry no `partial`; replaying them sees only
+  whole-call failures.
+- **Status:** committed; `node --test test/*.test.mjs`.
+
 ## 2026-09-15 — fast_select_option: field resolve text-first (no per-candidate document queries / layout), panel wait probes outside the MutationObserver callback
 - **What:** page.js, generic (no site selectors). (1) `findField`: the one composed-tree walk
   also collects `<label>`s; `for=` text comes from a per-root map built once (module `labelFor`
