@@ -19,6 +19,28 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Select hints skip autocompletes; ARIA select resolves options via aria-controls under a wall clock; page-action deadline
+- **What:** (1) `selectControlOf` (page.js) no longer treats a typeable input inside a
+  `[role=combobox]` wrapper as a select control — Google Maps' search boxes carried
+  `hint: use fast_select_option {field:"sb_ifc50"}` on a VERIFIED fill and 4.3 followed
+  it into a dead end (batch-build iteration 1, mapsdir 4/6 → 3 consecutive errors);
+  a successful `fast_fill` only hints when the written element is a react-select input.
+  (2) `fast_select_option`'s generic ARIA branch resolves options synchronously on every
+  look from the panel named by `aria-controls`/`aria-owns` (on the field, its inner
+  combobox/input or a `[aria-haspopup]` child — mat-select / cfc-select set it), then the
+  overlay sweep, then `INDEX.options`; the budget is WALL CLOCK checked after every wake
+  (a starved 50ms timer on GCP's Angular storm used to run 10–30s past the 3s budget),
+  and a miss reports `elapsedMs`, `panelIds`, `starved:true` + hint. `ariaPanelIds` is a
+  pure module-scope helper unit-tested against a fake DOM (`fast-runner/test/aria-options.test.mjs`
+  slices it out of page.js). (3) `runBridge` (index.js) races `executeScript` against a
+  20s deadline and returns `{error:"page busy", phase, elapsedMs, hint}` — a stuck
+  in-page script no longer outlives the 30s call timeout and queues the next call.
+- **Files:** `fast-ext/src/actions/page.js`, `fast-ext/src/actions/index.js`,
+  `fast-runner/test/aria-options.test.mjs` (new).
+- **Watch out:** the deadline does not stop the in-page script; it only frees the caller.
+  GCP `cfc-select` cannot be verified on hvm (no login) — owner's Chrome cell pending.
+- **Status:** committed; unit tests pass; hvm iteration 2 below.
+
 ## 2026-09-15 — Batching is the default form path: `fast_batch` never aborts + `ifFound`, `fast_fill {fields}` absorbs `fast_fill_form`, `fillable:N` nudge, select-control hints, offscreen matching, `fast_wait` selector / emptyContainer / text+idle
 - **What:**
   1. **`fast_batch`** (new shared `fast-dxt/server/batch.js`, mirrored byte-for-byte at
