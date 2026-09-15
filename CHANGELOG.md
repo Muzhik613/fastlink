@@ -19,6 +19,58 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Extension: verified state on mutating tools, bounded auto-wait on misses, truncation-first, settled snapshots, `fast_key_press` in page.js
+- **What:** `fast-ext/src/actions/page.js` (+ `index.js`, `text.js`; `key.js` deleted):
+  1. **Verified state leads every mutating result.** `fast_fill` → `{ verified, value,
+     filled… }` with the field's LIVE value after the page settled (`reason` when it
+     did not hold; password masked). `fast_fill_form` verifies ALWAYS (the `verify` arg
+     is gone): per-field `value` + `verified`, top-level `verified` + `reverted`.
+     `fast_select_option` → `{ verified, picked, value, field, kind }` where `value` is
+     what the control displays after the pick and `field` (label / aria / name / id /
+     preceding heading) is the dropdown it actually acted on — the react-select.com
+     "field:'Ocean' picked Forest in the wrong select" case is now visible. `fast_click`
+     → `{ clicked, url, urlChanged, dialogOpened|dialogClosed, focused, … }` first.
+  2. **Bounded auto-wait on targets.** `fast_fill`, `fast_select_option` (per field)
+     and `fast_click` re-run the lookup every 150ms for up to 1.5s (`AUTO_WAIT_MS`)
+     before returning a miss; the miss carries `waitedMs`, `settling` (page still
+     mutating / resources still landing, from `pageActivity()`) and the fixer's
+     `candidates` / `hiddenMatches` / `hint`. Nothing is clicked/filled on a miss.
+  3. **Truncation first.** Any capped view now STARTS with `truncated:true`,
+     `dropped:{items,content,offscreen,textTrimmed}` and a `hint` naming the exact
+     call for the rest (`markTruncated`): explicit `fast_snapshot` (was a numeric
+     `truncated` count + `contentTruncated`), the action auto-snapshot (count + byte
+     cap), viewport-only snapshots (`dropped.offscreen` = visible interactive elements
+     outside the viewport, counted in `serializeSnapshot`), and `fast_text` with
+     `maxLen` (`dropped.chars`). `capAutoSnapshot` returns a NEW object — assign it.
+  4. **Settled snapshots.** `withSnap` waits for the DOM to be quiet 150ms (≤1s,
+     `SETTLE_MAX_MS`, `settleDom`) after the rAF before serializing; a page still
+     mutating at the cap is flagged `settling:true` + hint at the top of the result.
+     The observer stamps `INDEX.lastMutMs`; FastLink's own flash chip
+     (`__fastlinkChip`) is neither activity nor indexed (it used to appear as a
+     `{tag:"div",text:"fill"}` content block in every result).
+  5. **`fast_key_press` runs in page.js** (PAGE_ACTIONS; `key.js` deleted): same DOM
+     key events, now on the pinned target tab, returning `target`, `url`/`urlChanged`
+     and a settled auto-snapshot — Enter on Google Maps used to return
+     `{keyDispatched}` and nothing else, so the model reported route options it never
+     saw. A navigating Enter returns `navigated:true` via the existing frame-teardown
+     path.
+  `fast-dxt/server/tools.js` + `fastlink-relay/tools.js` describe all of the above
+  (mirrored; `fast_fill_form.verify` removed from the schema).
+- **Why:** owner's thesis on the grok-4.3 bench (56/70 local, 52/59 hvm): "4.3 can do
+  it, it needs more feedback". Each dropped checkpoint traced to a silent tool result:
+  fill on a not-yet-rendered field, select_option on the wrong select, answering from a
+  capped snapshot, fill 0.8s after a view change, Enter with no read-back.
+- **Files:** `fast-ext/src/actions/page.js`, `fast-ext/src/actions/index.js`,
+  `fast-ext/src/actions/text.js`, `fast-ext/src/actions/key.js` (deleted),
+  `fast-dxt/server/tools.js`, `fastlink-relay/tools.js`.
+- **Watch out:** every action result is ~150ms–1s later than before (settle) — cheaper
+  than a model turn, but pages that never stop mutating (Maps) pay the full 1s and are
+  flagged `settling`. A miss now costs up to 1.5s. Consumers of the old numeric
+  `snapshot.truncated` / `contentTruncated` (none in-repo besides scout's own capping)
+  must read `dropped`. `fast_fill_form` always spends ≤2.5s verifying.
+- **Status:** committed; hvm rig loads the repo copy (bench below); Windows copy NOT
+  synced by this change (other agent owns that sync).
+
 ## 2026-09-15 — Housekeeping: hvm bench branch merged, Windows extension copy synced (reload still manual)
 - **What:** (1) hvm repo (`/home/dev/code/Fastlink`, commits `8eaff09…ba610e0`, bench passes
   1–4 on the rig) merged into WSL main as `fb94fd6` via a `hvm` git remote; both results

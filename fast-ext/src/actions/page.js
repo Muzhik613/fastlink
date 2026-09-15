@@ -377,7 +377,7 @@ const makeContentEntry = (el) => {
 // DIFFERS from the wrapping clickable's text — those are useful to keep
 // anyway (a button labeled "Submit" with inner "submits the form" hint).
 const classifyElement = (el) => {
-  if (!el || el.nodeType !== 1) return null;
+  if (!el || el.nodeType !== 1 || el.__fastlinkChip) return null;
   const tag = el.tagName.toLowerCase();
   if (SKIP_SUBTREE.has(tag)) return null;
   try { if (el.matches && el.matches(SELECTOR)) return 'click'; } catch {}
@@ -697,6 +697,43 @@ const STORM_WINDOW_MS = 1000;
 const STORM_RATE = 1500;   // mutations/sec above which we stop watching live
 const IDLE_MS = 15000;     // disconnect the observer after this much inactivity
 
+// A MutationRecord caused by FastLink's own flash chip (flashEl), not the page.
+const isOwnMutation = (m) => {
+  if (m.type !== 'childList') return !!(m.target && m.target.__fastlinkChip);
+  for (const n of m.addedNodes) if (!n.__fastlinkChip) return false;
+  for (const n of m.removedNodes) if (!n.__fastlinkChip) return false;
+  return true;
+};
+
+// Is the page still changing? True when the observer saw a mutation within
+// ACTIVITY_MS, or a resource finished loading within it (the observer may be
+// off on a storm-tripped page; resource timing still tells).
+const ACTIVITY_MS = 400;
+const pageActivity = () => {
+  const now = nowMs();
+  const sinceMut = INDEX.lastMutMs ? now - INDEX.lastMutMs : Infinity;
+  let sinceNet = Infinity;
+  try {
+    const rs = performance.getEntriesByType('resource');
+    for (let i = rs.length - 1; i >= 0 && i >= rs.length - 40; i--) {
+      const end = rs[i].responseEnd || rs[i].startTime || 0;
+      if (end) sinceNet = Math.min(sinceNet, now - end);
+    }
+  } catch {}
+  return { settling: sinceMut < ACTIVITY_MS || sinceNet < ACTIVITY_MS, sinceMutMs: Math.round(sinceMut), sinceNetMs: Math.round(sinceNet) };
+};
+// Wait until the DOM has been quiet for quietMs (no observer mutations), at
+// most maxMs. { settled, waitedMs }.
+const settleDom = async (maxMs, quietMs = 150) => {
+  const start = nowMs();
+  for (;;) {
+    const sinceMut = INDEX.lastMutMs ? nowMs() - INDEX.lastMutMs : Infinity;
+    if (sinceMut >= quietMs) return { settled: true, waitedMs: Math.round(nowMs() - start) };
+    if (nowMs() - start >= maxMs) return { settled: false, waitedMs: Math.round(nowMs() - start) };
+    await new Promise((r) => setTimeout(r, Math.min(50, Math.max(1, quietMs - sinceMut))));
+  }
+};
+
 const disconnectObserver = (reason) => {
   if (INDEX.observer) { try { INDEX.observer.disconnect(); } catch {} INDEX.observer = null; }
   INDEX.suspended = true;
@@ -709,6 +746,9 @@ const setupObserver = () => {
     const obs = new MutationObserver((muts) => {
       // Storm sampling: count mutations per window; trip the breaker if too hot.
       const t = nowMs();
+      // Activity stamp for settleDom/pageActivity. Our own flash chips are not
+      // page activity, so a batch made only of them leaves the stamp alone.
+      if (!muts.every(isOwnMutation)) INDEX.lastMutMs = t;
       if (t - INDEX.mutWindowStart > STORM_WINDOW_MS) { INDEX.mutWindowStart = t; INDEX.mutCount = 0; }
       INDEX.mutCount += muts.length;
       if (INDEX.mutCount > STORM_RATE) { disconnectObserver('storm'); return; }
@@ -878,6 +918,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
   const content = [];
   let timedOut = false;
   let seen = 0;
+  let offscreenItems = 0;   // visible interactive entries skipped by viewportOnly
   const vh = window.innerHeight, vw = window.innerWidth;
   const detached = [];
   let sliceStart = nowMs();
@@ -910,7 +951,10 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     try { rect = el.getBoundingClientRect(); } catch { continue; }
     if (!visible(el, rect)) continue;
     const isOverlayEl = overlayEls && overlayEls.has(el);
-    if (viewportOnly && !isOverlayEl && (rect.bottom < 0 || rect.top > vh || rect.right < 0 || rect.left > vw)) continue;
+    if (viewportOnly && !isOverlayEl && (rect.bottom < 0 || rect.top > vh || rect.right < 0 || rect.left > vw)) {
+      if (entry.kind === 'click') offscreenItems++;
+      continue;
+    }
     const off = offsetForCached(el);
     const x = Math.round(rect.x + off.ox);
     const y = Math.round(rect.y + off.oy);
@@ -984,6 +1028,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     partial: (indexPartial || INDEX.capped) || undefined,
     capped: INDEX.capped || undefined,
     snapshotTimedOut: timedOut || undefined,
+    offscreenItems: offscreenItems || undefined,
     hint: hint || undefined,
   };
 };
@@ -1017,8 +1062,10 @@ const rankItemScore = (it, vh, vw) => {
   if (it.y > vh * 3) r -= 20;                                // deep long tail (footers)
   return r;
 };
-// Rank → keep top N (in rank order, so interactive/on-screen lead) → set a
-// `truncated` count when items were dropped. Mutates and returns `snap`.
+// Rank → keep top N (in rank order, so interactive/on-screen lead). Dropped
+// counts accumulate in snap.dropped; markTruncated() turns them into the loud
+// leading `truncated:true` block. Mutates and returns `snap`.
+const noteDropped = (snap, key, n) => { if (n > 0) { snap.dropped = snap.dropped || {}; snap.dropped[key] = (snap.dropped[key] || 0) + n; } };
 const capSnapshot = (snap, itemCap, contentCap) => {
   if (!snap || typeof snap !== 'object') return snap;
   const vh = window.innerHeight, vw = window.innerWidth;
@@ -1026,7 +1073,7 @@ const capSnapshot = (snap, itemCap, contentCap) => {
     const ranked = snap.items
       .map((it, idx) => ({ it, idx, s: rankItemScore(it, vh, vw) }))
       .sort((a, b) => (b.s - a.s) || (a.idx - b.idx));
-    snap.truncated = snap.items.length - itemCap;
+    noteDropped(snap, 'items', snap.items.length - itemCap);
     snap.items = ranked.slice(0, itemCap).map((x) => x.it);
     snap.count = snap.items.length;
   }
@@ -1034,12 +1081,41 @@ const capSnapshot = (snap, itemCap, contentCap) => {
     const ranked = snap.content
       .map((c, idx) => ({ c, idx, s: (c.y >= 0 && c.y <= vh ? 100 : 0) - (c.y > vh * 3 ? 20 : 0) }))
       .sort((a, b) => (b.s - a.s) || (a.idx - b.idx));
-    snap.contentTruncated = snap.content.length - contentCap;
+    noteDropped(snap, 'content', snap.content.length - contentCap);
     snap.content = ranked.slice(0, contentCap).map((x) => x.c);
     snap.contentCount = snap.content.length;
   }
   return snap;
 };
+
+// Turn accumulated loss (count cap, byte cap, viewport-only skips) into the
+// FIRST fields of the snapshot: { truncated:true, dropped:{items,content,
+// offscreen,textTrimmed}, hint } — a model reading top-down cannot miss that
+// the view is partial, and the hint names the exact call that returns the rest.
+// Returns a NEW object (key order matters), or `snap` untouched when complete.
+const markTruncated = (snap, hintFor) => {
+  if (!snap || typeof snap !== 'object') return snap;
+  const d = snap.dropped || {};
+  const off = snap.offscreenItems || 0;
+  delete snap.dropped; delete snap.offscreenItems;
+  if (!(d.items || d.content || d.textTrimmed || off)) return snap;
+  const dropped = { ...d };
+  if (off) dropped.offscreen = off;
+  const parts = [hintFor(dropped)];
+  if (snap.hint) { parts.push(snap.hint); delete snap.hint; }
+  return { truncated: true, dropped, hint: parts.join(' | '), ...snap };
+};
+const offscreenHint = (d) => d.offscreen
+  ? `${d.offscreen} interactive element(s) are outside the viewport (below/above the fold) and NOT listed — call fast_snapshot without viewport:true, or fast_scroll, before concluding a control is absent`
+  : '';
+const explicitHint = (d) => [
+  (d.items || d.content) ? `capped view: ${d.items || 0} item(s) / ${d.content || 0} content block(s) not shown — call fast_snapshot with full:true for everything, or limit:N for more items` : '',
+  offscreenHint(d),
+].filter(Boolean).join('; ');
+const autoHint = (d) => [
+  (d.items || d.content || d.textTrimmed) ? `auto-snapshot preview capped (~${AUTO_SNAP_MAX_CHARS} chars): ${d.items || 0} item(s) / ${d.content || 0} content block(s) not shown${d.textTrimmed ? ', long texts trimmed' : ''} — pass full:true or limit:N on the action, or call fast_snapshot (full:true) before reporting` : '',
+  offscreenHint(d),
+].filter(Boolean).join('; ');
 
 // Byte cap for the AUTO-snapshot attached to action results (fast_click / fill /
 // wait / select …). The count caps above leave click results at ~37k chars on
@@ -1048,47 +1124,51 @@ const capSnapshot = (snap, itemCap, contentCap) => {
 // Order of loss: content text trimmed → content blocks dropped from the (ranked)
 // tail → item text trimmed → items dropped from the tail, never below
 // AUTO_MIN_ITEMS. Item ids (`i`) and geometry are never touched, so a caller can
-// still act on anything listed. Sets `truncated:true` + `dropped` counts + a hint
-// pointing at `full:true` / `limit:N` on the action, or fast_snapshot.
+// still act on anything listed. Loss is recorded in snap.dropped for
+// markTruncated().
 const AUTO_SNAP_MAX_CHARS = 8000;
 const AUTO_MIN_ITEMS      = 8;
+const SETTLE_MAX_MS       = 1000;  // post-action DOM-quiet wait before the auto-snapshot
+const AUTO_WAIT_MS        = 1500;  // fill/click/select keep looking for a missing target this long
 const AUTO_TEXT_TRIM      = 100;   // content block text after the first trim pass
 const AUTO_ITEM_TEXT_TRIM = 60;    // item text/innerText after the item trim pass
 const byteCapSnapshot = (snap, max = AUTO_SNAP_MAX_CHARS) => {
   if (!snap || typeof snap !== 'object' || !Array.isArray(snap.items)) return snap;
   const size = () => { try { return JSON.stringify(snap).length; } catch { return 0; } };
-  const dropped = { content: 0, items: 0 };
-  let trimmed = false;
+  let trimmed = false, droppedContent = 0, droppedItems = 0;
   if (size() > max && Array.isArray(snap.content)) {
     for (const c of snap.content) if (c.text && c.text.length > AUTO_TEXT_TRIM) { c.text = c.text.slice(0, AUTO_TEXT_TRIM) + '…'; trimmed = true; }
-    while (snap.content.length && size() > max) { snap.content.pop(); dropped.content++; }
+    while (snap.content.length && size() > max) { snap.content.pop(); droppedContent++; }
   }
   if (size() > max) {
     for (const it of snap.items) {
       if (it.text && it.text.length > AUTO_ITEM_TEXT_TRIM) { it.text = it.text.slice(0, AUTO_ITEM_TEXT_TRIM) + '…'; trimmed = true; }
       if (it.innerText && it.innerText.length > AUTO_ITEM_TEXT_TRIM) { it.innerText = it.innerText.slice(0, AUTO_ITEM_TEXT_TRIM) + '…'; trimmed = true; }
     }
-    while (snap.items.length > AUTO_MIN_ITEMS && size() > max) { snap.items.pop(); dropped.items++; }
+    while (snap.items.length > AUTO_MIN_ITEMS && size() > max) { snap.items.pop(); droppedItems++; }
   }
-  const countCapped = typeof snap.truncated === 'number' ? snap.truncated : 0;
-  const contentCountCapped = typeof snap.contentTruncated === 'number' ? snap.contentTruncated : 0;
-  if (dropped.content || dropped.items || trimmed || countCapped || contentCountCapped) {
-    snap.count = snap.items.length;
-    if (Array.isArray(snap.content)) snap.contentCount = snap.content.length;
-    snap.truncated = true;
-    snap.dropped = { items: dropped.items + countCapped, content: dropped.content + contentCountCapped, textTrimmed: trimmed };
-    delete snap.contentTruncated;
-    snap.hint = `auto-snapshot preview capped (~${max} chars): pass full:true or limit:N on the action for more, or call fast_snapshot`;
-  }
+  noteDropped(snap, 'items', droppedItems);
+  noteDropped(snap, 'content', droppedContent);
+  if (trimmed) { snap.dropped = snap.dropped || {}; snap.dropped.textTrimmed = true; }
+  snap.count = snap.items.length;
+  if (Array.isArray(snap.content)) snap.contentCount = snap.content.length;
   return snap;
 };
-// The action-result preview: count caps, then the byte cap. `full:true` on the
-// action returns the whole serialize uncapped; `limit:N` overrides the item cap.
+// The action-result preview: count caps, then the byte cap, then the leading
+// truncated block. `full:true` on the action returns the whole serialize
+// uncapped (only viewport-only loss can remain); `limit:N` overrides the item cap.
+// Returns a possibly NEW object — always assign the return value.
 const capAutoSnapshot = (snap, args) => {
-  if (args && (args.full === true || args.full === 'true')) return snap;
+  if (args && (args.full === true || args.full === 'true')) return markTruncated(snap, autoHint);
   const itemCap = (args && typeof args.limit === 'number' && args.limit >= 0) ? args.limit : AUTO_ITEM_CAP;
   capSnapshot(snap, itemCap, AUTO_CONTENT_CAP);
-  return byteCapSnapshot(snap);
+  return markTruncated(byteCapSnapshot(snap), autoHint);
+};
+// Rebuild `obj` with `head`'s keys first (JSON key order = what the model reads first).
+const frontload = (obj, head) => {
+  const out = { ...head };
+  for (const k of Object.keys(obj)) if (!(k in head)) out[k] = obj[k];
+  return out;
 };
 
 // Look up an element by snapshot id. Stable for the page's lifetime.
@@ -1210,6 +1290,10 @@ async function runPageAction(action, args) {
       // hidden tab whose rAF never fires falls through instead of hanging.
       new Promise(r => setTimeout(r, 250)),
     ]);
+    // Then let the re-render the action triggered finish (DOM quiet for 150ms,
+    // ≤ SETTLE_MAX_MS) so the snapshot shows the result of the action, not the
+    // frame before it. A page still mutating at the cap is flagged `settling`.
+    const settle = await settleDom(SETTLE_MAX_MS);
     // FRESH POST-ACTION SNAPSHOT (field-feedback #1): re-walk the DOM AFTER the
     // action settles so the returned snapshot reflects what the action DID — a
     // dropdown it opened, a framework re-render, a revealed panel — instead of the
@@ -1255,8 +1339,7 @@ async function runPageAction(action, args) {
       if ((!snap || !Array.isArray(snap.items) || snap.items.length === 0) && hasPre) {
         attachStale(result);
       } else {
-        capAutoSnapshot(snap, args);
-        result.snapshot = snap;
+        result.snapshot = capAutoSnapshot(snap, args);
         result.snapshotFresh = true; // post-action capture: reflects what the action did
         if (snap && (snap.snapshotTimedOut || snap.partial || snap.capped)) {
           result.snapshotPartial = true;
@@ -1279,7 +1362,50 @@ async function runPageAction(action, args) {
     if (result.willNavigate) {
       result.snapshotNote = 'navigation triggered — this snapshot may be the pre-navigation page; call fast_snapshot after the new page loads';
     }
+    if (!settle.settled || pageActivity().settling) {
+      return frontload(result, { settling: true, hint: `page was still changing when this snapshot was taken (waited ${settle.waitedMs}ms) — the view below may be incomplete; fast_wait for text that identifies the finished state before reading or reporting` });
+    }
     return result;
+  };
+
+  // Compact description of one element for result heads (focused element,
+  // key target): tag + the names a model can act on + the live value.
+  const describeEl = (el) => {
+    if (!el || el.nodeType !== 1) return null;
+    const o = { tag: el.tagName.toLowerCase() };
+    try {
+      if (el === document.body) return o;
+      indexElement(el);
+      const e = INDEX.byEl.get(el);
+      if (e) {
+        if (e.role) o.role = e.role;
+        if (e.label) o.label = e.label;
+        if (e.ariaLabel) o.ariaLabel = e.ariaLabel;
+        if (e.placeholder) o.placeholder = e.placeholder;
+        if (e.name) o.name = e.name;
+        if (e.live) { refreshLiveEntry(el, e); o.value = e.value == null ? '' : String(e.value).slice(0, 200); }
+        else if (e.text) o.text = e.text.slice(0, 80);
+      }
+      if (el.id) o.id = el.id;
+    } catch {}
+    return o;
+  };
+  // Live value of a filled control, as the page holds it now (password masked).
+  const liveValueOf = (el) => {
+    if (!el) return null;
+    if (el.tagName === 'SELECT') { const o = el.selectedOptions ? el.selectedOptions[0] : el.options[el.selectedIndex]; return o ? cleanLabel(o.text || o.value || '') : ''; }
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el.value == null ? '' : String(el.value);
+    return (el.innerText || el.textContent || '');
+  };
+  const maskIfPassword = (el, v) => (el && el.type === 'password') ? '•'.repeat(Math.min(String(v).length, 32)) : v;
+  // Visible open dialogs — for fast_click's dialogOpened/dialogClosed signal.
+  const countDialogs = () => {
+    let n = 0;
+    try {
+      const els = document.querySelectorAll('dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]');
+      for (let i = 0; i < els.length && i < 50; i++) { let r; try { r = els[i].getBoundingClientRect(); } catch { continue; } if (visible(els[i], r)) n++; }
+    } catch {}
+    return n;
   };
 
   const flashEl = (el, label) => {
@@ -1296,6 +1422,7 @@ async function runPageAction(action, args) {
         // rect needs the frame offset added to land in outer-page coords.
         const { ox, oy } = offsetFor(el);
         tagEl = document.createElement('div');
+        tagEl.__fastlinkChip = true;   // never indexed, never counted as page activity
         tagEl.textContent = label || '';
         tagEl.style.cssText = `position:fixed;left:${Math.max(0,r.x+ox)}px;top:${Math.max(0,r.y+oy-18)}px;background:#5cc8ff;color:#0b0d12;font:11px/1 -apple-system,BlinkMacSystemFont,sans-serif;font-weight:600;padding:2px 5px;border-radius:4px;z-index:2147483647;pointer-events:none;`;
         document.documentElement.appendChild(tagEl);
@@ -1619,10 +1746,26 @@ async function runPageAction(action, args) {
   if (action === 'fast_snapshot') {
     const snap = await serializeSnapshot(!!args.viewport, { overlay: !!args.overlay });
     // full:true → the complete, uncapped set. Otherwise rank + cap (interactive /
-    // on-screen first); `limit` overrides the default item cap.
-    if (args.full) return snap;
+    // on-screen first); `limit` overrides the default item cap. Any loss (cap or
+    // viewport-only skips) leads the result as truncated:true + dropped + hint.
+    if (args.full) return markTruncated(snap, explicitHint);
     const itemCap = (typeof args.limit === 'number' && args.limit >= 0) ? args.limit : ITEM_CAP_DEFAULT;
-    return capSnapshot(snap, itemCap, CONTENT_CAP_DEFAULT);
+    return markTruncated(capSnapshot(snap, itemCap, CONTENT_CAP_DEFAULT), explicitHint);
+  }
+
+  if (action === 'fast_key_press') {
+    // Untrusted DOM key events on the focused element (a real chord is fast_key).
+    // Returns what the key did: target, url change and a settled snapshot.
+    const key = args.key;
+    if (!key) return { error: 'key required' };
+    const el = document.activeElement || document.body;
+    const urlBefore = location.href;
+    const opts = { key, code: key, bubbles: true, cancelable: true, composed: true };
+    el.dispatchEvent(new KeyboardEvent('keydown', opts));
+    el.dispatchEvent(new KeyboardEvent('keypress', opts));
+    el.dispatchEvent(new KeyboardEvent('keyup', opts));
+    const out = await withSnap({ keyDispatched: key });
+    return frontload(out, { keyDispatched: key, target: describeEl(el), url: location.href, urlChanged: location.href !== urlBefore });
   }
 
   if (action === 'fast_wait') {
@@ -1808,7 +1951,7 @@ async function runPageAction(action, args) {
               if (txt) headings.push(txt);
             }
           } catch {}
-          return resolve({ error: `Timed out waiting for "${args.text}"`, headings });
+          return resolve({ error: `Timed out waiting for "${args.text}"`, ...pageActivity(), headings });
         }
         setTimeout(poll, 150);
       };
@@ -1891,28 +2034,78 @@ async function runPageAction(action, args) {
 
     const optText = (o) => (o.textContent || '').trim().toLowerCase();
 
+    // Which dropdown a pick acted on — label / aria / name / id / the heading
+    // above it — so a pick keyed on an ambiguous name ("Ocean" = a VALUE shown by
+    // a different select) is visibly attributed, never silent.
+    const describeField = (el) => {
+      const o = { tag: el.tagName.toLowerCase() };
+      try {
+        const role = el.getAttribute('role'); if (role) o.role = role;
+        const lbl = labelFor(el) || containerLabel(el); if (lbl) o.label = lbl.slice(0, 120);
+        const al = el.getAttribute('aria-label'); if (al) o.ariaLabel = al.slice(0, 120);
+        const ph = el.getAttribute('placeholder'); if (ph) o.placeholder = ph;
+        const nm = el.getAttribute('name'); if (nm) o.name = nm;
+        if (el.id) o.id = el.id;
+        const hs = document.querySelectorAll(SECTION_ANCHORS);
+        for (let i = hs.length - 1; i >= 0; i--) { if (follows(hs[i], el)) { const h = cleanLabel(hs[i].textContent).slice(0, 80); if (h) o.section = h; break; } }
+      } catch {}
+      return o;
+    };
+    // What the control DISPLAYS after the pick — the read-back that `verified`
+    // compares against `picked`.
+    const readShown = (el, kind, ctrl) => {
+      try {
+        if (kind === 'native-select') { const o = el.selectedOptions ? el.selectedOptions[0] : el.options[el.selectedIndex]; return o ? cleanLabel(o.text || o.value || '') : ''; }
+        if (kind === 'react-select' && ctrl) {
+          const vals = Array.from(ctrl.querySelectorAll('[class*="singleValue"],[class*="single-value"],[class*="multiValue__label"],[class*="multi-value__label"]'))
+            .map(v => cleanLabel(v.textContent)).filter(Boolean);
+          if (vals.length) return vals.join(', ');
+          return cleanLabel(ctrl.textContent).slice(0, 200);
+        }
+        if (el.value != null && String(el.value)) return String(el.value).slice(0, 200);
+        const ad = el.getAttribute && el.getAttribute('aria-activedescendant');
+        const adEl = ad ? lookupId(el, ad) : null;
+        if (adEl) return cleanLabel(adEl.textContent).slice(0, 200);
+        return cleanLabel(el.textContent).slice(0, 200);
+      } catch { return ''; }
+    };
+    const withReadback = async (res, el, ctrl) => {
+      await settleDom(SETTLE_MAX_MS);
+      const value = readShown(el, res.kind, ctrl);
+      const verified = !!value && value.toLowerCase().includes(String(res.picked).toLowerCase());
+      const head = { verified, picked: res.picked, value, field: describeField(el) };
+      if (!verified) head.reason = `the dropdown now shows ${JSON.stringify(value)}, not "${res.picked}" — the pick did not take (or landed on another control: see field); do not report it as selected`;
+      return frontload(res, head);
+    };
+
     // Set ONE dropdown. Returns a plain result object (no snapshot) so it can be
-    // looped for batch mode. Shapes mirror the original single-call returns:
-    // success { picked, kind }, miss { error, ... }. Shared by both forms.
+    // looped for batch mode. Success { verified, picked, value, field, kind },
+    // miss { error, ... }. Shared by both forms. The field lookup is retried
+    // until AUTO_WAIT_MS so a control still mounting is not a false miss.
     const setOne = async (fieldRaw, optionRaw) => {
       const fieldLo = String(fieldRaw == null ? '' : fieldRaw).toLowerCase();
       const optionText = String(optionRaw == null ? '' : optionRaw);
       if (!fieldLo || !optionText) return { error: 'field and option required' };
 
-      const field = findField(fieldRaw, fieldLo);
-      if (!field) return { error: `field "${fieldRaw}" not found — no dropdown/combobox/select carries that label, aria-label, placeholder, name, id, or titled section. Nothing was changed. Retry with one of the names in \`candidates\`.`, candidates: dropdownCandidates() };
+      const t0 = nowMs();
+      let field = findField(fieldRaw, fieldLo);
+      while (!field && nowMs() - t0 < AUTO_WAIT_MS) { await wait(150); field = findField(fieldRaw, fieldLo); }
+      if (!field) {
+        const act = pageActivity();
+        return { error: `field "${fieldRaw}" not found — no dropdown/combobox/select carries that label, aria-label, placeholder, name, id, or titled section. Nothing was changed. Retry with one of the names in \`candidates\`.`, waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing — the control may not be rendered yet: fast_wait for text that identifies its view, then retry' } : {}), candidates: dropdownCandidates() };
+      }
 
       if (field.tagName === 'SELECT') {
         const all = Array.from(field.options);
         const target = pickByText(all, o => (o.text || '').trim().toLowerCase(), optionText)
                     || all.find(o => (o.value || '').toLowerCase() === optionText.toLowerCase());
-        if (!target) return { error: 'option not found in <select>', available: all.map(o => o.text) };
+        if (!target) return { error: 'option not found in <select>', field: describeField(field), available: all.map(o => o.text) };
         field.value = target.value;
         // composed:true so a validator listening OUTSIDE the select's shadow root
         // (web-component / Angular-Material composite control) revalidates — a
         // non-composed change does not cross the shadow boundary (GitHub #1).
         field.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-        return { picked: target.text, kind: 'native-select' };
+        return withReadback({ picked: target.text, kind: 'native-select' }, field);
       }
 
       // react-select detection must be CLASS-PREFIX-AGNOSTIC. The classNamePrefix
@@ -1975,13 +2168,13 @@ async function runPageAction(action, args) {
         }
         const target = pickByText(opts, optText, optionText);
         if (!target) {
-          return { error: 'no matching option in react-select', tried: optionText, kind: 'react-select', instance: instId || undefined, available: opts.slice(0, 10).map(o => (o.textContent || '').trim()) };
+          return { error: 'no matching option in react-select', tried: optionText, kind: 'react-select', field: describeField(field), instance: instId || undefined, available: opts.slice(0, 10).map(o => (o.textContent || '').trim()) };
         }
         target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
         target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
         target.click();
         await wait(250);
-        return { picked: (target.textContent || '').trim(), kind: 'react-select' };
+        return withReadback({ picked: (target.textContent || '').trim(), kind: 'react-select' }, field, ctrl);
       }
 
       // Generic ARIA listbox / menu. Index-driven: open the field, then poll
@@ -2024,7 +2217,7 @@ async function runPageAction(action, args) {
       }
       if (target) {
         target.click();
-        return { picked: (target.textContent || '').trim(), kind: 'aria-listbox' };
+        return withReadback({ picked: (target.textContent || '').trim(), kind: 'aria-listbox' }, field);
       }
       // Build a small `available` list from the options side-set so Claude
       // has something to work with on a miss.
@@ -2035,7 +2228,7 @@ async function runPageAction(action, args) {
         if (entry) available.push((entry.text || '').trim());
         if (available.length >= 10) break;
       }
-      return { error: 'no matching option in listbox / no listbox detected', tried: optionText, available };
+      return { error: 'no matching option in listbox / no listbox detected', tried: optionText, field: describeField(field), available };
     };
 
     // BATCH mode: a { field: option } map sets many dropdowns in one call —
@@ -2136,42 +2329,53 @@ async function runPageAction(action, args) {
   }
 
   if (action === 'fast_click') {
-    const snap = await serializeSnapshot(false);
-    // Filter by role/tag BEFORE ranking. Previously the wrong-TYPE top text match
-    // won the slot and the post-rank filter then emptied the list (e.g. a plain
-    // <a> "External" beating the radio, then role="radio" dropping the <a> →
-    // 0 results). When neither is given, matchScore's control-preference biases
-    // toward real controls over generic links/text.
-    let pool = snap.items;
-    if (args.role) {
-      const wantRole = String(args.role).toLowerCase();
-      pool = pool.filter(m => {
-        const explicit = (m.role || '').toLowerCase();
-        if (explicit === wantRole) return true;
-        return implicitRoleOf(m.tag, m.type) === wantRole;
-      });
-    }
-    if (args.tag) {
-      const wantTag = String(args.tag).toLowerCase();
-      pool = pool.filter(m => m.tag === wantTag);
-    }
-    let matches = matchItems(pool, args.text);
-    // Prefer an ancestor control over a matched descendant / label-wrapped link
-    // competing for the same text (radio named by its <label>; checkbox beside
-    // "I agree to the <a>Policy</a>").
-    matches = dropRedundantDescendantLinks(matches);
-    if (matches.length === 0) {
-      const preFilter = matchItems(snap.items, args.text);
-      if (preFilter.length > 0 && (args.role || args.tag)) {
-        const qual = [];
-        if (args.role) qual.push(`role="${args.role}"`);
-        if (args.tag) qual.push(`tag="${args.tag}"`);
-        return {
-          error: `Found ${preFilter.length} match(es) for "${args.text}" but none satisfied ${qual.join(' and ')}.`,
-          available: preFilter.slice(0, 8).map(m => ({ tag: m.tag, role: m.role, text: m.text, label: m.label })),
-        };
+    // Target lookup, retried until AUTO_WAIT_MS (a control still mounting after
+    // a view change is not a miss yet). A miss after the wait is real.
+    const t0 = nowMs();
+    let snap, matches;
+    for (;;) {
+      snap = await serializeSnapshot(false);
+      // Filter by role/tag BEFORE ranking. Previously the wrong-TYPE top text match
+      // won the slot and the post-rank filter then emptied the list (e.g. a plain
+      // <a> "External" beating the radio, then role="radio" dropping the <a> →
+      // 0 results). When neither is given, matchScore's control-preference biases
+      // toward real controls over generic links/text.
+      let pool = snap.items;
+      if (args.role) {
+        const wantRole = String(args.role).toLowerCase();
+        pool = pool.filter(m => {
+          const explicit = (m.role || '').toLowerCase();
+          if (explicit === wantRole) return true;
+          return implicitRoleOf(m.tag, m.type) === wantRole;
+        });
       }
-      return { error: `No element matching "${args.text}"`, diagnostics: diagnoseNoMatch(args.text) };
+      if (args.tag) {
+        const wantTag = String(args.tag).toLowerCase();
+        pool = pool.filter(m => m.tag === wantTag);
+      }
+      matches = matchItems(pool, args.text);
+      // Prefer an ancestor control over a matched descendant / label-wrapped link
+      // competing for the same text (radio named by its <label>; checkbox beside
+      // "I agree to the <a>Policy</a>").
+      matches = dropRedundantDescendantLinks(matches);
+      if (matches.length) break;
+      if (nowMs() - t0 >= AUTO_WAIT_MS) {
+        const act = pageActivity();
+        const tail = { waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing when this gave up — the element may not be rendered yet: fast_wait for text that identifies its view, then click again' } : {}) };
+        const preFilter = matchItems(snap.items, args.text);
+        if (preFilter.length > 0 && (args.role || args.tag)) {
+          const qual = [];
+          if (args.role) qual.push(`role="${args.role}"`);
+          if (args.tag) qual.push(`tag="${args.tag}"`);
+          return {
+            error: `Found ${preFilter.length} match(es) for "${args.text}" but none satisfied ${qual.join(' and ')}. Nothing was clicked — retry with one of \`available\` (drop the role/tag or use its text).`,
+            ...tail,
+            available: preFilter.slice(0, 8).map(m => ({ tag: m.tag, role: m.role, text: m.text, label: m.label })),
+          };
+        }
+        return { error: `No element matching "${args.text}". Nothing was clicked.`, ...tail, diagnostics: diagnoseNoMatch(args.text) };
+      }
+      await wait(150);
     }
     // index disambiguation: when an explicit index is given, address matches in
     // STABLE DOM order (document position), not rank order — rank order reshuffles
@@ -2206,9 +2410,20 @@ async function runPageAction(action, args) {
       return !!form && form.target !== '_blank';
     })();
     const willNavigate = linkNav || formSubmitNav;
+    const urlBefore = location.href;
+    const dialogsBefore = countDialogs();
     flashEl(el, 'click');
     el.click();
-    return withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
+    const out = await withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
+    // What the click DID leads the result: where the page is now, whether the URL
+    // moved, whether a dialog opened/closed, and what holds focus.
+    const head = { clicked: item, url: location.href, urlChanged: location.href !== urlBefore };
+    const dNow = countDialogs();
+    if (dNow > dialogsBefore) head.dialogOpened = true;
+    else if (dNow < dialogsBefore) head.dialogClosed = true;
+    const focused = describeEl(document.activeElement);
+    if (focused && focused.tag !== 'body') head.focused = focused;
+    return frontload(out, head);
   }
 
   if (action === 'fast_scroll') {
@@ -2319,27 +2534,42 @@ async function runPageAction(action, args) {
 
   if (action === 'fast_fill') {
     const m = (args.match || '').toLowerCase();
-    const snap = await serializeSnapshot(false);
-    let pool = snap.items.filter(it => isFillable(it));
-    // Optional section scoping (`section`, or its alias `near`): restrict to the
-    // fields inside that titled group. An unresolvable section is a HARD ERROR —
-    // it must never degrade into a page-wide match, which used to overwrite the
-    // first same-labelled field in a DIFFERENT section and report success.
     const sectionArg = String(args.section ?? args.near ?? '').trim();
-    if (sectionArg) {
-      const scoped = applySectionScope(sectionArg);
-      if (scoped.error) return scoped;
-      pool = scoped.pool;   // REPLACES the snapshot pool — one source of candidates
-    }
-    // Prefer an EXACT field-label/name match over a loose substring, so "URIs 1"
-    // doesn't grab "URIs 10" / a sibling section's "URIs". Substring is the
-    // fallback when nothing matches exactly.
-    const exact = pool.filter(it => fieldMatchesExact(it, m));
-    const ranked = exact.length ? exact : pool.filter(it => fieldMatchesText(it, m));
-    if (!ranked.length) {
-      return sectionArg
-        ? { error: `No fillable element matching "${args.match}" inside section "${sectionArg}" — the section resolved but none of its ${pool.length} fillable field(s) carry that label. Nothing was filled.`, fieldsInSection: pool.slice(0, 12).map(fieldBrief) }
-        : { error: `No visible fillable element matching "${args.match}". Nothing was filled.`, ...fillMissReport(m, pool) };
+    // Target lookup, retried until AUTO_WAIT_MS: a field that mounts right after
+    // a view change (Maps' directions panel 0.8s after "Directions") must not
+    // miss just because the call landed first. A miss after the wait is real.
+    const t0 = nowMs();
+    let snap, pool, ranked, miss;
+    for (;;) {
+      snap = await serializeSnapshot(false);
+      pool = snap.items.filter(it => isFillable(it));
+      miss = null;
+      // Optional section scoping (`section`, or its alias `near`): restrict to the
+      // fields inside that titled group. An unresolvable section is a HARD ERROR —
+      // it must never degrade into a page-wide match, which used to overwrite the
+      // first same-labelled field in a DIFFERENT section and report success.
+      if (sectionArg) {
+        const scoped = applySectionScope(sectionArg);
+        if (scoped.error) miss = scoped;
+        else pool = scoped.pool;   // REPLACES the snapshot pool — one source of candidates
+      }
+      if (!miss) {
+        // Prefer an EXACT field-label/name match over a loose substring, so "URIs 1"
+        // doesn't grab "URIs 10" / a sibling section's "URIs". Substring is the
+        // fallback when nothing matches exactly.
+        const exact = pool.filter(it => fieldMatchesExact(it, m));
+        ranked = exact.length ? exact : pool.filter(it => fieldMatchesText(it, m));
+        if (ranked.length) break;
+        miss = sectionArg
+          ? { error: `No fillable element matching "${args.match}" inside section "${sectionArg}" — the section resolved but none of its ${pool.length} fillable field(s) carry that label. Nothing was filled.`, fieldsInSection: pool.slice(0, 12).map(fieldBrief) }
+          : { error: `No visible fillable element matching "${args.match}". Nothing was filled.`, ...fillMissReport(m, pool) };
+      }
+      if (nowMs() - t0 >= AUTO_WAIT_MS) {
+        const act = pageActivity();
+        return frontload(miss, { error: miss.error, waitedMs: Math.round(nowMs() - t0), settling: act.settling,
+          ...(act.settling ? { hint: 'the page was still changing when this gave up — the field may not be rendered yet: fast_wait for text that identifies the target view, then fill again' + (miss.hint ? '; ' + miss.hint : '') } : {}) });
+      }
+      await wait(150);
     }
     // Optional occurrence index among the matches in STABLE DOM order.
     const ordered = ranked.slice().sort(docOrderCmp);
@@ -2355,7 +2585,22 @@ async function runPageAction(action, args) {
     // the literal "undefined".
     if (value == null) return { error: "fast_fill: no value provided — pass value (use value:'' to clear the field)" };
     // clear-before-fill is preserved (fillItem replaces unless args.append).
-    return withSnap(fillItem(found, value, args.append), snap);
+    const r = fillItem(found, value, args.append);
+    if (r.error) return r;
+    if (found.ariaLabel && !r.filled.label) r.filled.ariaLabel = found.ariaLabel;
+    const out = await withSnap(r, snap);
+    // VERIFIED STATE leads the result: the field's live value after the page
+    // settled, and whether it still holds what was written (a framework may
+    // reformat or revert it — the model must see that, not assume the write held).
+    const el = elAt(found);
+    const live = liveValueOf(el);
+    const expected = r.kind === 'native-select' ? String(r.valueSet) : String(value);
+    const holds = live == null ? false
+      : r.kind === 'native-select' ? live.toLowerCase() === expected.toLowerCase()
+      : args.append ? live.endsWith(expected) : live === expected;
+    const head = { verified: holds, value: maskIfPassword(el, live == null ? '' : String(live).slice(0, 300)) };
+    if (!holds) head.reason = `the field now reads ${JSON.stringify(head.value)} instead of the value written — the page reformatted, rejected or reverted it; do not report the written value as set`;
+    return frontload(out, head);
   }
 
   if (action === 'fast_fill_form') {
@@ -2363,7 +2608,6 @@ async function runPageAction(action, args) {
     if (!fields) return { error: 'fields object required, e.g. { email: "...", phone: "...", country: "US" }' };
     const append = !!args.append;
     const stopOnError = !!args.stopOnError;
-    const verify = !!args.verify;
     const snap = await serializeSnapshot(false);
     const items = snap.items;
     // Form-wide section default; a per-field { section } overrides it.
@@ -2432,7 +2676,7 @@ async function runPageAction(action, args) {
       // DEFER verification — don't re-read inline. Collect the target; the
       // re-read runs in a bounded pass below so a slow/stalled read can never
       // hang the fill loop. (BUG-4)
-      if (verify && !r.error) toVerify.push({ match, el, expected: String(value), append });
+      if (!r.error) toVerify.push({ match, el, expected: String(value), append });
       if (r.error) { missed++; if (stopOnError) break; }
       else filled++;
     }
@@ -2450,14 +2694,15 @@ async function runPageAction(action, args) {
       }
     }
 
-    // VERIFY: decoupled + time-bounded (BUG-4). The fills above are DONE and are
-    // the load-bearing result. Verification is ADVISORY — it re-reads each filled
-    // field to catch an async re-render (e.g. a Drupal AJAX widget) that wiped
-    // what we wrote, which would otherwise masquerade as a clean fill. It runs as
-    // a SEPARATE pass under its own wall-clock budget and can NEVER hang the call:
-    // on overrun or a throwing read it degrades to "filled, not verified"
-    // (verifyError set) instead of stalling the action to the 30s tool timeout.
-    if (verify) {
+    // VERIFY (always on): decoupled + time-bounded (BUG-4). The fills above are
+    // DONE and are the load-bearing result. Verification re-reads each filled
+    // field after the DOM settles, so every field result carries its live
+    // `value` and `verified`; a field an async re-render wiped (Drupal AJAX
+    // widget) is `reverted:true`. It runs as a SEPARATE pass under its own
+    // wall-clock budget and can NEVER hang the call: on overrun or a throwing
+    // read it degrades to "filled, not verified" (verifyError set).
+    {
+      await settleDom(SETTLE_MAX_MS);
       const VERIFY_BUDGET_MS = 2500;
       const vStart = nowMs();
       let verifyTimedOut = false;
@@ -2481,15 +2726,16 @@ async function runPageAction(action, args) {
               (opt.text || '').trim().toLowerCase() === want ||
               (opt.value || '').toLowerCase() === want
             );
-            r.currentValue = vf.el.value;
+            r.value = opt ? cleanLabel(opt.text || opt.value || '') : '';
+            r.verified = stuck;
             if (!stuck) r.reverted = true;
-            r.verified = true;
           } else {
             const current = readValue(vf.el);
             const stuck = vf.append ? (current != null && current.endsWith(vf.expected))
                                     : (current === vf.expected);
-            if (!stuck) { r.reverted = true; r.currentValue = current; }
-            r.verified = true;
+            r.value = maskIfPassword(vf.el, current == null ? '' : String(current).slice(0, 300));
+            r.verified = stuck;
+            if (!stuck) r.reverted = true;
           }
         } catch (e) {
           r.verified = false;
@@ -2508,6 +2754,7 @@ async function runPageAction(action, args) {
         }
       }
       out.reverted = Object.entries(results).filter(([, r]) => r && r.reverted).map(([k]) => k);
+      out.verified = missed === 0 && out.reverted.length === 0 && !verifyTimedOut;
     }
 
     // Defensive overall bound (BUG-4): the fill result MUST return well under the
@@ -2517,10 +2764,11 @@ async function runPageAction(action, args) {
     // blind 30s timeout. The fill is non-idempotent — a lost ack must never look
     // like "nothing happened" and provoke a retry.
     const HANDLER_CAP_MS = 8000;
+    const led = frontload(out, { verified: out.verified, filled, missed });
     return await Promise.race([
-      withSnap(out, snap),
+      withSnap(led, snap),
       new Promise((resolve) => setTimeout(() => resolve({
-        ...out,
+        ...led,
         snapshotPartial: true,
         snapshotNote: 'snapshot skipped — bounded to keep fast_fill_form responsive',
       }), HANDLER_CAP_MS)),

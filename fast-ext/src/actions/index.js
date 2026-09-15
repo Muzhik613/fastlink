@@ -1,6 +1,5 @@
 import { handleTabAction, getTargetTab, getTargetTabId } from './tab.js';
 import { takeScreenshot }  from './screenshot.js';
-import { pressKey }        from './key.js';
 import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
 import { clickXY, typeText, pressKeyChord, wheelScroll, dragXY } from './input.js';
@@ -17,7 +16,7 @@ const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_reload', 'fast_list'
 const PAGE_ACTIONS = new Set([
   'fast_snapshot', 'fast_click', 'fast_fill', 'fast_fill_form', 'fast_wait',
   'fast_select_option', 'fast_hover', 'fast_drag', 'fast_scroll',
-  'fast_network_replay',
+  'fast_key_press', 'fast_network_replay',
 ]);
 
 // Actions that can SUBMIT a form / follow a link / otherwise trigger a top-level
@@ -26,9 +25,9 @@ const PAGE_ACTIONS = new Set([
 // is the evidence the action fired — so for these we treat a frame-removal error
 // as SUCCESS (navigated) instead of failing the step (BUG-2 sub-bug). READ
 // actions (fast_snapshot, fast_evaluate, …) are deliberately excluded: a frame
-// loss there is a real failure and must keep erroring. (Of these, only
-// fast_click / fast_select_option / fast_drag actually flow through runBridge;
-// fast_click_xy/fast_key/fast_key_press/fast_drag_xy use the CDP input path and
+// loss there is a real failure and must keep erroring. (Of these,
+// fast_click / fast_select_option / fast_drag / fast_key_press flow through
+// runBridge; fast_click_xy/fast_key/fast_drag_xy use the CDP input path and
 // never hit this code — listed here for completeness / future-proofing.)
 const NAVIGATING_ACTIONS = new Set([
   'fast_click', 'fast_click_xy', 'fast_key', 'fast_key_press',
@@ -130,7 +129,6 @@ async function runOne(action, args) {
   if (action === 'fast_marks')      return captureMarks(args);
   if (action === 'fast_vision_capture') return visionCapture(args);
   if (action === 'fast_annotate_boxes') return annotateBoxes(args);
-  if (action === 'fast_key_press')  return pressKey(args);
   if (action === 'fast_text')       return getText(args);
   if (action === 'fast_evaluate')   return evaluate(args);
   if (action === 'fast_click_xy')   return clickXY(args);
