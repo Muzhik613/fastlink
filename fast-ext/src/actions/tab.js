@@ -53,7 +53,31 @@ async function focusTabWindow(tab) {
   } catch {}
 }
 
-async function openTab({ url, background }) {
+// chrome.tabs.create RESOLVES BEFORE the navigation commits: the new tab's `.url`
+// is "" and only `.pendingUrl` holds the target. Any action that then resolves the
+// pinned target and gates on isInjectableUrl(tab.url) (actions/index.js) sees "" and
+// fails with `Restricted URL: ` — note the EMPTY url after the colon, which is the
+// signature of this race. Between two separate MCP tool calls the model's round-trip
+// hides it; inside fast_batch the steps run back-to-back and it fired EVERY time
+// (reproduced on example.com: fast_tab → fast_snapshot = "Restricted URL: ").
+//
+// Deliberately NOT waitForComplete(): that waits for status:'complete' via an
+// onUpdated listener, so a load that finishes before the listener attaches would
+// burn the entire timeout on every single fast_tab. A committed URL is the property
+// callers actually need, and it has a natural early-out.
+async function waitForUrlCommit(tabId, waitMs) {
+  const cap = typeof waitMs === 'number' ? waitMs : 10000;
+  const deadline = Date.now() + cap;
+  for (;;) {
+    let t = null;
+    try { t = await chrome.tabs.get(tabId); } catch { return null; } // tab closed under us
+    if (t.url) return t.url;
+    if (Date.now() >= deadline) return t.pendingUrl || null;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+async function openTab({ url, background, waitMs }) {
   // active:true → foreground-within-window (the parameter default); we ALSO
   // focus the owning window below so "foreground" actually holds on-screen.
   const opts = { url, active: !background };
@@ -67,7 +91,7 @@ async function openTab({ url, background }) {
     // and captureVisibleTab/screenshot work without a fast_switch first. When
     // background:true we deliberately leave focus alone (active:false above).
     if (!background) await focusTabWindow(tab);
-    return { id: tab.id, url: tab.pendingUrl || tab.url, targetTab: tab.id };
+    return { id: tab.id, url: (await waitForUrlCommit(tab.id, waitMs)) || tab.pendingUrl || tab.url, targetTab: tab.id };
   } catch (e) {
     if (!/no current window/i.test(e?.message || '')) throw e;
     // Cold-started SW with no current window: pick any normal window, else
@@ -77,11 +101,12 @@ async function openTab({ url, background }) {
       const tab = await chrome.tabs.create({ ...opts, windowId: win.id });
       await setTargetTab(tab.id);
       if (!background) await focusTabWindow(tab);
-      return { id: tab.id, url: tab.pendingUrl || tab.url, targetTab: tab.id };
+      return { id: tab.id, url: (await waitForUrlCommit(tab.id, waitMs)) || tab.pendingUrl || tab.url, targetTab: tab.id };
     }
     const created = await chrome.windows.create({ url, focused: !background });
     const tab = created.tabs?.[0];
     if (tab?.id !== undefined) await setTargetTab(tab.id);
+    if (tab?.id !== undefined) await waitForUrlCommit(tab.id, waitMs);
     return { id: tab?.id, url, targetTab: tab?.id };
   }
 }
