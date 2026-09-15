@@ -33,6 +33,65 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast_text on a form control returns its live value; an empty read says empty:true
+- **What:** `extractText` (fast-ext/src/actions/text.js) uses `querySelectorAll`. When a match is
+  input / textarea / select / [contenteditable] / role=combobox|textbox|searchbox, `text` is the
+  live VALUE (select: selected option text, `optionValue` the value; checkbox/radio add `checked`;
+  a role wrapper reads the control inside; passwords masked) with `field:{tag, label, value}`
+  (label = aria-label → aria-labelledby → <label>'s own text, never a wrapped control's →
+  placeholder/name/id), `kind:"value"`. Several matches → `fields:[…]`, `matches:N`, text one
+  `label: value` line each (non-controls as their text). A read whose text is blank returns
+  `empty:true` + hint "the element has no text; if it is a form field its value is in value (shown
+  here) — an empty read is not confirmation". Body default, html:true, not-found and truncation
+  are unchanged. fast_text description updated identically in `fast-dxt/server/tools.js` and
+  `fastlink-relay/tools.js`.
+- **Why:** gate=record mapsdir p2 (61581163): `fast_text {selector:'[aria-label*="Destination"]'}`
+  returned "" (an <input> has no textContent); Grok read "nothing contradicts me" and reported the
+  value it typed while Maps had rewritten the box — the one overclaim. flightsearch p1 (bed97274)
+  read "" the same way from six inputs/selects on aa.com.
+- **Files:** `fast-ext/src/actions/text.js`, `fast-dxt/server/tools.js`, `fastlink-relay/tools.js`,
+  `fast-runner/test/text-controls.test.mjs`.
+- **Watch out:** a selector that matches a container AND controls now lists every match (it used to
+  return the first match's innerText). Helpers live INSIDE `extractText` — executeScript serializes
+  only that function. Takes effect after ship-ext (owner) / extension reload (rig); relay needs
+  `wrangler deploy` for the description.
+- **Status:** committed; unit tests 6/6. Live, old vs new extractText on the same elements in a
+  throwaway headless Chrome (not the owner's, not the rig — hvm was mid holdout run): selenium
+  web-form typed input "" → "FastLink proof", native select option dump → "Two" (optionValue "2"),
+  empty input → empty:true + hint, 4-field selector "" → 4 `label: value` lines; Google Maps
+  /dir JFK → Times Square `[aria-label*="Destination"]` "" → "Times Square, Manhattan, NY 10036",
+  both direction inputs "" → both values. aa.com blocks headless (no fields rendered). Extension
+  path on hvm not yet exercised.
+
+## 2026-09-15 — bench HOLDOUT set: 6 untuned public sites (bench/holdout.js, ids h_*)
+- **What:** `bench/holdout.js` exports `HOLDOUT` (same shape as suite.js): `h_conditional` GOV.UK
+  conditional-reveal radios, `h_datepicker` jQuery UI inline calendar (no input), `h_combobox`
+  Select2 single select, `h_table` DataTables sort+paginate, `h_repeat` Form.io data grid
+  (Add Another + Choices.js select + conditional Birthdate), `h_spa` jsDelivr search → package →
+  Files tab. `suite.js` resolves both (`ALL_TESTS`, `SUITES`), so `run.js --test h_table` and
+  `--list --suite holdout` work with no second code path; hvm-report / drive-runner / report render
+  ALL_TESTS. Baseline: `docs/GROK_RUNNER_HOLDOUT_2026-09-15.md`.
+- **Why:** owner's rule — "every website is different, you can't tailor fixes to one site". The
+  main suite has been fixed against for weeks; these sites were never used in a fix or a proof.
+- **Validation (METHOD RULE, hvm rig, by hand through the local FastLink tools):** untouched →
+  done: h_conditional 1/6 → 6/6, h_datepicker 1/4 → 4/4, h_combobox 1/4 → (typed, not committed)
+  1/4 → 4/4, h_table 1/6 → 6/6, h_repeat 1/7 → 7/7, h_spa 1/5 → 5/5. The only untouched pass is
+  the `tab` checkpoint (same as suite.js). "Not submitted" is folded into a checkpoint that needs
+  real work, never scored alone.
+- **Files:** `bench/holdout.js` (new), `bench/{suite,run,hvm-report,drive-runner,report}.js`,
+  `docs/GROK_RUNNER_HOLDOUT_2026-09-15.md`.
+- **Watch out:** HARNESS TRAP — a reader must never return a field named `value` or `result`:
+  `bench/fastlink.js evalIn` unwraps `r.value`, so `{value:'AK', shown:'Alaska'}` scored every pick
+  as "AK" (widget "shows OR" on a page showing Oregon). No backticks inside reader strings (they
+  are template literals — one pushed a parse error that broke every suite.js import for a commit).
+  Never tune a FastLink fix until one of these passes; a fix is proven on the main suite and only
+  CHECKED here. Tool gaps the validation hit by hand (each generic): `fast_click` ignores a
+  `<label for>` over a visually-hidden radio and an `<a>` with no href; `fast_select_option` on
+  Select2 reports the pick but it never commits (honest `verified:false`); on a Choices.js field it
+  resolves the enhanced, option-less hidden `<select>` ("available: []"). Workarounds used:
+  fast_evaluate rect → fast_click_xy, and trusted click + fast_type + Enter.
+- **Status:** in code / validated both ways on hvm / baseline run BASELINE_PENDING.
+
 ## 2026-09-15 — fast-runner gate mode: on | record | off (measure the model alone)
 - **What:** one gate mode per run: `FASTRUN_GATE` env, `--gate <mode>` (cli.mjs), `gate` arg on
   `grok_run`. `on` (default) = the report_done gate as before. `record` = every check runs at the

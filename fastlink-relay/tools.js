@@ -246,7 +246,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_text',
-    description: 'Read text (or HTML) from the active Chrome tab. CSP-safe: works on pages where fast_evaluate is blocked (claude.ai, strict CSP). Defaults to body innerText. Pass selector for a specific element. When maxLen cuts the text the result STARTS with `truncated:true`, `dropped.chars` and a `hint` naming the call that returns the rest — never extract from a truncated read.',
+    description: 'Read text (or HTML) from the active Chrome tab. CSP-safe: works on pages where fast_evaluate is blocked (claude.ai, strict CSP). Defaults to body innerText. Pass selector for a specific element. A selector that matches a form control (input / textarea / select / contenteditable / role=combobox|textbox|searchbox) returns its LIVE value as text plus field:{tag,label,value} (fields:[…] when it matches several) — read a field back this way, not with a parent\'s text. An empty read returns empty:true: it is not confirmation of anything. When maxLen cuts the text the result STARTS with `truncated:true`, `dropped.chars` and a `hint` naming the call that returns the rest — never extract from a truncated read.',
     inputSchema: {
       type: 'object',
       properties: {
