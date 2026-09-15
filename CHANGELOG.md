@@ -19,6 +19,48 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — fast-runner phase 0b + 1: relay transport (OAuth client) + bench runner driver
+- **What:** `fast-runner/relay-transport.mjs` — `connectRelay({browser})` is an MCP
+  Streamable-HTTP client to `relay.ytx.app/mcp` authenticated the way claude.ai/grok.com
+  are: the SDK's `OAuthClientProvider` does discovery → dynamic registration
+  (`client_name` "fastrun", `token_endpoint_auth_method` none) → authorization_code +
+  PKCE S256; the one-time login redirects to a loopback `http://127.0.0.1:47821/callback`
+  the transport serves itself; tokens + client registration + PKCE verifier live in ONE
+  file `~/.config/fastrun/relay-token.json` (dir 700, file 600) and the SDK refreshes
+  silently on 401. ONE MCP session per connect; `browser` → `fast_profile` right after
+  connect, so the pin is stored under the runner's own OAuth `cid`. `relay-login.mjs` =
+  login + smoke (`--reset` re-registers). `bench/drive-runner.js` — bench driver that
+  spawns `fast-runner/cli.mjs --relay [--browser N] "<prompt>"`, feeds the runner's
+  streamed tool-call lines to a `RunnerTrace` (RelayTrace-shaped rows), then swaps in the
+  exact `toolLog` from `~/.local/state/fastrun/runs.jsonl` at exit; process exit is the
+  FINISH signal, STUCK/NO_ACTIVITY keep monitor.js's meaning; `ask_caller` is answered
+  with a fixed "proceed" line. Appends every cell to `bench/tool-usage.jsonl` and
+  regenerates `bench/tool-usage.md` (tool / calls / errors / avg ms / tests). `run.js`:
+  client `grok_runner` (always the runner driver), `--browser`, runner preflight = a real
+  `fast_status` over the runner's own relay session (no device token needed),
+  `claimedComplete` = runner status (`done`) instead of phrase heuristics.
+- **Why:** plan phases 0b/1 — same channel grok.com used in the 08-06 bench so numbers
+  compare 1:1, and a driver that needs no chat site.
+- **Files:** `fast-runner/{relay-transport,relay-login}.mjs`, `bench/{drive-runner,run}.js`,
+  `bench/.gitignore`, `bench/tool-usage.md`.
+- **Watch out:** the loopback port is REGISTERED with the relay at DCR — change
+  `CALLBACK_PORT` and you must `relay-login.mjs --reset`. `OAuthError` is exported from
+  `@modelcontextprotocol/sdk/server/auth/errors.js`, not `client/auth.js`. The account's
+  browser names are now `browser-1` (offline), `fastlinkchrome`, `fastlinkchrome-2`,
+  `yaakovschrome` (the live one) — the plan's "browser-1" is stale. `cli.mjs` has no
+  `--json` flag: unknown flags become part of the task text, so the driver passes only
+  `--relay`/`--browser`; the final JSON carries `so_far.recent` (last 10) — the full log
+  is the run store. `FASTLINK_DEVICE_TOKEN` in `~/fastlink-secrets.txt` is REJECTED by
+  `/devices` (invalid_device_token): chat-site cells (`--client grok|claude`) still need a
+  valid one; the runner path does not.
+- **Status:** committed / **verified live**: login completed by driving Chrome through the
+  local connector (Google account chooser → loopback callback from Windows Chrome into
+  WSL worked), `listTools` = 45 fast_* tools, `fast_status` over the relay shows
+  `userId 115636077357721664019`, `selected:"yaakovschrome"`, `selectionMode:"pinned"`;
+  `fast_tab` example.com → `fast_snapshot` h1 "Example Domain" (4 calls, 1.08s incl.
+  connect). Bench cell `grok_runner × relay × extract`: **22/22, 7.4s wall, 6 calls**,
+  `bench/tool-usage.md` produced. Other 7 tests not yet run through the runner.
+
 ## 2026-09-15 — fast-runner phase 0: Grok drives FastLink, Claude is the caller
 - **What:** New `fast-runner/` (see `docs/GROK_RUNNER_PLAN.md`). `runner.mjs` runs an
   agent loop with grok-4.6 (Anthropic-Messages format via the grokcode proxy on :8790,

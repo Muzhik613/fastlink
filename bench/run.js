@@ -31,6 +31,7 @@ import { closeMatching, clearStorageFor, pinInstall, status } from './fastlink.j
 import { RelayTrace, LocalTrace, TrailWatcher, watchRun, renderTiming, resolveDeviceToken, TOKEN_HELP, DEFAULTS } from './monitor.js';
 import { scoreTest, renderScore } from './score.js';
 import * as web from './drive-web.js';
+import * as runner from './drive-runner.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const RESULTS = join(HERE, 'results.jsonl');
@@ -45,6 +46,8 @@ export const CLIENTS = {
   // cannot set it, so the operator must confirm the picker before running these.
   claude_low: { id: 'claude_low', label: 'claude.ai Opus5-Low', site: 'claude' },
   claude_sonnet: { id: 'claude_sonnet', label: 'claude.ai Sonnet', site: 'claude' },
+  // fast-runner: Grok agent loop over the relay (bench/drive-runner.js), no chat site.
+  grok_runner: { id: 'grok_runner', label: 'fast-runner grok', site: null, driver: 'runner' },
 };
 
 // ---------------------------------------------------------------------------
@@ -86,7 +89,7 @@ export function inferClaim(text) {
 
 // ---------------------------------------------------------------------------
 export async function runCell({
-  client, testId, transport = 'relay', driver = 'web', install = null,
+  client, testId, transport = 'relay', driver = 'web', install = null, browser = null,
   claimed = null, quietMs = DEFAULTS.quietMs, ceilingMs = DEFAULTS.ceilingMs,
   reset = true, force = false, dryRun = false, deviceToken = null,
 }) {
@@ -94,6 +97,7 @@ export async function runCell({
   if (!test) throw new Error(`unknown test "${testId}" (have: ${TEST_IDS.join(', ')})`);
   const cl = CLIENTS[client];
   if (!cl) throw new Error(`unknown client "${client}" (have: ${Object.keys(CLIENTS).join(', ')})`);
+  if (cl.driver) driver = cl.driver; // a runner client has no chat site to script
 
   if (dryRun) {
     console.log(`cell: ${cl.label} × ${transport} × ${test.id}\nprompt:\n${test.prompt}`);
@@ -128,7 +132,11 @@ export async function runCell({
     // run with 0 tool calls because the relay socket was dead while the local broker
     // was perfectly healthy, and it recorded as NO_ACTIVITY (indistinguishable from a
     // model that ignored the connector). Fail fast instead of spending a run.
-    if (transport === 'relay') {
+    if (transport === 'relay' && driver === 'runner') {
+      // The runner is its own relay client: preflight AS the runner, pinned to
+      // the browser it will drive, instead of via the device-token /devices read.
+      notes.push(await runner.preflight({ browser }));
+    } else if (transport === 'relay') {
       const tok = resolveDeviceToken(deviceToken);
       if (!tok) throw new Error(`relay transport needs a device token.\n${TOKEN_HELP}`);
       let live = null;
@@ -157,7 +165,9 @@ export async function runCell({
 
     // Trace source + watermark BEFORE anything can generate a row.
     let source;
-    if (transport === 'local') source = new LocalTrace({ since: Date.now() });
+    let handle = null; // runner driver: the spawned cli.mjs (its trace is `source`)
+    if (driver === 'runner') { handle = runner.start(test.prompt, { browser }); source = handle.trace; }
+    else if (transport === 'local') source = new LocalTrace({ since: Date.now() });
     else {
       const token = resolveDeviceToken(deviceToken);
       if (!token) throw new Error(`relay transport needs a device token.\n${TOKEN_HELP}`);
@@ -168,8 +178,10 @@ export async function runCell({
 
     // Drive the chat.
     let site = null;
-    const t0 = Date.now();
-    if (driver === 'manual') {
+    const t0 = handle ? handle.startedAt : Date.now();
+    if (driver === 'runner') {
+      notes.push(`runner spawned${browser ? ` (browser=${browser})` : ''}`);
+    } else if (driver === 'manual') {
       console.log(`\n=== PASTE THIS INTO ${cl.label} (a NEW conversation) ===\n${test.prompt}\n=== recording starts now ===\n`);
     } else {
       site = await web.openChat(cl.site, { fresh: true });
@@ -182,10 +194,16 @@ export async function runCell({
     // From here until the run is FINISHED we touch nothing but read-only tab polls.
     process.stderr.write(`recording ${cl.label} × ${transport} × ${test.id} …\n`);
     let approvals = 0;
-    const watch = await watchRun({
-      source, trailWatcher, quietMs, ceilingMs, startedAt,
-      onTick: ({ elapsed, quietFor, calls, timeouts, lastError }) =>
-        process.stderr.write(`\r  ${(elapsed / 1000).toFixed(0)}s  ${calls} calls  quiet ${(quietFor / 1000).toFixed(0)}s  timeouts ${timeouts}${lastError ? `  [${lastError}]` : ''}    `),
+    const onTick = ({ elapsed, quietFor, calls, timeouts, lastError }) =>
+      process.stderr.write(`\r  ${(elapsed / 1000).toFixed(0)}s  ${calls} calls  quiet ${(quietFor / 1000).toFixed(0)}s  timeouts ${timeouts}${lastError ? `  [${lastError}]` : ''}    `);
+    // Runner: process exit is the finish signal (drive-runner.watch); the trail
+    // watcher still samples URLs here so `trail` checkpoints score identically.
+    const watch = handle ? await (async () => {
+      const trailTimer = setInterval(() => trailWatcher.poll(), DEFAULTS.trailPollMs);
+      try { return await runner.watch(handle, { ceilingMs, onTick, startedAt }); }
+      finally { clearInterval(trailTimer); await trailWatcher.poll(); }
+    })() : await watchRun({
+      source, trailWatcher, quietMs, ceilingMs, startedAt, onTick,
       // A "quiet" run may just be blocked on claude.ai's per-tool permission dialog,
       // which halts the turn until a human clicks. Clear it and let the run resume
       // rather than recording a stall as NO_ACTIVITY / a low score.
@@ -207,7 +225,12 @@ export async function runCell({
     // render, and reading mid-stream would truncate the final message and fail
     // `live` checkpoints for the wrong reason.
     let final = { via: 'none', text: null };
-    if (driver !== 'manual' && site) {
+    if (handle) {
+      const idle = await runner.waitForIdle(handle);
+      if (!idle.record) notes.push('runner run store had no record for this run — tool histogram is empty');
+      final = runner.readFinalMessage(handle);
+      notes.push(`runner ${final.status || 'no-json'}${final.runId ? ` run_id=${final.runId}` : ''}${handle.questions ? ` (answered ${handle.questions} ask_caller)` : ''}`);
+    } else if (driver !== 'manual' && site) {
       try {
         const idle = await web.waitForIdle(site);
         if (!idle.idle) notes.push('chat UI never returned to idle — final message may be partial');
@@ -219,7 +242,10 @@ export async function runCell({
       invalidReason = 'the chat reported a rate/usage limit — the cell measured a refusal, not a run';
     }
 
-    const claimInfo = claimed == null ? inferClaim(final.text) : { claimedComplete: claimed, claimedSource: 'flag' };
+    // The runner's exit status IS its claim (report_done = done); no phrase-guessing.
+    const claimInfo = claimed != null ? { claimedComplete: claimed, claimedSource: 'flag' }
+      : handle && final.status ? { claimedComplete: final.status === 'done', claimedSource: 'runner' }
+      : inferClaim(final.text);
     // Scoring reads the browser we OBSERVED (see --install note above) — on the
     // relay path that is the one the chat's account drives, not necessarily
     // "primary". Passing null here would score the wrong Chrome.
@@ -248,9 +274,11 @@ export async function runCell({
       timeouts: watch.timeouts,
       driver,
       install,
+      browser,
       notes: notes.join('; '),
     };
     appendFileSync(RESULTS, JSON.stringify(row) + '\n');
+    if (handle) runner.recordUsage(handle, { client: cl.id, testId: test.id });
 
     console.log(renderTiming(source.rows, cl.label));
     console.log('');
@@ -285,6 +313,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     transport: flag('--transport', 'relay'),
     driver: flag('--driver', 'web'),
     install: flag('--install'),
+    browser: flag('--browser'),
     deviceToken: flag('--token'),
     quietMs: Number(flag('--quiet-ms', DEFAULTS.quietMs)),
     ceilingMs: Number(flag('--ceiling-ms', DEFAULTS.ceilingMs)),
@@ -295,10 +324,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   };
   if (!opts.client || !opts.testId) {
     console.error([
-      'usage: node bench/run.js --client <claude|grok> --test <' + TEST_IDS.join('|') + '> [options]',
+      'usage: node bench/run.js --client <claude|grok|grok_runner> --test <' + TEST_IDS.join('|') + '> [options]',
       '',
       '  --transport relay|local   default relay (chat sites use the relay)',
       '  --driver    web|manual    web = script the chat UI; manual = print the prompt and record',
+      '                            (client grok_runner always uses the runner driver: fast-runner/cli.mjs over the relay)',
+      '  --browser   <name>        runner only: relay browser name to pin via fast_profile (e.g. yaakovschrome)',
       '  --install   <label>       Chrome profile to OBSERVE (reset/trail/scoring) via fast_profile.',
       '                            On --transport local it is also the driven profile. On relay,',
       '                            set it to the profile that chat\'s relay account drives',
