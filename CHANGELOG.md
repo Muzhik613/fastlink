@@ -53,7 +53,16 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   the miss; a heading whose span has buttons but no inputs for another reason (a collapsed
   panel's "Expand") will name that button — the hint says to click it first, which is still the
   right move.
-- **Status:** committed; live proof on hvm below.
+- **Status:** committed (976771f); proven live on hvm. Select redirect: local page "Plan tier"
+  (div combobox, aria-labelledby), W3C APG select-only "Favorite Fruit", material.angular.dev
+  mat-select "Favorite food" — each a `kind:"select"` candidate + the fast_select_option hint.
+  Section: local repeatable-field page `{fields:{Emails}}` → `section:"Emails", buttons:["Add
+  email"]` + hint; after the click `section:"Emails"` filled "Email 1". jsonforms.io array
+  example with its items deleted: `fast_fill "Comments"` → `section:"Comments", buttons:["Add to
+  Comments button"]` + hint (with items present the section holds inputs, so no hint — correct).
+  Open, not this change: the inputs jsonforms creates carry no label FastLink resolves
+  (`fieldsInSection` lists bare inputs), so `fast_fill {match:"Message", section:"Comments"}`
+  still misses — fill by `index:` there.
 
 ## 2026-09-15 — fast-runner gate: each missed `{fields}` label / failed batch step is its own failed action
 - **What:** `partialFailures(name, args, text)` (runner.mjs): a `fast_fill` result's `fields`
@@ -69,7 +78,18 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 - **Files:** `fast-runner/runner.mjs`, `fast-runner/test/gate.test.mjs` (that exact log).
 - **Watch out:** rows written before this change carry no `partial`; replaying them sees only
   whole-call failures.
-- **Status:** committed; `node --test test/*.test.mjs`.
+- **Status:** committed (b2852ac); `node --test test/*.test.mjs` 28/28.
+
+## 2026-09-15 — hvm bench: 3 passes × six cells on 4584943 (grok-4.3 / phase2) = 177/177
+- **What:** `docs/GROK_RUNNER_BENCH_hvm_autocomplete_2026-09-15.md` (rows since 19:49:28Z):
+  pass 1 59/59 · 58.6s · 32c, pass 2 59/59 · 42.6s · 27c, pass 3 59/59 · 52.4s · 29c, vs the
+  13:48 confirm run (59/59 · 58.6s · 27c, 59/59 · 59.3s · 31c, 58/59 · 54.4s · 32c) and the 14:20
+  regression on 53fdb0b (57/59 · 85s · 28c, 57/59 · 70s · 27c). mapsdir 6/6 ×3 (18.6 / 8.6 /
+  25.6s): every run's fast_fill carried `uncommitted:[origin, destination]` and the model pressed
+  Enter next. staticform 12/12 ×3. Gate: 9 refusals over 18 runs (overlay ×3, flightsearch 1
+  read-back + 3 evidence in pass 3 → overridden, mapsdir ×2 for a `fast_wait "route options"`
+  that failed AFTER the last action), 0 claimMismatch, 0 overclaims.
+- **Status:** doc committed on hvm (c3e7d2a) and pushed.
 
 ## 2026-09-15 — fast_select_option: field resolve text-first (no per-candidate document queries / layout), panel wait probes outside the MutationObserver callback
 - **What:** page.js, generic (no site selectors). (1) `findField`: the one composed-tree walk
