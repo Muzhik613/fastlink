@@ -1107,6 +1107,42 @@ const distinguishingSections = (paths) => paths.map((p, i) => {
   for (let k = p.length - 1; k >= 0; k--) if (!others.every(o => o.includes(p[k]))) return p[k];
   return p[p.length - 1] || null;
 });
+// The buttons of a section that has no input yet, ranked by how likely each
+// CREATES the field. Pure over [{name, text, iconOnly, tooltip}] (name = the
+// accessible name, text = visible text) — fast-runner/test/fill-miss-hint.test.mjs.
+// Tier 0: an add/new/create/insert/append word or a "+" glyph; 1: visible text;
+// 2: icon-only. Demoted below all (never named in a hint): a help/info/learn
+// more/tooltip/close/remove/delete/clear/cancel name, or an icon-only button
+// that carries a tooltip / aria-describedby (a help "?" icon).
+const CREATE_WORD = /(?:^|[^\p{L}\p{N}])(?:add|new|create|insert|append)(?:$|[^\p{L}\p{N}])|[+＋➕]/iu;
+const NOT_CREATE_WORD = /(?:^|[^\p{L}\p{N}])(?:help|info|information|learn more|more info|tooltip|close|dismiss|remove|delete|clear|cancel)(?:$|[^\p{L}\p{N}])/iu;
+const rankCreateButtons = (btns) => {
+  const ranked = btns.map((b, k) => {
+    const words = `${b.name || ''} ${b.text || ''}`;
+    const demoted = NOT_CREATE_WORD.test(words) || !!(b.iconOnly && b.tooltip);
+    const tier = demoted ? 3 : CREATE_WORD.test(words) ? 0 : b.iconOnly ? 2 : 1;
+    return { ...b, tier, demoted, k };
+  });
+  return ranked.sort((a, b) => a.tier - b.tier || a.k - b.k);
+};
+// A fill miss the page already EXPLAINS is final: the label is a section (with or
+// without a button that creates its field), a select control, several matching
+// fields (candidates carry index:N), or no value was given. Pure.
+const explainedMiss = (m) => !!(m && (m.skipped || m.section || m.selectField || (Array.isArray(m.candidates) && m.candidates.some(c => c && typeof c.index === 'number'))));
+// Top-level hint of a fast_fill miss (single, or the head of {fields}): the first
+// explained miss's own hint; the generic "may not be rendered yet" settle hint
+// only when the page is still changing AND some miss is unexplained — never on
+// top of a section/select/duplicate hint it would contradict. Pure.
+const missHead = (misses, settling, settleHint) => {
+  const own = (misses.find(m => explainedMiss(m) && m.hint) || {}).hint;
+  const head = {};
+  if (settling && misses.some(m => !explainedMiss(m))) {
+    head.settling = true;
+    const other = (misses.find(m => !explainedMiss(m) && m.hint) || {}).hint;
+    head.hint = [own, [settleHint, other].filter(Boolean).join('; ')].filter(Boolean).join(' | ');
+  } else if (own) head.hint = own;
+  return head;
+};
 
 // A field the model still has to fill: text-like input / textarea / select /
 // contenteditable with no value yet (checkbox, radio, button, file… excluded).
@@ -1653,6 +1689,20 @@ async function runPageAction(action, args) {
       });
     }
     return { matched: matched.length, sections, items };
+  };
+  // A heading/legend whose text IS `name` (a trailing ":" / "*" / "(…)" ignored):
+  // the name belongs to an outline section, not to a field still mounting.
+  // Returns that heading's title, else null. One selector query.
+  const normHeading = (s) => cleanLabel(s).toLowerCase().replace(/\s*\([^)]*\)$/, '').replace(/[\s:*]+$/, '');
+  const sectionTitleFor = (name) => {
+    let anchors; try { anchors = document.querySelectorAll(SECTION_ANCHORS); } catch { return null; }
+    const want = normHeading(name);
+    if (!want) return null;
+    for (let i = 0; i < anchors.length && i < MAX_ANCHORS; i++) {
+      const t = cleanLabel(anchors[i].textContent);
+      if (t && normHeading(t) === want) return t.slice(0, 80);
+    }
+    return null;
   };
   // Apply `section`/`near`. Returns { pool } or { error, … } — never a silent
   // fallback to the page-wide pool.
@@ -3184,10 +3234,18 @@ async function runPageAction(action, args) {
     };
     const t0 = nowMs();
     let snap, res;
+    // A label that names a section heading is a final miss (the section exists;
+    // its field needs a click, or a field label + section:) — no auto-wait for it.
+    const sectionMiss = new Map();   // spec → heading title
     for (;;) {
       snap = await serializeSnapshot(false, { matchAll: true });
       res = resolveAll();
-      const realMiss = [...res.misses.values()].some(m => !m.skipped && !m.candidates);   // an ambiguous match is final, not "still mounting"
+      let realMiss = false;
+      for (const [sp, m] of res.misses) {
+        if (m.skipped || m.candidates) continue;   // an ambiguous match is final, not "still mounting"
+        if (!sp.section && !sectionMiss.has(sp)) { const t = sectionTitleFor(sp.match); if (t) sectionMiss.set(sp, t); }
+        if (!sectionMiss.has(sp)) realMiss = true;
+      }
       if (!realMiss || nowMs() - t0 >= AUTO_WAIT_MS) break;
       await wait(150);
     }
@@ -3218,27 +3276,39 @@ async function runPageAction(action, args) {
         }
       }
       if (sel) { out.hint = sel.hint; out.selectField = sel.selectField; return out; }
-      // The name is a SECTION that holds no input yet, only button(s) that create
-      // one (repeatable fields: "Add URI", "Add email").
-      if (!rep.hiddenMatches) {
+      // The name is a SECTION heading. With fields in it: fill one of them with
+      // section:. With none: the button that creates one (repeatable fields —
+      // "Add URI", "Add email"), ranked so a help/close icon is never the one named.
+      const title = sectionMiss.get(sp);
+      if (title && !rep.hiddenMatches) {
         try {
-          const sec = resolveSection(sp.m);
-          if (sec.matched && !sec.items.length) {
-            const btns = resolveSection(sp.m, 'button,[role="button"],input[type="button"],input[type="submit"]').items
-              .map(it => cleanLabel(it.text || it.ariaLabel || '')).filter(Boolean);
-            if (btns.length) {
-              const title = sec.sections.find(t => t.toLowerCase().includes(sp.m)) || sp.match;
-              out.section = title;
-              out.buttons = [...new Set(btns)].slice(0, 5);
-              out.hint = `${JSON.stringify(sp.match)} is a section with no input yet; click ${JSON.stringify(out.buttons[0])} in it to create the field, then fill it (pass section:${JSON.stringify(title)})`;
-            }
+          const q = JSON.stringify(sp.match), qs = JSON.stringify(title);
+          const sec = resolveSection(title.toLowerCase());
+          out.section = title;
+          if (sec.items.length) {
+            out.fieldsInSection = sec.items.slice(0, 12).map(fieldBrief);
+            out.hint = `${q} is a section, not a field; fill one of its fields (fieldsInSection) with {match:"<field label>", section:${qs}}`;
+          } else {
+            const seen = new Set();
+            const btns = resolveSection(title.toLowerCase(), 'button,[role="button"],input[type="button"],input[type="submit"]').items.map((it) => {
+              const el = elById(it.i);
+              const text = el ? cleanLabel(el.innerText || el.value || '') : '';
+              let tooltip = false;
+              try { tooltip = !!el && (el.hasAttribute('aria-describedby') || Array.from(el.attributes).some(a => /tooltip/i.test(a.name) || /^tooltip$/i.test(a.value))); } catch {}
+              return { name: cleanLabel(it.text || it.ariaLabel || text), text, iconOnly: !text || /^[a-z]+(?:_[a-z]+)+$/.test(text), tooltip };
+            }).filter(b => b.name && !seen.has(b.name) && seen.add(b.name));
+            const ranked = rankCreateButtons(btns);
+            out.buttons = ranked.slice(0, 5).map(b => b.name);
+            out.hint = ranked.length && !ranked[0].demoted
+              ? `${q} is a section with no input yet; click ${JSON.stringify(ranked[0].name)} in it to create the field, then fill it (pass section:${qs})`
+              : `${q} is a section with no input${ranked.length ? ' and no button in it that adds one' : ''}; its field appears only after another step on the page (a choice or toggle above it) — do that, then fill with section:${qs}`;
           }
         } catch {}
       }
       return out;
     };
     const act = pageActivity();
-    const settleTail = act.settling ? { settling: true, hint: 'the page was still changing when this gave up — the field may not be rendered yet: fast_wait for text that identifies the target view, then fill again' } : {};
+    const SETTLE_MISS_HINT = 'the page was still changing when this gave up — the field may not be rendered yet: fast_wait for text that identifies the target view, then fill again';
 
     // Fill everything that resolved (scrolling offscreen targets into view).
     const written = new Map();   // spec → { el, r }
@@ -3273,7 +3343,7 @@ async function runPageAction(action, args) {
       const sp = specs[0];
       if (!written.has(sp)) {
         const miss = enrichMiss(sp, res.misses.get(sp) || { error: 'not filled' });
-        return frontload(miss, { error: miss.error, waitedMs, ...settleTail, ...(settleTail.hint && miss.hint ? { hint: settleTail.hint + '; ' + miss.hint } : {}) });
+        return frontload(miss, { error: miss.error, waitedMs, ...missHead([miss], act.settling, SETTLE_MISS_HINT) });
       }
       const { el, r, ac } = written.get(sp);
       const out = await withSnap(r, snap);
@@ -3309,7 +3379,12 @@ async function runPageAction(action, args) {
     if (reverted.length) head.reverted = reverted;
     const uncommitted = Object.keys(fields).filter(k => fields[k].committed === false);
     if (uncommitted.length) { head.uncommitted = uncommitted; head.hint = `${uncommitted.map(k => JSON.stringify(k)).join(', ')}: ${AC_OPEN_HINT} (one field at a time)`; }
-    if (missed && act.settling) { head.settling = true; head.hint = settleTail.hint + (head.hint ? ' | ' + head.hint : ''); }
+    if (missed) {
+      const mh = missHead(Object.values(fields).filter(f => f.error), act.settling, SETTLE_MISS_HINT);
+      if (mh.settling) head.settling = true;
+      const hints = [mh.hint, head.hint].filter(Boolean);
+      if (hints.length) head.hint = hints.join(' | ');
+    }
     return calmIfVerified(frontload(snapped, head));
   }
 

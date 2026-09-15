@@ -33,6 +33,32 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast_fill section miss: buttons ranked (add/+ first, help/close icons never named); a section label is a final miss (no auto-wait, no "not rendered yet")
+- **What:** page.js, generic. (1) `rankCreateButtons` (module, pure): a section-with-no-input
+  miss lists `buttons` by rank — tier 0 an add/new/create/insert/append word (letter/digit
+  boundaries, so "Address"/"Renew" do not count) or a "+"/"＋"/"➕" glyph, 1 visible text, 2
+  icon-only; DEMOTED below all a help/info/learn more/tooltip/close/dismiss/remove/delete/
+  clear/cancel name or an icon-only button with a tooltip attribute / aria-describedby. The hint
+  names the top button only when it is not demoted; otherwise it says the field appears after
+  another step. (2) `sectionTitleFor(name)`: a heading/legend whose text IS the label (trailing
+  ":"/"*"/"(…)" ignored) makes that miss FINAL — `resolveAll`'s 1.5s auto-wait loop no longer
+  waits for it; `enrichMiss` then reports `section` + ranked `buttons` (no field in it) or
+  `section` + `fieldsInSection` + a `{match, section}` hint (fields in it). Replaces the old
+  `includes` heading match. (3) `missHead` (module, pure) builds the top-level hint of every
+  miss result (single and `{fields}`): the first EXPLAINED miss's hint (section / select /
+  duplicate-with-index / skipped); `settling:true` + "the field may not be rendered yet" only
+  when the page is still changing AND an unexplained miss remains (then after the specific
+  hint). Replaces the old `settleTail` that led every miss on a busy page.
+- **Why:** gcpform recording #4 (relay, grok-4.3, 20:03:03Z f96c8d9c): `buttons:["Help with
+  Javascript origins","Add URI"]` and the hint said click the HELP icon; the fill took 6.4s for
+  1 fill + 2 section misses (each ran the 1.5s auto-wait) and the head said `settling:true` +
+  "fast_wait … then fill again", contradicting the per-field section hint.
+- **Files:** `fast-ext/src/actions/page.js`, `fast-runner/test/fill-miss-hint.test.mjs` (new).
+- **Watch out:** a label that equals a heading no longer waits even if a field with that exact
+  label mounts later (it would have to share the heading's text); a label that only CONTAINS
+  a heading word is not a section miss any more (it waits and gets the generic path).
+- **Status:** committed; unit tests pass; live proof below.
+
 ## 2026-09-15 — fast_fill miss: a select control's name redirects to fast_select_option; a section with no input names the button that creates it
 - **What:** page.js `enrichMiss` (single + `{fields}` misses). (1) `selectControlByLabel(m)`: a
   visible select-type control (`DROPDOWN_SEL`: native select, ARIA combobox/listbox, popup
