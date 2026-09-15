@@ -48,7 +48,10 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 - **Files:** `bench/monitor.js`, `bench/run.js`, `bench/drive-web.js` (comment).
 - **Watch out:** a tab that changes URL more than 50 times in one cell loses its earliest stops
   (the extension ring); none of the six cells comes close.
-- **Status:** committed; hvm cells below.
+- **Status:** committed (684ebfb); hvm grok-4.3/phase2 local: multipage 6/6 (5 calls, run
+  cc5479da), mapsdir 6/6 (9 calls, 743cd3b5) — same as the prior six rows each. fast_list rows
+  in /tmp/fastlink-timing.jsonl inside the runner's run window: 0 and 0 (the cell's 5 are reset +
+  baseline before start, collect + scoring after exit); row notes `trail: 2 fast_list read(s)`.
 
 ## 2026-09-15 — fast-runner gate: evidence matcher normalizes both sides and matches values, not raw JSON; refused reports are stored
 - **What:** runner.mjs. (1) `normQuote` is the ONE normalization for result and quote: JSON
@@ -75,8 +78,10 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 - **Files:** `fast-runner/runner.mjs`, `fast-runner/test/gate.test.mjs`.
 - **Watch out:** a real quote of a structure word alone ("value", "name") still fails; a 2-char
   quote never counts.
-- **Status:** committed; `node --test test/*.test.mjs` passes (the four hvm evidences + the
-  JSON-copied and `label=value` forms pass; fabricated values/phrases/2-char fragments fail).
+- **Status:** committed (a30aeb6); `node --test test/*.test.mjs` 35/35 (the four hvm evidences +
+  the JSON-copied and `label=value` forms pass; fabricated values/phrases/2-char fragments
+  fail). Live on hvm 3b5063e's parent (684ebfb): multipage 0 refusals; mapsdir's one refusal
+  (two genuinely unretried clicks) now carries its `evidence` text on the row.
 
 ## 2026-09-15 — fast-runner gate: a missed label is resolved by a later fill in section:<that label>
 - **What:** `succeededTargets` (runner.mjs) also returns the SECTION each written field sat in:
@@ -90,7 +95,8 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   the same values (t=38.4/39.1s), ~10s of turns.
 - **Files:** `fast-runner/runner.mjs`, `fast-runner/test/gate.test.mjs` (that log).
 - **Watch out:** a fill in the section that MISSED its field resolves nothing.
-- **Status:** committed; unit tests pass.
+- **Status:** committed (a30aeb6); gate.test.mjs replays recording #4's log: no unresolved-failure
+  refusal after the two section fills; one section filled → the other label still unresolved.
 
 ## 2026-09-15 — fast_fill section miss: buttons ranked (add/+ first, help/close icons never named); a section label is a final miss (no auto-wait, no "not rendered yet")
 - **What:** page.js, generic. (1) `rankCreateButtons` (module, pure): a section-with-no-input
@@ -116,7 +122,24 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 - **Watch out:** a label that equals a heading no longer waits even if a field with that exact
   label mounts later (it would have to share the heading's text); a label that only CONTAINS
   a heading word is not a section miss any more (it waits and gets the generic path).
-- **Status:** committed; unit tests pass; live proof below.
+  Follow-up 3b5063e: `calmIfVerified(out, settled)` — a `{fields}` result whose writes held and
+  whose misses are all explained also drops the auto-snapshot's own `settling:true`.
+- **Status:** committed (a550ef0, 3b5063e); `fill-miss-hint.test.mjs` 3/3; proven live on hvm
+  (before 976771f → after 3b5063e). sect.html (help "?" button, aria-describedby tooltip,
+  BEFORE "Add email"): before `buttons:["?","Add email"]` + hint "click \"?\"", after
+  `["Add email","?"]` + "click \"Add email\"". `{fields}` 1 fill + 2 section misses: quiet page
+  1559/1563/1560ms → 46/50/52ms; `?tick=1` (never quiet, like GCP) 2574/2567/2572ms with
+  `settling:true` + "may not be rendered yet" head → 26-29ms (one earlier after-run 1046/42/1062ms
+  = the auto-snapshot's 1s settle cap), head = the Emails section hint, no settling. Single
+  "Emails": 1525ms → 9-18ms, `waitedMs:1`. An unexplained "Zip code" miss still waits 1.5s and
+  still gets settling + the generic hint on the ticking page. After "Add email": `fast_fill
+  "Emails"` → `section` + `fieldsInSection:[Email 1]` + `{match, section}` hint (was a bare miss).
+  jsonforms.io list-with-detail `fast_fill "Users"` (no input, buttons incl. per-row "Delete
+  button"): 1622/1550ms → 78/20ms, "Delete button" ranked last; jsonforms.io array `"Comments"`
+  (inputs present): 1625ms with no hint → 60ms, `section` + `fieldsInSection` + hint. Open: no
+  public page found with a help ICON inside an empty repeatable section (scanned ant.design form,
+  rjsf playground (iframe), json-editor, shadcn forms, surveyjs, primefaces); GCP recording #5
+  is the first real one.
 
 ## 2026-09-15 — fast_fill miss: a select control's name redirects to fast_select_option; a section with no input names the button that creates it
 - **What:** page.js `enrichMiss` (single + `{fields}` misses). (1) `selectControlByLabel(m)`: a
