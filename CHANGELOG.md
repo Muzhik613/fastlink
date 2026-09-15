@@ -19,6 +19,25 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — phase2 toolset: drop `fast_evaluate`, miss/truncation/wait guidance, exact-quote `report_done`
+- **What:** `fast-runner/toolset.phase2.json` is 12 FastLink tools + 2 native = 14:
+  `fast_evaluate` is gone (was disabled on the runner's relay account; 11 of 32 bench
+  cells burned a call on it). Descriptions now carry the tool-contract signals: "on a
+  miss retry with a name from `candidates`", "truncated:true → full:true / limit:N",
+  "fast_wait text is a substring — use ≥2 words", "index = N-th match, not a snapshot
+  id", fast_key_press returns a snapshot, and `report_done` demands names/numbers/values
+  quoted EXACTLY as the page shows them (the terse report made 4.3 write "US" and
+  "1.429B", which the extract scorer cannot match) plus a verbatim evidence quote.
+  `toolset.no-cdp.json` untouched (never had evaluate).
+- **Why:** hvm pass 4 (grok-4.3 / phase2, 52/59): extract 19/22 from abbreviations,
+  wasted evaluate calls, snapshot-id-as-index misses.
+- **Files:** `fast-runner/toolset.phase2.json`, `fast-runner/test/toolset.test.mjs` (14
+  tools, evaluate excluded, ≤2 sentences still enforced).
+- **Watch out:** `toolset.json` (default baseline) is untouched; the phase-3 fold list in
+  `docs/TOOL_TRIAGE_DRAFT.md` still lists evaluate as CORE — the owner has since enabled
+  evaluate on the relay account; an A/B with it re-added is part of the feedback bench.
+- **Status:** committed; benched on hvm (`docs/GROK_RUNNER_BENCH_hvm_feedback_2026-09-15.md`).
+
 ## 2026-09-15 — Runner: `report_done` evidence gate, dated system prompt, loud 80k cap
 - **What:** `fast-runner/runner.mjs` — (1) **evidence gate** (every toolset; it is the
   caller-facing contract): `report_done` is refused unless a successful READ
