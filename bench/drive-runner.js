@@ -164,6 +164,7 @@ export function recordUsage(handle, { client, testId, toolset = null }) {
   appendFileSync(USAGE_JSONL, JSON.stringify({
     ts: new Date().toISOString(), client, testId, runId: handle.runId, status: handle.final?.status || null,
     toolset: handle.final?.toolset || toolset || 'default',
+    model: handle.final?.model || null,
     wallMs: handle.exited ? handle.exited.at - handle.startedAt : null,
     toolLog: handle.toolLog.map(({ t, name, ms, ok, args }) => ({ t, name, ms, ok, target: targetOf(name, args) })),
   }) + '\n');
@@ -176,11 +177,12 @@ export function loadUsage(file = USAGE_JSONL) {
   const rows = raw.trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
   // Rows written before `target` / `toolset` existed get them from the run store.
   for (const r of rows) {
-    const old = !r.toolLog.length || !('target' in r.toolLog[0]) || !r.toolset;
+    const old = !r.toolLog.length || !('target' in r.toolLog[0]) || !r.toolset || !r.model;
     if (!old) continue;
     const rec = r.runId ? readRun(r.runId) : null;
     if (rec && !('target' in (r.toolLog[0] || { target: null }))) r.toolLog = r.toolLog.map((e, i) => ({ ...e, target: targetOf(e.name, rec.toolLog?.[i]?.args) }));
     r.toolset ||= rec?.toolset || 'default';
+    r.model ||= rec?.model || null;
   }
   return rows;
 }
@@ -208,13 +210,13 @@ export function renderUsage(rows) {
   const out = [
     '# fast-runner tool usage',
     '',
-    `${rows.length} cell(s), ALL passes, one table per toolset, from \`bench/tool-usage.jsonl\`. Regenerate: \`node bench/drive-runner.js usage\`.`,
+    `${rows.length} cell(s), ALL passes, one table per toolset × model, from \`bench/tool-usage.jsonl\`. Regenerate: \`node bench/drive-runner.js usage\`.`,
     '',
     'fumble columns: `retry` = call immediately followed by the same tool on the same target; `switch` = followed by a different tool on the same target; `fumble %` = (retry+switch)/calls.',
     '',
   ];
   const byToolset = new Map();
-  for (const r of rows) { const k = r.toolset || 'default'; if (!byToolset.has(k)) byToolset.set(k, []); byToolset.get(k).push(r); }
+  for (const r of rows) { const k = `${r.toolset || 'default'} / ${r.model || '?'}`; if (!byToolset.has(k)) byToolset.set(k, []); byToolset.get(k).push(r); }
   for (const [toolset, cells] of byToolset) {
     const agg = new Map();
     const passes = new Map(); // testId -> number of cells

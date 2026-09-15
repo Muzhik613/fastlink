@@ -279,6 +279,7 @@ export async function runCell({
       install,
       browser,
       toolset: handle ? (handle.final?.toolset || toolset || 'default') : null,
+      model: handle ? (handle.final?.model || null) : null,
       notes: notes.join('; '),
     };
     appendFileSync(RESULTS, JSON.stringify(row) + '\n');

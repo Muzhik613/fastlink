@@ -214,18 +214,26 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   WSL clock skew clamped; `tool-usage.md` now aggregates ALL cells (n=3) with per-tool
   `retry` / `switch` / `fumble %` (next call on the same target), each usage row carrying a
   `target` per call (backfilled from the run store for older rows).
+  Final 3-way (the lead's plan changed twice mid-run; an extra default pass `d2` = 70/70 /
+  401.7s / 100 calls is kept as variance data): **pass 2 = phase2 toolset on grok-4.6: 70/70,
+  414.5s, 91 calls, 0 reflex** (239.8s without overlay's 174.7s blow-up); **pass 3 = phase2 on
+  grok-4.3: 56/70, 55.3s wall, 50 calls, 4 overclaims** — gcpform 2/6 (no recovery after the
+  `<cfc-select>` select_option miss, 3 consecutive errors), overlay 1/3 (selected Forest in
+  the wrong react-select), extract 19/22 (counted the World row), mapsdir 4/6 (fill before
+  the input rendered), cfworkers 2/5 (never clicked the Worker). `run.js --toolset <name>`
+  forwards to `cli.mjs --toolset`; rows carry `toolset` + `model`; `tool-usage.md` renders
+  one histogram per toolset × model.
 - **Why:** plan phase 1 — the data phase 2's tool triage needs.
-  Pass 2 (default toolset again, per the lead's first plan): **70/70, 401.7s, 100 calls, 8/8
-  valid**. Plan then changed: passes 2–3 → the `phase2` toolset, so `run.js --toolset <name>`
-  now forwards to `cli.mjs --toolset`, the results row + usage rows carry `toolset`, and
-  `tool-usage.md` renders one histogram per toolset (`default` / `phase2`).
 - **Files:** `bench/{drive-runner,run}.js`, `bench/tool-usage.md`, `docs/GROK_RUNNER_BENCH_2026-09-15.md`.
 - **Watch out:** `fast_evaluate` is BLOCKED for the runner's relay account (`evalBlocked`);
-  the runner still lists it, so Grok reaches for it and falls back to `fast_text`. Round-trips
-  are 80–96% of wall in every cell — per-turn latency grows with input size (full snapshots
-  on cfworkers/overlay → ~5s/turn), which is the whole gap vs grok.com, not tool count. The
-  pre-pass 05:52 `extract` verification cell was pruned from `tool-usage.jsonl` so n=3 is clean.
-- **Status:** pass 1 committed; passes 2–3 in flight.
+  both models reach for it in 11 of 32 cells (forms, tables, and "today's date") despite the
+  phase2 description saying it may be disabled. On 4.6, round-trips are 80–96% of wall and the
+  toolset does not move it; on 4.3 the wall collapses but the model stops one action short or
+  skips the read-back. Two rows were re-run after my timestamp pruning of aborted passes
+  caught them (d2 + p1 cfworkers; originals noted in the doc). The pre-pass 05:52 `extract`
+  cell was pruned from `tool-usage.jsonl`. Snapshot `i` gets passed as `fast_click index` by
+  both models.
+- **Status:** all three passes committed; results doc final.
 
 ## 2026-09-15 — bench: self-driving hvm rig (grok_runner over the LOCAL transport, n=3)
 - **What:** `bench/hvm-rig.sh` (env + idempotent bring-up: Xvfb `:98`, Chrome for Testing
