@@ -1078,6 +1078,30 @@ const ariaPanelIds = (field) => {
   return ids;
 };
 
+// Outline path of an element: the titles of every heading/legend whose span
+// (anchor → next same-or-higher-level anchor) holds it, outermost first. Pure
+// over (anchors in document order, level(a), contains(a,b), follows(a,b),
+// title(a)) so a fake DOM can drive it (fast-runner/test/fill-ambiguity.test.mjs).
+const outlineTitles = (anchors, el, level, contains, follows, title) => {
+  const stack = [];
+  for (const a of anchors) {
+    if (!follows(a, el)) break;
+    if (stack.length && contains(stack[stack.length - 1].a, a)) continue;   // <h2> nested in its own <legend>: one section
+    const lvl = level(a);
+    while (stack.length && stack[stack.length - 1].lvl >= lvl) stack.pop();
+    stack.push({ a, lvl });
+  }
+  return stack.map(s => title(s.a)).filter(Boolean);
+};
+// For each candidate's outline path, the deepest title the OTHER candidates do
+// not all share — the `section:` value that would single it out (GCP: both
+// "URIs 1" rows sit under an <h3>Item 1</h3>, so the h2 above distinguishes).
+const distinguishingSections = (paths) => paths.map((p, i) => {
+  const others = paths.filter((_, j) => j !== i);
+  for (let k = p.length - 1; k >= 0; k--) if (!others.every(o => o.includes(p[k]))) return p[k];
+  return p[p.length - 1] || null;
+});
+
 // A field the model still has to fill: text-like input / textarea / select /
 // contenteditable with no value yet (checkbox, radio, button, file… excluded).
 const NON_FILL_TYPES = new Set(['hidden', 'checkbox', 'radio', 'button', 'submit', 'reset', 'image', 'file', 'range', 'color']);
@@ -1680,6 +1704,14 @@ async function runPageAction(action, args) {
       for (let i = hs.length - 1; i >= 0; i--) { if (follows(hs[i], el)) { const h = cleanLabel(hs[i].textContent).slice(0, 80); if (h) return h; } }
     } catch {}
     return null;
+  };
+  // Every section title whose outline span holds `el`, outermost first.
+  const sectionPathOf = (el) => {
+    if (!el) return [];
+    try {
+      const anchors = Array.from(document.querySelectorAll(SECTION_ANCHORS)).slice(0, MAX_ANCHORS);
+      return outlineTitles(anchors, el, anchorLevel, (a, b) => a.contains(b), follows, (a) => cleanLabel(a.textContent).slice(0, 80));
+    } catch { return []; }
   };
   // Which control a pick/fill acted on — label / aria / name / id / the heading
   // above it — so an ambiguous target is visibly attributed, never silent.
@@ -2829,7 +2861,7 @@ async function runPageAction(action, args) {
     const specs = multi
       ? Object.entries(args.fields).map(([match, raw]) => {
           const spec = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : { value: raw };
-          return { match: String(match), value: spec.value ?? spec.text, index: spec.index, section: String(spec.section ?? spec.near ?? formSection).trim(),
+          return { match: String(match), value: spec.value ?? spec.text, index: spec.index ?? args.index, section: String(spec.section ?? spec.near ?? formSection).trim(),
                    append: spec.append ?? !!args.append, exactName: spec.name != null ? String(spec.name).toLowerCase() : (spec.exact ? String(match).toLowerCase() : null) };
         })
       : [{ match: String(args.match), value: args.value ?? args.text, index: args.index, section: formSection, append: !!args.append, exactName: null }];
@@ -2862,7 +2894,24 @@ async function runPageAction(action, args) {
           continue;
         }
         const ordered = ranked.slice().sort(docOrderCmp);
-        const idx = (typeof sp.index === 'number' && sp.index >= 0) ? sp.index : 0;
+        const idxGiven = typeof sp.index === 'number' && sp.index >= 0;
+        // AMBIGUOUS: several fields carry this name and nothing (section/index)
+        // picks one — refuse and list them. Writing the first would be a silent
+        // wrong-field write (GCP: two "URIs 1" rows under two headings).
+        if (ordered.length > 1 && !idxGiven && !sp.section) {
+          const paths = ordered.map(it => sectionPathOf(elById(it.i)));
+          const secs = distinguishingSections(paths);
+          const candidates = ordered.map((it, i) => {
+            const el = elById(it.i); const v = el ? liveValueOf(el) : it.value;
+            const c = { label: it.label || it.ariaLabel || it.placeholder || it.name || it.text || null, section: secs[i], value: v == null ? '' : String(v).slice(0, 120), empty: !String(v ?? '').trim(), index: i };
+            if (it.offscreen) c.offscreen = true;
+            return c;
+          });
+          const secList = [...new Set(secs.filter(Boolean))].map(s => JSON.stringify(s)).join(' | ');
+          misses.set(sp, { error: `${ordered.length} visible fields match ${JSON.stringify(sp.match)} — nothing was filled`, candidates, hint: `pass section:${secList || '"<heading above the field>"'} or index:N (0..${ordered.length - 1}, document order) to pick one` });
+          continue;
+        }
+        const idx = idxGiven ? sp.index : 0;
         if (idx >= ordered.length) {
           const off = ordered.filter(it => it.offscreen).length;
           misses.set(sp, { error: `Only ${ordered.length} fillable match(es) for "${sp.match}" (${ordered.length - off} visible, ${off} offscreen), index ${idx} out of range`, matches: ordered.map(matchBrief) });
@@ -2878,7 +2927,7 @@ async function runPageAction(action, args) {
     for (;;) {
       snap = await serializeSnapshot(false, { matchAll: true });
       res = resolveAll();
-      const realMiss = [...res.misses.values()].some(m => !m.skipped);
+      const realMiss = [...res.misses.values()].some(m => !m.skipped && !m.candidates);   // an ambiguous match is final, not "still mounting"
       if (!realMiss || nowMs() - t0 >= AUTO_WAIT_MS) break;
       await wait(150);
     }
@@ -2886,7 +2935,7 @@ async function runPageAction(action, args) {
     // Why a miss missed: candidates (visible fields), hidden label matches, and a
     // redirect when the name belongs to a dropdown (react-select input, combobox).
     const enrichMiss = (sp, miss) => {
-      if (miss.skipped || miss.sections || miss.fieldsInSection || miss.matches) return miss;
+      if (miss.skipped || miss.sections || miss.fieldsInSection || miss.matches || miss.candidates) return miss;
       const rep = fillMissReport(sp.m, snap.items.filter(it => isFillable(it) && !it.offscreen));
       const offMatches = snap.items.filter(it => it.offscreen && isFillable(it) && fieldMatchesText(it, sp.m));
       const out = { ...miss, ...rep };

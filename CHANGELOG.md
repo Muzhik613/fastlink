@@ -19,6 +19,32 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — fast_fill REFUSES a label that matches several fields (candidates + section/index hint) instead of writing the first
+- **What:** `fast_fill` (single and `{fields}`; page.js `resolveAll`): when a match resolves to
+  >1 fillable element and neither `section`/`near` nor `index` picks one, the field is NOT
+  written: `{error:"2 visible fields match \"URIs 1\" — nothing was filled", candidates:[{label,
+  section, value, empty, index, offscreen?}], hint:"pass section:\"…\" | \"…\" or index:N"}`.
+  In `{fields}` mode the other fields still fill and the refused one lands in `missed`/`fields`
+  with the same shape. `section` per candidate = the deepest outline title the other candidates
+  do not all share (module-scope `outlineTitles` + `distinguishingSections`, pure, unit-tested):
+  GCP's two "URIs 1" rows both sit under an `<h3>Item 1</h3>`, so the `<h2>` above each is
+  named — and that name is exactly what `section:` resolves. A top-level `index` is now the
+  default for every `{fields}` entry (the bench run passed `{fields:{"URIs 1":…}, index:1}` and
+  it was ignored). An ambiguous match is final (no 1.5s "still mounting" retry).
+- **Why:** gcpform cell on grok-4.3 (runs.jsonl 18:51:03Z, frames 11/12): after two "Add URI"
+  clicks `fast_fill {fields:{"URIs 1": ".../callback"}}` silently matched the first "URIs 1"
+  (Authorized JavaScript origins), overwrote the origin with the callback URL ("Invalid Origin")
+  and reported `verified:true`. Same class as the 2026-08-06 `section:` bug: a silent wrong-field
+  write is worse than an error.
+- **Files:** `fast-ext/src/actions/page.js`, `fast-runner/test/fill-ambiguity.test.mjs` (new).
+- **Watch out:** a loose substring that hits several fields ("name" → First name / Last name /
+  Name on card) now refuses too — the candidates list carries the exact labels to retry with.
+  Structural only: N matches + the outline resolver; no site-specific selectors.
+- **Status:** committed; unit test (synthetic GCP-shaped outline); verified live via a hot-loaded
+  page.js on a local two-heading page (refusal → `section:` and `index:` each wrote the right
+  input) and on getbootstrap.com/docs/5.3/examples/checkout ("name" → 4 candidates with
+  sections Billing address / Payment; "Email" still fills).
+
 ## 2026-09-15 — fast-runner: evidence gate checks the current URL + unretried failures
 - **What:** `runner.mjs` tracks `urlTrail` (distinct `url`s carried by tool results —
   fast_tab/nav/click/snapshot/wait or their auto-snapshot) and tags every corpus entry
