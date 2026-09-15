@@ -307,7 +307,7 @@ export const TESTS = [
   {
     id: 'staticform',
     name: 'Static multi-field form (selenium web-form)',
-    purpose: 'Eight plain fields of every input type. Measures multi-field batching (fast_fill_form in one call) against field-by-field round-trips.',
+    purpose: 'Eight plain fields of every input type. Measures multi-field batching (fast_fill {fields} in one call) against field-by-field round-trips.',
     url: 'https://www.selenium.dev/selenium/web/web-form.html',
     reset: { closeUrlPatterns: ['selenium.dev/selenium/web/'] },
     prompt: 'Using the FastLink browser connector (drive my real Chrome tab; do NOT use your own web search or built-in browsing), open a NEW TAB to https://www.selenium.dev/selenium/web/web-form.html and fill every field: the text input, the password, the textarea, the dropdown (select), the datalist, check the SECOND checkbox (the one that starts unchecked), select the SECOND radio button, and set the date. Do NOT submit the form. Then report each value.',

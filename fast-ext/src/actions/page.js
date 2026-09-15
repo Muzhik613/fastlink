@@ -922,6 +922,11 @@ const serializeSnapshot = async (viewportOnly, opts) => {
   let timedOut = false;
   let seen = 0;
   let offscreenItems = 0;   // visible interactive entries skipped by viewportOnly
+  let fillable = 0;         // visible, EMPTY fillable fields on this view (the batching nudge)
+  // matchAll: the internal match pool for click/fill keeps offscreen interactive
+  // entries (tagged offscreen:true) even when a heavy page forces viewport-only —
+  // the rect is read for the visibility test anyway, so this costs no layout.
+  const matchAll = !!(opts && opts.matchAll);
   const vh = window.innerHeight, vw = window.innerWidth;
   const detached = [];
   let sliceStart = nowMs();
@@ -954,9 +959,11 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     try { rect = el.getBoundingClientRect(); } catch { continue; }
     if (!visible(el, rect)) continue;
     const isOverlayEl = overlayEls && overlayEls.has(el);
-    if (viewportOnly && !isOverlayEl && (rect.bottom < 0 || rect.top > vh || rect.right < 0 || rect.left > vw)) {
+    const outOfView = !isOverlayEl && (rect.bottom < 0 || rect.top > vh || rect.right < 0 || rect.left > vw);
+    const offscreen = outOfView && entry.kind === 'click' && (matchAll || viewportOnly);
+    if (viewportOnly && outOfView) {
       if (entry.kind === 'click') offscreenItems++;
-      continue;
+      if (!(matchAll && entry.kind === 'click')) continue;
     }
     const off = offsetForCached(el);
     const x = Math.round(rect.x + off.ox);
@@ -989,6 +996,8 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       if (entry.type)        item.type = entry.type;
       if (off.inFrame)       item.inFrame = true;
       if (overlayEls && overlayEls.has(el)) item.inOverlay = true;
+      if (offscreen)         item.offscreen = true;
+      if (!offscreen && isEmptyFillable(el, entry)) fillable++;
       items.push(item);
     } else {
       content.push({ tag: entry.tag, text: entry.text, x, y, w, h, inFrame: off.inFrame || undefined });
@@ -1023,8 +1032,13 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       }
     } catch { /* hint is best-effort */ }
   }
+  // Batching nudge, as data: 2+ empty fields on one view → one fast_fill{fields}
+  // (or one fast_batch), never field-by-field turns.
+  if (fillable >= 2) hint = `${fillable} empty fillable fields visible; fill them in one fast_fill {fields:{label:value}} or one fast_batch` + (hint ? ' | ' + hint : '');
   return {
     url: location.href, title: document.title,
+    fillable: fillable || undefined,
+    hint: hint || undefined,
     count: items.length, items,
     contentCount: content.length, content,
     indexing: !INDEX.ready || undefined,
@@ -1032,8 +1046,19 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     capped: INDEX.capped || undefined,
     snapshotTimedOut: timedOut || undefined,
     offscreenItems: offscreenItems || undefined,
-    hint: hint || undefined,
   };
+};
+
+// A field the model still has to fill: text-like input / textarea / select /
+// contenteditable with no value yet (checkbox, radio, button, file… excluded).
+const NON_FILL_TYPES = new Set(['hidden', 'checkbox', 'radio', 'button', 'submit', 'reset', 'image', 'file', 'range', 'color']);
+const isEmptyFillable = (el, entry) => {
+  try {
+    if (!entry.live) return false;
+    if (entry.live === 'select') return !el.value;
+    if (entry.tag === 'input' && NON_FILL_TYPES.has((entry.type || '').toLowerCase())) return false;
+    return !(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? el.value : (el.textContent || '').trim());
+  } catch { return false; }
 };
 
 // ─────────────────────── output trimming (rank + cap) ───────────────────────
@@ -1367,7 +1392,8 @@ async function runPageAction(action, args) {
       result.snapshotNote = 'navigation triggered — this snapshot may be the pre-navigation page; call fast_snapshot after the new page loads';
     }
     if (!settle.settled || pageActivity().settling) {
-      return frontload(result, { settling: true, hint: `page was still changing when this snapshot was taken (waited ${settle.waitedMs}ms) — the view below may be incomplete; fast_wait for text that identifies the finished state before reading or reporting` });
+      const settleHint = `page was still changing when this snapshot was taken (waited ${settle.waitedMs}ms) — the view below may be incomplete; fast_wait for text that identifies the finished state before reading or reporting`;
+      return frontload(result, { settling: true, hint: result.hint ? `${result.hint} | ${settleHint}` : settleHint });
     }
     return result;
   };
@@ -1618,6 +1644,87 @@ async function runPageAction(action, args) {
     }
     return report;
   };
+  // Nearest preceding heading/legend — the section name a model can pass back.
+  const headingAbove = (el) => {
+    try {
+      const hs = document.querySelectorAll(SECTION_ANCHORS);
+      for (let i = hs.length - 1; i >= 0; i--) { if (follows(hs[i], el)) { const h = cleanLabel(hs[i].textContent).slice(0, 80); if (h) return h; } }
+    } catch {}
+    return null;
+  };
+  // Which control a pick/fill acted on — label / aria / name / id / the heading
+  // above it — so an ambiguous target is visibly attributed, never silent.
+  const describeField = (el) => {
+    const o = { tag: el.tagName.toLowerCase() };
+    try {
+      const role = el.getAttribute('role'); if (role) o.role = role;
+      const lbl = labelFor(el) || containerLabel(el); if (lbl) o.label = lbl.slice(0, 120);
+      const al = el.getAttribute('aria-label'); if (al) o.ariaLabel = al.slice(0, 120);
+      const ph = el.getAttribute('placeholder'); if (ph) o.placeholder = ph;
+      const nm = el.getAttribute('name'); if (nm) o.name = nm;
+      if (el.id) o.id = el.id;
+      const h = headingAbove(el); if (h) o.section = h;
+    } catch {}
+    return o;
+  };
+  // Is `el` (or what it sits in) a SELECT-type control — native <select>, a
+  // react-select instance (its input, control, value chips, "Remove X" buttons)
+  // or an ARIA combobox with a listbox popup? Returns the control element for
+  // the hint, else null. Bounded 8-hop climb.
+  const RS_INPUT_SEL = 'input[id^="react-select-"]';
+  const selectControlOf = (el) => {
+    if (!el || el.nodeType !== 1) return null;
+    try {
+      if (el.tagName === 'SELECT') return el;
+      if (el.matches(RS_INPUT_SEL)) return el;
+      if (el.getAttribute('role') === 'combobox' && el.tagName !== 'INPUT') return el;
+      let p = el;
+      for (let hops = 0; p && hops < 8; hops++, p = p.parentElement) {
+        if (p.tagName === 'SELECT') return p;
+        if (p.querySelector && /(?:^|\s)[\w-]*control(?:\s|$)/i.test(String(p.className || ''))) {
+          const rs = p.querySelector(RS_INPUT_SEL);
+          if (rs) return rs;
+        }
+        const role = p.getAttribute && p.getAttribute('role');
+        if (role === 'combobox' || role === 'listbox') return p;
+        if (p.getAttribute && /^(listbox|true)$/.test(p.getAttribute('aria-haspopup') || '')) return p;
+      }
+    } catch {}
+    return null;
+  };
+  // The one-line redirect a click/fill returns when its target is a dropdown.
+  const selectHintFor = (el) => {
+    const ctrl = selectControlOf(el);
+    if (!ctrl) return null;
+    const f = describeField(ctrl);
+    const name = f.label || f.ariaLabel || f.placeholder || f.name || f.section || f.id || 'this field';
+    return { selectField: f, hint: `this is a select control (field ${JSON.stringify(name)}); use fast_select_option {field:${JSON.stringify(name)}, option:"<choice>"} instead of clicking/typing its value` };
+  };
+  // A verified fill/pick is settled by definition — the generic "page still
+  // changing" settle hint on such a result only provokes needless waits.
+  const calmIfVerified = (out) => {
+    if (out && out.verified === true && out.settling) {
+      delete out.settling;
+      if (out.hint) { const keep = String(out.hint).split(' | ').filter(h => !/still changing/.test(h)); if (keep.length) out.hint = keep.join(' | '); else delete out.hint; }
+    }
+    return out;
+  };
+  // Bring an offscreen target into view before acting on it (a heavy page's
+  // match pool now includes offscreen controls).
+  const revealIfOffscreen = (it, el) => {
+    if (!it.offscreen || !el || !el.scrollIntoView) return false;
+    try { el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }); } catch { try { el.scrollIntoView(); } catch {} }
+    return true;
+  };
+  // Match list for a miss/out-of-range report: where each candidate is.
+  const matchBrief = (m) => {
+    const o = { tag: m.tag };
+    if (m.role) o.role = m.role;
+    if (m.text) o.text = m.text.slice(0, 80);
+    if (m.label) o.label = m.label;
+    if (m.offscreen) { o.offscreen = true; const el = elById(m.i); const h = el && headingAbove(el); if (h) o.section = h; }
+    return o;
+  };
   const fillItem = (found, value, append) => {
     const el = elAt(found);
     if (!el) return { error: 'no element' };
@@ -1774,8 +1881,23 @@ async function runPageAction(action, args) {
 
   if (action === 'fast_wait') {
     const t = (args.text || '').toLowerCase();
-    if (!t) return { error: 'fast_wait needs either text or networkIdle:true' };
+    const selector = args.selector ? String(args.selector) : '';
+    if (!t && !selector) return { error: 'fast_wait needs text, selector, or networkIdle:true' };
+    if (selector) { try { document.querySelector(selector); } catch { return { error: `fast_wait: invalid CSS selector ${JSON.stringify(selector)}` }; } }
     const deadline = Date.now() + (args.timeoutMs || 5000);
+    // A match must be REAL: a content entry's cached text can outlive the text
+    // (a panel emptied by a re-render still matches from the index), and a
+    // container that holds the text but has no visible box is not "the view
+    // mounted". Such hits keep polling; if one is all there is at the deadline
+    // the result says so (emptyContainer:true) instead of resolving on it.
+    let emptyHit = null;   // { el, text } — the last stale/invisible match seen
+    const liveHasText = (el) => { try { return !!el && (el.textContent || '').toLowerCase().includes(t); } catch { return false; } };
+    const boxVisible = (el) => { let r; try { r = el.getBoundingClientRect(); } catch { return false; } return visible(el, r); };
+    const resolveEmpty = () => {
+      const el = emptyHit.el;
+      const found = { text: emptyHit.text, tag: el.tagName ? el.tagName.toLowerCase() : undefined, contentMatch: true };
+      return resolve(withSnap({ found, emptyContainer: true, waitedMs: (args.timeoutMs || 5000), hint: `"${args.text || selector}" matched only an element with no visible box/content (stale or hidden container) — the view has not rendered; wait for text that only the finished view shows, or read again` }));
+    };
     // Cheap text-only scan over the index — no rect reads, no layout.
     // Only when we find a match do we serialize that ONE entry with
     // coords, so a polling fast_wait doesn't repeatedly force layout
@@ -1877,8 +1999,29 @@ async function runPageAction(action, args) {
         return null;
       };
       let polls = 0;
+      // selector mode: the first visible match wins; a matched-but-invisible
+      // element is an emptyHit (reported at the deadline).
+      const pollSelector = () => {
+        let el = null;
+        try { el = document.querySelector(selector); } catch { return null; }
+        if (!el) return null;
+        if (!boxVisible(el)) { emptyHit = { el, text: selector }; return null; }
+        indexElement(el);
+        const entry = INDEX.byEl.get(el);
+        const rect = el.getBoundingClientRect(); const off = offsetFor(el);
+        return resolve(withSnap({ found: {
+          i: entry ? entry.id : undefined, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || undefined,
+          text: (entry && entry.text) || cleanLabel(el.textContent).slice(0, 120), selector,
+          x: Math.round(rect.x + off.ox), y: Math.round(rect.y + off.oy), w: Math.round(rect.width), h: Math.round(rect.height),
+        } }));
+      };
       const poll = () => {
         polls++;
+        if (selector) {
+          if (pollSelector() !== null) return;
+          if (Date.now() > deadline) return emptyHit ? resolveEmpty() : resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}`, ...pageActivity() });
+          return setTimeout(poll, 150);
+        }
         // Storm-tripped page (Maps, GCP): the observer is OFF, so nothing new is
         // ever indexed unless a walk is re-seeded — snapshots do this on demand;
         // fast_wait must too, or it polls a frozen index to the deadline while the
@@ -1893,9 +2036,12 @@ async function runPageAction(action, args) {
         if (hit && hit.el && hit.el.isConnected) {
           const entry = INDEX.byEl.get(hit.el);
           if (hit.content) {
-            // Non-interactive content entry — resolve as a content match.
-            return resolveContent(hit.el, (entry && entry.text) || args.text);
-          }
+            // Non-interactive content entry — resolve as a content match, but
+            // only if the text is still there and the element has a box.
+            if (!liveHasText(hit.el)) { indexElement(hit.el); emptyHit = emptyHit || { el: hit.el, text: (entry && entry.text) || args.text }; }
+            else if (!boxVisible(hit.el)) emptyHit = { el: hit.el, text: (entry && entry.text) || args.text };
+            else return resolveContent(hit.el, (entry && entry.text) || args.text);
+          } else {
           // Interactive entry: only now read rect/visibility for the match.
           let rect; try { rect = hit.el.getBoundingClientRect(); } catch { rect = null; }
           if (rect && visible(hit.el, rect)) {
@@ -1913,6 +2059,7 @@ async function runPageAction(action, args) {
           }
           // Click entry matched but not yet visible — fall through to the body
           // fallback / keep polling.
+          }
         }
         // Fallback: visible text that isn't an index entry (e.g. a raw <pre>
         // JSON blob may not be indexed as a content entry). Runs ONLY after the
@@ -1923,7 +2070,8 @@ async function runPageAction(action, args) {
             const tc = document.body && document.body.textContent;
             if (tc && tc.toLowerCase().includes(t)) {
               const host = smallestContaining();   // null → the text is only inside script/style, not on the page
-              if (host) return resolveContent(host, args.text);
+              if (host && boxVisible(host)) return resolveContent(host, args.text);
+              if (host) emptyHit = { el: host, text: args.text };
             }
           } catch {}
           const attrHit = probeAttrText();
@@ -1942,6 +2090,7 @@ async function runPageAction(action, args) {
           }
         }
         if (Date.now() > deadline) {
+          if (emptyHit && emptyHit.el && emptyHit.el.isConnected) return resolveEmpty();
           // Direct DOM read (no snapshot/INDEX): give the agent a peek at the
           // current view so it can tell it landed somewhere wrong.
           const headings = [];
@@ -2038,23 +2187,6 @@ async function runPageAction(action, args) {
 
     const optText = (o) => (o.textContent || '').trim().toLowerCase();
 
-    // Which dropdown a pick acted on — label / aria / name / id / the heading
-    // above it — so a pick keyed on an ambiguous name ("Ocean" = a VALUE shown by
-    // a different select) is visibly attributed, never silent.
-    const describeField = (el) => {
-      const o = { tag: el.tagName.toLowerCase() };
-      try {
-        const role = el.getAttribute('role'); if (role) o.role = role;
-        const lbl = labelFor(el) || containerLabel(el); if (lbl) o.label = lbl.slice(0, 120);
-        const al = el.getAttribute('aria-label'); if (al) o.ariaLabel = al.slice(0, 120);
-        const ph = el.getAttribute('placeholder'); if (ph) o.placeholder = ph;
-        const nm = el.getAttribute('name'); if (nm) o.name = nm;
-        if (el.id) o.id = el.id;
-        const hs = document.querySelectorAll(SECTION_ANCHORS);
-        for (let i = hs.length - 1; i >= 0; i--) { if (follows(hs[i], el)) { const h = cleanLabel(hs[i].textContent).slice(0, 80); if (h) o.section = h; break; } }
-      } catch {}
-      return o;
-    };
     // What the control DISPLAYS after the pick — the read-back that `verified`
     // compares against `picked`.
     const readShown = (el, kind, ctrl) => {
@@ -2094,6 +2226,7 @@ async function runPageAction(action, args) {
       const t0 = nowMs();
       let field = findField(fieldRaw, fieldLo);
       while (!field && nowMs() - t0 < AUTO_WAIT_MS) { await wait(150); field = findField(fieldRaw, fieldLo); }
+      if (field) { try { const r = field.getBoundingClientRect(); if (r.bottom < 0 || r.top > window.innerHeight) field.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {} }
       if (!field) {
         const act = pageActivity();
         return { error: `field "${fieldRaw}" not found — no dropdown/combobox/select carries that label, aria-label, placeholder, name, id, or titled section. Nothing was changed. Retry with one of the names in \`candidates\`.`, waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing — the control may not be rendered yet: fast_wait for text that identifies its view, then retry' } : {}), candidates: dropdownCandidates() };
@@ -2253,13 +2386,13 @@ async function runPageAction(action, args) {
         results[fieldKey] = r;
         if (r && !r.error) picked++; else failed++;
       }
-      return withSnap({ picked, failed, total: Object.keys(combined).length, results });
+      const out = await withSnap({ verified: picked === Object.keys(combined).length && failed === 0, picked, failed, total: Object.keys(combined).length, results });
+      return calmIfVerified(out);
     }
 
-    // Single form (unchanged behaviour): success wrapped with a fresh snapshot,
-    // misses returned plain.
+    // Single form: success wrapped with a fresh snapshot, misses returned plain.
     const r = await setOne(args.field, args.option);
-    return (r && !r.error) ? withSnap(r) : r;
+    return (r && !r.error) ? calmIfVerified(await withSnap(r)) : r;
   }
 
   if (action === 'fast_hover') {
@@ -2337,22 +2470,26 @@ async function runPageAction(action, args) {
     // a view change is not a miss yet). A miss after the wait is real.
     const t0 = nowMs();
     let snap, matches;
+    // Tag names are accepted as role aliases (role:"a" = a link, role:"button"
+    // = a <button> or [role=button]) — models mix the two; a mismatch used to
+    // refuse the very links it listed under `available`.
+    const TAG_AS_ROLE = { a: 'link' };
+    const wantRole = args.role ? String(args.role).toLowerCase() : null;
+    const roleOk = (m) => {
+      if (!wantRole) return true;
+      const explicit = (m.role || '').toLowerCase();
+      return explicit === wantRole || implicitRoleOf(m.tag, m.type) === wantRole
+        || m.tag === wantRole || (TAG_AS_ROLE[wantRole] && (explicit === TAG_AS_ROLE[wantRole] || implicitRoleOf(m.tag, m.type) === TAG_AS_ROLE[wantRole]));
+    };
     for (;;) {
-      snap = await serializeSnapshot(false);
+      snap = await serializeSnapshot(false, { matchAll: true });
       // Filter by role/tag BEFORE ranking. Previously the wrong-TYPE top text match
       // won the slot and the post-rank filter then emptied the list (e.g. a plain
       // <a> "External" beating the radio, then role="radio" dropping the <a> →
       // 0 results). When neither is given, matchScore's control-preference biases
       // toward real controls over generic links/text.
       let pool = snap.items;
-      if (args.role) {
-        const wantRole = String(args.role).toLowerCase();
-        pool = pool.filter(m => {
-          const explicit = (m.role || '').toLowerCase();
-          if (explicit === wantRole) return true;
-          return implicitRoleOf(m.tag, m.type) === wantRole;
-        });
-      }
+      if (wantRole) pool = pool.filter(roleOk);
       if (args.tag) {
         const wantTag = String(args.tag).toLowerCase();
         pool = pool.filter(m => m.tag === wantTag);
@@ -2371,13 +2508,22 @@ async function runPageAction(action, args) {
           const qual = [];
           if (args.role) qual.push(`role="${args.role}"`);
           if (args.tag) qual.push(`tag="${args.tag}"`);
+          const available = preFilter.slice(0, 8).map(matchBrief);
+          const kinds = [...new Set(available.map(m => `<${m.tag}>` + (m.role ? ` role=${m.role}` : '')))].join(', ');
+          const sel = selectHintFor(elById(preFilter[0].i));
           return {
             error: `Found ${preFilter.length} match(es) for "${args.text}" but none satisfied ${qual.join(' and ')}. Nothing was clicked — retry with one of \`available\` (drop the role/tag or use its text).`,
             ...tail,
-            available: preFilter.slice(0, 8).map(m => ({ tag: m.tag, role: m.role, text: m.text, label: m.label })),
+            hint: sel ? sel.hint : `the matches are ${kinds} — drop role/tag, or pass the role they actually have`,
+            ...(sel ? { selectField: sel.selectField } : {}),
+            available,
           };
         }
-        return { error: `No element matching "${args.text}". Nothing was clicked.`, ...tail, diagnostics: diagnoseNoMatch(args.text) };
+        // A heading that titles a dropdown ("Single" over an unlabelled
+        // react-select) is not clickable — say which tool takes that name.
+        let secHint = null;
+        try { const sec = resolveSection(String(args.text || '').toLowerCase(), DROPDOWN_SEL); if (sec.matched && sec.items.length) secHint = { hint: `"${args.text}" is a heading over a dropdown, not a control; use fast_select_option {field:${JSON.stringify(args.text)}, option:"<choice>"}` }; } catch {}
+        return { error: `No element matching "${args.text}". Nothing was clicked.`, ...tail, ...(secHint || {}), diagnostics: diagnoseNoMatch(args.text) };
       }
       await wait(150);
     }
@@ -2390,11 +2536,14 @@ async function runPageAction(action, args) {
     const ordered = idxGiven ? matches.slice().sort(docOrderCmp) : matches;
     const idx = idxGiven ? args.index : 0;
     if (idx >= ordered.length) {
-      return { error: `Only ${ordered.length} matches for "${args.text}", index ${idx} out of range`, matches: ordered.map(m => ({ tag: m.tag, role: m.role, text: m.text, label: m.label })) };
+      const off = ordered.filter(m => m.offscreen).length;
+      return { error: `Only ${ordered.length} matches for "${args.text}" (${ordered.length - off} visible, ${off} offscreen), index ${idx} out of range`, matches: ordered.map(matchBrief) };
     }
     const item = ordered[idx];
     const el = elAt(item);
     if (!el) return { error: 'Element not at expected coords' };
+    const scrolledIntoView = revealIfOffscreen(item, el);
+    const sel = selectHintFor(el);
     // willNavigate is a best-effort HINT (the batch re-bind keys off ACTUAL
     // navigation, not this) — but predict the common navigating clicks so callers
     // get a useful signal: (a) a real same-window link, and (b) a form-submit
@@ -2422,6 +2571,8 @@ async function runPageAction(action, args) {
     // What the click DID leads the result: where the page is now, whether the URL
     // moved, whether a dialog opened/closed, and what holds focus.
     const head = { clicked: item, url: location.href, urlChanged: location.href !== urlBefore };
+    if (sel) { head.hint = sel.hint; head.selectField = sel.selectField; }
+    if (scrolledIntoView) head.scrolledIntoView = true;
     const dNow = countDialogs();
     if (dNow > dialogsBefore) head.dialogOpened = true;
     else if (dNow < dialogsBefore) head.dialogClosed = true;
@@ -2537,246 +2688,153 @@ async function runPageAction(action, args) {
   }
 
   if (action === 'fast_fill') {
-    const m = (args.match || '').toLowerCase();
-    const sectionArg = String(args.section ?? args.near ?? '').trim();
-    // Target lookup, retried until AUTO_WAIT_MS: a field that mounts right after
-    // a view change (Maps' directions panel 0.8s after "Directions") must not
-    // miss just because the call landed first. A miss after the wait is real.
+    // ONE tool for one field ({match, value, index, section, append}) or a whole
+    // form ({fields:{label: value | {value, index, section, name, exact, append}}}).
+    // Both paths share the resolver below; the single form keeps its
+    // {verified, value, …} head, the multi form returns per-field verified state.
+    const multi = args.fields && typeof args.fields === 'object' && !Array.isArray(args.fields);
+    if (!multi && !args.match) return { error: 'fast_fill: pass {match, value} for one field or {fields:{label: value}} for several' };
+    const formSection = String(args.section ?? args.near ?? '').trim();
+    const specs = multi
+      ? Object.entries(args.fields).map(([match, raw]) => {
+          const spec = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : { value: raw };
+          return { match: String(match), value: spec.value ?? spec.text, index: spec.index, section: String(spec.section ?? spec.near ?? formSection).trim(),
+                   append: spec.append ?? !!args.append, exactName: spec.name != null ? String(spec.name).toLowerCase() : (spec.exact ? String(match).toLowerCase() : null) };
+        })
+      : [{ match: String(args.match), value: args.value ?? args.text, index: args.index, section: formSection, append: !!args.append, exactName: null }];
+    for (const sp of specs) sp.m = sp.match.toLowerCase();
+
+    // Resolve every field against one match pool (offscreen controls included);
+    // the lookup is retried until AUTO_WAIT_MS so a field still mounting after a
+    // view change is not a false miss. Returns { found:Map, misses:Map, snap }.
+    const resolveAll = () => {
+      const found = new Map(), misses = new Map(), usedI = new Set();
+      for (const sp of specs) {
+        if (sp.value == null) { misses.set(sp, { error: "no value provided — use '' to clear the field", skipped: true }); continue; }
+        let pool = snap.items.filter(it => isFillable(it) && !usedI.has(it.i));
+        if (sp.section) {
+          const scoped = applySectionScope(sp.section);
+          if (scoped.error) { misses.set(sp, scoped); continue; }
+          pool = scoped.pool.filter(it => !usedI.has(it.i));   // REPLACES the pool — never a page-wide fallback
+        }
+        let ranked;
+        if (sp.exactName != null) ranked = pool.filter(it => it.name && it.name.toLowerCase() === sp.exactName);
+        else {
+          // Exact label/name beats a substring ("URIs 1" must not grab "URIs 10").
+          const exact = pool.filter(it => fieldMatchesExact(it, sp.m));
+          ranked = exact.length ? exact : pool.filter(it => fieldMatchesText(it, sp.m));
+        }
+        if (!ranked.length) {
+          misses.set(sp, sp.section
+            ? { error: `No fillable element matching "${sp.match}" inside section "${sp.section}" — the section resolved but none of its ${pool.length} fillable field(s) carry that label. Nothing was filled.`, fieldsInSection: pool.slice(0, 12).map(fieldBrief) }
+            : { error: `No visible fillable element matching "${sp.match}". Nothing was filled.` });
+          continue;
+        }
+        const ordered = ranked.slice().sort(docOrderCmp);
+        const idx = (typeof sp.index === 'number' && sp.index >= 0) ? sp.index : 0;
+        if (idx >= ordered.length) {
+          const off = ordered.filter(it => it.offscreen).length;
+          misses.set(sp, { error: `Only ${ordered.length} fillable match(es) for "${sp.match}" (${ordered.length - off} visible, ${off} offscreen), index ${idx} out of range`, matches: ordered.map(matchBrief) });
+          continue;
+        }
+        found.set(sp, ordered[idx]);
+        usedI.add(ordered[idx].i);
+      }
+      return { found, misses };
+    };
     const t0 = nowMs();
-    let snap, pool, ranked, miss;
+    let snap, res;
     for (;;) {
-      snap = await serializeSnapshot(false);
-      pool = snap.items.filter(it => isFillable(it));
-      miss = null;
-      // Optional section scoping (`section`, or its alias `near`): restrict to the
-      // fields inside that titled group. An unresolvable section is a HARD ERROR —
-      // it must never degrade into a page-wide match, which used to overwrite the
-      // first same-labelled field in a DIFFERENT section and report success.
-      if (sectionArg) {
-        const scoped = applySectionScope(sectionArg);
-        if (scoped.error) miss = scoped;
-        else pool = scoped.pool;   // REPLACES the snapshot pool — one source of candidates
-      }
-      if (!miss) {
-        // Prefer an EXACT field-label/name match over a loose substring, so "URIs 1"
-        // doesn't grab "URIs 10" / a sibling section's "URIs". Substring is the
-        // fallback when nothing matches exactly.
-        const exact = pool.filter(it => fieldMatchesExact(it, m));
-        ranked = exact.length ? exact : pool.filter(it => fieldMatchesText(it, m));
-        if (ranked.length) break;
-        miss = sectionArg
-          ? { error: `No fillable element matching "${args.match}" inside section "${sectionArg}" — the section resolved but none of its ${pool.length} fillable field(s) carry that label. Nothing was filled.`, fieldsInSection: pool.slice(0, 12).map(fieldBrief) }
-          : { error: `No visible fillable element matching "${args.match}". Nothing was filled.`, ...fillMissReport(m, pool) };
-      }
-      if (nowMs() - t0 >= AUTO_WAIT_MS) {
-        const act = pageActivity();
-        return frontload(miss, { error: miss.error, waitedMs: Math.round(nowMs() - t0), settling: act.settling,
-          ...(act.settling ? { hint: 'the page was still changing when this gave up — the field may not be rendered yet: fast_wait for text that identifies the target view, then fill again' + (miss.hint ? '; ' + miss.hint : '') } : {}) });
-      }
+      snap = await serializeSnapshot(false, { matchAll: true });
+      res = resolveAll();
+      const realMiss = [...res.misses.values()].some(m => !m.skipped);
+      if (!realMiss || nowMs() - t0 >= AUTO_WAIT_MS) break;
       await wait(150);
     }
-    // Optional occurrence index among the matches in STABLE DOM order.
-    const ordered = ranked.slice().sort(docOrderCmp);
-    const idx = (typeof args.index === 'number' && args.index >= 0) ? args.index : 0;
-    if (idx >= ordered.length) return { error: `Only ${ordered.length} fillable match(es) for "${args.match}", index ${idx} out of range` };
-    const found = ordered[idx];
-    // Lenient key handling: callers/models routinely confuse `text` (fast_type)
-    // with `value` (fast_fill). Accept `text` as an alias. Use `??` (not `||`) so
-    // an explicit empty string value:"" is treated as PRESENT (→ clears) and is
-    // not discarded in favor of `text`.
-    const value = args.value ?? args.text;
-    // Genuinely missing value (undefined/null, not "") → clear error, never write
-    // the literal "undefined".
-    if (value == null) return { error: "fast_fill: no value provided — pass value (use value:'' to clear the field)" };
-    // clear-before-fill is preserved (fillItem replaces unless args.append).
-    const r = fillItem(found, value, args.append);
-    if (r.error) return r;
-    if (found.ariaLabel && !r.filled.label) r.filled.ariaLabel = found.ariaLabel;
-    const out = await withSnap(r, snap);
-    // VERIFIED STATE leads the result: the field's live value after the page
-    // settled, and whether it still holds what was written (a framework may
-    // reformat or revert it — the model must see that, not assume the write held).
-    const el = elAt(found);
-    const live = liveValueOf(el);
-    const expected = r.kind === 'native-select' ? String(r.valueSet) : String(value);
-    const holds = live == null ? false
-      : r.kind === 'native-select' ? live.toLowerCase() === expected.toLowerCase()
-      : args.append ? live.endsWith(expected) : live === expected;
-    const head = { verified: holds, value: maskIfPassword(el, live == null ? '' : String(live).slice(0, 300)) };
-    if (!holds) head.reason = `the field now reads ${JSON.stringify(head.value)} instead of the value written — the page reformatted, rejected or reverted it; do not report the written value as set`;
-    return frontload(out, head);
-  }
-
-  if (action === 'fast_fill_form') {
-    const fields = (args.fields && typeof args.fields === 'object') ? args.fields : null;
-    if (!fields) return { error: 'fields object required, e.g. { email: "...", phone: "...", country: "US" }' };
-    const append = !!args.append;
-    const stopOnError = !!args.stopOnError;
-    const snap = await serializeSnapshot(false);
-    const items = snap.items;
-    // Form-wide section default; a per-field { section } overrides it.
-    const formSection = String(args.section ?? args.near ?? '').trim();
-    const usedI = new Set();
-    const results = {};
-    // Verify targets are COLLECTED here and re-read in a SEPARATE bounded pass
-    // AFTER all fills — the fill itself is the load-bearing result and must not
-    // wait on (or be hung by) the advisory re-read. (BUG-4)
-    const toVerify = [];
-    let filled = 0, missed = 0;
-    // Field is filled-but-not-visible if it has no offsetParent (display:none on
-    // it or an ancestor, or detached) yet isn't disabled — such fields still
-    // submit, so the agent should be warned the value went somewhere invisible.
-    const isHidden = (el) => el != null && !el.disabled && el.offsetParent === null;
-    const readValue = (el) => {
-      if (!el) return null;
-      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return el.value;
-      return (el.isContentEditable || el.getAttribute('role') === 'textbox') ? el.innerText : el.value;
+    const waitedMs = Math.round(nowMs() - t0);
+    // Why a miss missed: candidates (visible fields), hidden label matches, and a
+    // redirect when the name belongs to a dropdown (react-select input, combobox).
+    const enrichMiss = (sp, miss) => {
+      if (miss.skipped || miss.sections || miss.fieldsInSection || miss.matches) return miss;
+      const rep = fillMissReport(sp.m, snap.items.filter(it => isFillable(it) && !it.offscreen));
+      const offMatches = snap.items.filter(it => it.offscreen && isFillable(it) && fieldMatchesText(it, sp.m));
+      const out = { ...miss, ...rep };
+      if (offMatches.length) { out.offscreenMatches = offMatches.slice(0, 6).map(matchBrief); out.hint = `${offMatches.length} matching field(s) are offscreen (see offscreenMatches, with their section) — pass section:"<name>" or index:N to fill one of them` + (out.hint ? '; ' + out.hint : ''); }
+      let sel = null;
+      try {
+        const hid = rep.hiddenMatches && rep.hiddenMatches.find(h => /^react-select-/.test(h.id || ''));
+        const hidEl = hid ? document.getElementById(hid.id) : null;
+        sel = selectHintFor(hidEl) || (() => { const c = document.querySelector(`[role="combobox"][aria-label*="${CSS.escape(sp.match)}" i]`); return c ? selectHintFor(c) : null; })();
+      } catch {}
+      if (sel) { out.hint = sel.hint; out.selectField = sel.selectField; }
+      return out;
     };
-    for (const [match, raw] of Object.entries(fields)) {
-      // Each value may be a plain string, or an object form for disambiguation:
-      // { value, name, index, exact }. value is required in the object form.
-      const spec = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : { value: raw };
-      // Same lenient key + empty-string-is-real rules as fast_fill: accept `text`
-      // as an alias for `value`, and use `??` so value:"" is kept (→ clears the
-      // field) rather than discarded.
-      const value = spec.value ?? spec.text;
-      // Missing value (undefined/null, not "") → skip this field with a clear
-      // note; NEVER write the literal "undefined". An explicit "" falls through
-      // and clears the field.
-      if (value == null) { results[match] = { error: "no value provided — use '' to clear", skipped: true }; missed++; if (stopOnError) break; continue; }
-      // Exact 'name' attribute match (case-insensitive) takes precedence over the
-      // label/placeholder/aria/name substring match used for plain string fields.
-      const exactName = (spec.name != null) ? String(spec.name).toLowerCase()
-        : (spec.exact ? String(match).toLowerCase() : null);
-      const m = String(match).toLowerCase();
-      // Section scoping, per field ({ value, section }) or for the whole form
-      // (args.section / args.near). Same resolver and same HARD-ERROR rule as
-      // fast_fill: an unresolvable section fails THIS field loudly instead of
-      // silently writing a same-labelled field in another section.
-      const sectionArg = String(spec.section ?? spec.near ?? formSection).trim();
-      let pool = items;
-      if (sectionArg) {
-        const scoped = applySectionScope(sectionArg);
-        if (scoped.error) { results[match] = scoped; missed++; if (stopOnError) break; continue; }
-        pool = scoped.pool;   // REPLACES the snapshot pool for this field
+    const act = pageActivity();
+    const settleTail = act.settling ? { settling: true, hint: 'the page was still changing when this gave up — the field may not be rendered yet: fast_wait for text that identifies the target view, then fill again' } : {};
+
+    // Fill everything that resolved (scrolling offscreen targets into view).
+    const written = new Map();   // spec → { el, r }
+    for (const [sp, it] of res.found) {
+      const el = elAt(it);
+      revealIfOffscreen(it, el);
+      const r = fillItem(it, sp.value, sp.append);
+      if (r.error) { res.misses.set(sp, r); continue; }
+      if (it.ariaLabel && !r.filled.label) r.filled.ariaLabel = it.ariaLabel;
+      const sel = (el && el.tagName !== 'SELECT') ? selectHintFor(el) : null;
+      if (sel) { r.hint = sel.hint; r.selectField = sel.selectField; }
+      written.set(sp, { el, r });
+    }
+    // Verified state: each field's LIVE value after the page settled, compared
+    // with what was written (native select: the selected option's text/value).
+    const verifyOne = (sp, el, r) => {
+      const live = liveValueOf(el);
+      const expected = r.kind === 'native-select' ? String(r.valueSet) : String(sp.value);
+      const holds = live == null ? false
+        : r.kind === 'native-select' ? live.toLowerCase() === expected.toLowerCase()
+        : sp.append ? live.endsWith(expected) : live === expected;
+      const head = { verified: holds, value: maskIfPassword(el, live == null ? '' : String(live).slice(0, 300)) };
+      if (!holds) head.reason = `the field now reads ${JSON.stringify(head.value)} instead of the value written — the page reformatted, rejected or reverted it; do not report the written value as set`;
+      return head;
+    };
+
+    if (!multi) {
+      const sp = specs[0];
+      if (!written.has(sp)) {
+        const miss = enrichMiss(sp, res.misses.get(sp) || { error: 'not filled' });
+        return frontload(miss, { error: miss.error, waitedMs, ...settleTail, ...(settleTail.hint && miss.hint ? { hint: settleTail.hint + '; ' + miss.hint } : {}) });
       }
-      const matches = pool.filter(it => !usedI.has(it.i) && isFillable(it) && (
-        exactName != null ? (it.name && it.name.toLowerCase() === exactName)
-                          : fieldMatchesText(it, m)));
-      // occurrence index picks the N-th candidate when labels/names collide.
-      const idx = (typeof spec.index === 'number' && spec.index >= 0) ? spec.index : 0;
-      const found = matches[idx];
-      if (!found) {
-        results[match] = matches.length > 0
-          ? { error: `index ${idx} out of range (${matches.length} match(es))` }
-          : { error: 'not found' };
-        missed++; if (stopOnError) break; continue;
-      }
-      usedI.add(found.i);
-      const r = fillItem(found, value, append); // fillItem coerces; value is present (may be "")
-      results[match] = r;
-      const el = elAt(found);
-      if (!r.error && isHidden(el)) r.filledButNotVisible = true;
-      // DEFER verification — don't re-read inline. Collect the target; the
-      // re-read runs in a bounded pass below so a slow/stalled read can never
-      // hang the fill loop. (BUG-4)
-      if (!r.error) toVerify.push({ match, el, expected: String(value), append });
-      if (r.error) { missed++; if (stopOnError) break; }
-      else filled++;
+      const { el, r } = written.get(sp);
+      const out = await withSnap(r, snap);
+      return calmIfVerified(frontload(out, verifyOne(sp, el, r)));
     }
 
-    const out = { filled, missed, total: Object.keys(fields).length, results };
-    // Same miss report as fast_fill, once per call (not per field): the visible
-    // fillable fields plus any label-matching hidden ones, so a 'not found' is
-    // actionable instead of a dead end.
-    if (missed) {
-      const missedKeys = Object.keys(results).filter(k => results[k] && results[k].error === 'not found');
-      if (missedKeys.length) {
-        const rep = fillMissReport(String(missedKeys[0]).toLowerCase(), items.filter(it => isFillable(it) && !usedI.has(it.i)));
-        out.candidates = rep.candidates;
-        if (rep.hiddenMatches) { out.hiddenMatches = rep.hiddenMatches; out.hint = rep.hint; }
-      }
-    }
-
-    // VERIFY (always on): decoupled + time-bounded (BUG-4). The fills above are
-    // DONE and are the load-bearing result. Verification re-reads each filled
-    // field after the DOM settles, so every field result carries its live
-    // `value` and `verified`; a field an async re-render wiped (Drupal AJAX
-    // widget) is `reverted:true`. It runs as a SEPARATE pass under its own
-    // wall-clock budget and can NEVER hang the call: on overrun or a throwing
-    // read it degrades to "filled, not verified" (verifyError set).
-    {
-      await settleDom(SETTLE_MAX_MS);
-      const VERIFY_BUDGET_MS = 2500;
-      const vStart = nowMs();
-      let verifyTimedOut = false;
-      for (const vf of toVerify) {
-        if (nowMs() - vStart > VERIFY_BUDGET_MS) { verifyTimedOut = true; break; }
-        const r = results[vf.match];
-        if (!r) continue;
-        try {
-          // Native <select>: the fill matched the requested value against option
-          // TEXT *or* VALUE (see fillItem), so the .value we store can legitimately
-          // differ from the requested text (Country="Australia" → value "AU").
-          // Verify against the SELECTED option's text OR value, mirroring that
-          // match — comparing raw .value to the requested text falsely flagged a
-          // correctly-selected option as reverted. Only a select whose selected
-          // option matches NEITHER (genuine reset to placeholder) is reverted.
-          const isSelect = (r.kind === 'native-select') || (vf.el && vf.el.tagName === 'SELECT');
-          if (isSelect) {
-            const opt = vf.el.selectedOptions ? vf.el.selectedOptions[0] : vf.el.options[vf.el.selectedIndex];
-            const want = vf.expected.toLowerCase();
-            const stuck = !!opt && (
-              (opt.text || '').trim().toLowerCase() === want ||
-              (opt.value || '').toLowerCase() === want
-            );
-            r.value = opt ? cleanLabel(opt.text || opt.value || '') : '';
-            r.verified = stuck;
-            if (!stuck) r.reverted = true;
-          } else {
-            const current = readValue(vf.el);
-            const stuck = vf.append ? (current != null && current.endsWith(vf.expected))
-                                    : (current === vf.expected);
-            r.value = maskIfPassword(vf.el, current == null ? '' : String(current).slice(0, 300));
-            r.verified = stuck;
-            if (!stuck) r.reverted = true;
-          }
-        } catch (e) {
-          r.verified = false;
-          r.verifyError = (e?.message || String(e)).slice(0, 200);
-        }
-      }
-      if (verifyTimedOut) {
-        out.verifyError = 'verify timed out';
-        // Fields not yet re-read degrade cleanly to "filled, not verified".
-        for (const vf of toVerify) {
-          const r = results[vf.match];
-          if (r && r.verified === undefined && !('verifyError' in r)) {
-            r.verified = false;
-            r.verifyError = 'verify timed out';
-          }
-        }
-      }
-      out.reverted = Object.entries(results).filter(([, r]) => r && r.reverted).map(([k]) => k);
-      out.verified = missed === 0 && out.reverted.length === 0 && !verifyTimedOut;
-    }
-
-    // Defensive overall bound (BUG-4): the fill result MUST return well under the
-    // 30s tool timeout regardless of how the snapshot tail behaves. withSnap is
-    // already self-bounded, but race it against a hard cap so any future stall in
-    // the snapshot path degrades to "filled, snapshot skipped" rather than a
-    // blind 30s timeout. The fill is non-idempotent — a lost ack must never look
-    // like "nothing happened" and provoke a retry.
+    // Multi-field result: { verified, filled, missed, fields:{label:{…}}, snapshot }.
+    // The snapshot's own settle (withSnap) is the verify delay; the live values
+    // are read after it, into the same `fields` object the snapshot result holds.
+    const fields = {};
+    const out = { fields };
     const HANDLER_CAP_MS = 8000;
-    const led = frontload(out, { verified: out.verified, filled, missed });
-    return await Promise.race([
-      withSnap(led, snap),
-      new Promise((resolve) => setTimeout(() => resolve({
-        ...led,
-        snapshotPartial: true,
-        snapshotNote: 'snapshot skipped — bounded to keep fast_fill_form responsive',
-      }), HANDLER_CAP_MS)),
+    const snapped = await Promise.race([
+      withSnap(out, snap),
+      new Promise((resolve) => setTimeout(() => resolve({ ...out, snapshotPartial: true, snapshotNote: 'snapshot skipped — bounded to keep fast_fill responsive' }), HANDLER_CAP_MS)),
     ]);
+    let filled = 0, missed = 0;
+    for (const sp of specs) {
+      if (written.has(sp)) {
+        const { el, r } = written.get(sp);
+        fields[sp.match] = { ...verifyOne(sp, el, r), ...r };
+        filled++;
+      } else {
+        fields[sp.match] = enrichMiss(sp, res.misses.get(sp) || { error: 'not filled' });
+        missed++;
+      }
+    }
+    const reverted = Object.keys(fields).filter(k => fields[k].verified === false && !fields[k].error);
+    const head = { verified: missed === 0 && reverted.length === 0, filled, missed, total: specs.length };
+    if (missed) head.summary = `${filled}/${specs.length} filled; missed: ${Object.keys(fields).filter(k => fields[k].error).join(', ')}`;
+    if (reverted.length) head.reverted = reverted;
+    if (missed && act.settling) { head.settling = true; head.hint = settleTail.hint; }
+    return calmIfVerified(frontload(snapped, head));
   }
 
   return { error: `Unknown action: ${action}` };

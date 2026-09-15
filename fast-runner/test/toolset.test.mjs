@@ -17,7 +17,7 @@ test('default toolset = every server tool + native, descriptions untouched, inst
   assert.equal(ts.name, 'default');
   const { tools, back } = buildTools(TOOLS, ts);
   assert.equal(tools.length, TOOLS.length + NATIVE.length);
-  assert.equal(TOOLS.length, 45);
+  assert.equal(TOOLS.length, 44);
   for (const t of TOOLS) {
     const seen = tools.find(x => x.name === t.name);
     assert.equal(seen.description, t.description);
@@ -76,6 +76,10 @@ test('phase2: 12 FastLink + 2 native = 14 (no fast_evaluate), every allowed tool
   assert.equal(tools.find(t => t.name === 'report_done').description, ts.describe.report_done);
   assert.ok(ts.describe.report_done && !ts.describe.ask_caller);
   assert.ok(!names(tools).includes('fast_status') && !names(tools).includes('fast_scout') && !names(tools).includes('fast_prewarm'));
+  // fill_form is folded into fast_fill {fields}; the batching nudge is in the data + one sentence each
+  assert.ok(!TOOLS.some(t => t.name === 'fast_fill_form') && !names(tools).includes('fast_fill_form'));
+  assert.ok(TOOLS.find(t => t.name === 'fast_fill').inputSchema.properties.fields, 'server fast_fill takes fields');
+  assert.match(ts.describe.fast_fill, /fields:\{/); assert.match(ts.describe.fast_snapshot, /fillable:N/); assert.match(ts.describe.fast_batch, /ifFound/);
   assert.equal(buildSystem(ts, 'ESSAY'), buildSystem(ts, ''));
   assert.doesNotMatch(buildSystem(ts, 'ESSAY'), /ESSAY/);
 });
@@ -92,7 +96,7 @@ test('phase2-eval = phase2 + fast_evaluate, nothing else differs', () => {
 test('no-cdp: no tool that attaches chrome.debugger', () => {
   const ts = loadToolset('no-cdp');
   const { tools } = buildTools(TOOLS, ts);
-  assert.equal(tools.length, 14);
+  assert.equal(tools.length, 13);
   for (const n of names(tools)) assert.ok(!CDP.includes(n), `${n} needs CDP`);
   for (const k of Object.keys(ts.describe)) assert.ok(ts.allow.includes(k), `describe key ${k} is allowed`);
 });

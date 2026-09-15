@@ -83,7 +83,7 @@
     fast_annotate_boxes: 'Looking at page', fast_screenshot: 'Capturing screenshot',
     fast_click: 'Clicking', fast_click_xy: 'Clicking',
     fast_fill: 'Typing', fast_type: 'Typing', fast_fill_vision: 'Typing',
-    fast_fill_form: 'Filling form', fast_select_option: 'Selecting',
+    fast_select_option: 'Selecting',
     fast_nav: 'Navigating to', fast_reload: 'Reloading',
     fast_scroll: 'Scrolling', fast_wheel: 'Scrolling',
     fast_hover: 'Hovering', fast_drag: 'Dragging', fast_drag_xy: 'Dragging',

@@ -25,7 +25,7 @@ const todayLine = () => {
 };
 const SYSTEM = `You are the operator of a real Chrome browser. The tools below drive it directly (FastLink). Work autonomously until the task is finished.
 Rules:
-- Read pages with fast_snapshot; act with DOM tools; use fast_batch when the next steps are already known.
+- Read pages with fast_snapshot; act with DOM tools. A form with 2+ fields is ONE fast_fill {fields} or ONE fast_batch — never one call per field; use fast_batch whenever the next steps are already known.
 - Action results already include a fresh snapshot; do not re-snapshot right after an action. No artificial waits.
 - A result that starts with truncated:true is partial: never answer or report_done from it — call fast_snapshot full:true / fast_text / limit:N first.
 - Call ask_caller ONLY when a decision genuinely needs the caller (missing info, ambiguous choice, risky/irreversible action). Never ask for things you can find on the page.
@@ -37,7 +37,7 @@ Rules:
 // `evidence` must quote a tool result of this run — otherwise the model is
 // told exactly what is missing and continues. Refusals are logged per run.
 const STATE_TOOLS = new Set([
-  'fast_click', 'fast_click_xy', 'fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_key_press', 'fast_key',
+  'fast_click', 'fast_click_xy', 'fast_fill', 'fast_select_option', 'fast_key_press', 'fast_key',
   'fast_type', 'fast_nav', 'fast_tab', 'fast_reload', 'fast_scroll', 'fast_wheel', 'fast_drag', 'fast_drag_xy',
   'fast_upload', 'fast_hover', 'fast_switch', 'fast_close', 'fast_batch', 'fast_do', 'fast_fill_vision',
   'fast_macro_run', 'fast_network_replay',

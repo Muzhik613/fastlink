@@ -19,6 +19,75 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Batching is the default form path: `fast_batch` never aborts + `ifFound`, `fast_fill {fields}` absorbs `fast_fill_form`, `fillable:N` nudge, select-control hints, offscreen matching, `fast_wait` selector / emptyContainer / text+idle
+- **What:**
+  1. **`fast_batch`** (new shared `fast-dxt/server/batch.js`, mirrored byte-for-byte at
+     `fastlink-relay/src/batch.js`; handlers.js + relay mcp.js only wire `call`/`gate`):
+     every step runs (no abort, `continueOnError` gone); the result LEADS with
+     `summary` ("5/6 steps ok; step 3 (fast_fill "Ocean") missed: …"), then per-step
+     `{step,name,ok,result}` (verified state) or `{ok:false,error,candidates,hint…}`;
+     only the LAST step keeps its `snapshot` (intermediate steps run `noSnapshot:true`
+     unless they set it); conditional steps `{ifFound:"<text>|<css selector>",
+     then:[…], else:[…], waitMs}` are decided in the batch with one `fast_wait` probe
+     (a selector = string starting with `# . [ :` or containing `>`/`[`); steps naming
+     `fast_fill_form` are rewritten to `fast_fill`. BUG-2 nav settle unchanged.
+  2. **`fast_fill {fields:{label: value|{value,index,section,name,exact,append}}}`**
+     replaces `fast_fill_form` (deleted from page.js, tools.js, relay mirror, manifest,
+     toolsets, runner sets, ext UI maps; fill_vision's DOM fallback now calls
+     `fast_fill {fields}` and reads `.fields`). Single and multi share one resolver
+     (exact-first match, section scoping, index, 1.5s auto-wait for the whole set).
+     Multi result: `{verified, filled, missed, summary?, fields:{label:{verified,value,…}},
+     snapshot}`; misses carry `candidates` / `hiddenMatches` / `offscreenMatches` / hint.
+  3. **Batching nudge in data:** `serializeSnapshot` counts EMPTY visible fillable
+     fields (`fillable:N`, near the top of every snapshot / auto-snapshot) and when
+     N ≥ 2 adds `hint: "N empty fillable fields visible; fill them in one fast_fill
+     {fields:{label:value}} or one fast_batch"`. Descriptions (tools.js, phase2,
+     phase2-eval, no-cdp, runner system prompt) say the same in one sentence.
+  4. **Select-control hints:** `fast_click` / `fast_fill` whose target (or hidden
+     match) is a native select, a react-select input/control/value chip/"Remove X"
+     button, or an ARIA combobox return `hint` + `selectField` naming the field for
+     `fast_select_option`; a click miss on a heading that titles a dropdown ("Single")
+     says so too.
+  5. **Offscreen matching:** click/fill match pools are built with `matchAll` (offscreen
+     interactive entries kept, tagged `offscreen:true`, even when a heavy page forces
+     viewport-only); the chosen target is `scrollIntoView`ed first
+     (`scrolledIntoView:true`); index-out-of-range / miss reports list every match with
+     `offscreen` + `section`. `fast_select_option` scrolls its field into view.
+  6. **`fast_click` role aliases:** `role:"a"` = link, `"button"`/`"input"`/… match the
+     tag; a role mismatch returns `available` with real role/tag + a hint.
+  7. **`fast_wait`:** `selector` mode (first VISIBLE match); a content hit whose text is
+     gone from the live DOM (stale index entry) or whose element has no visible box
+     keeps polling and, at the deadline, returns `found` + `emptyContainer:true` + hint
+     instead of a false "found"; `text`/`selector` + `networkIdle:true` resolves on the
+     text and reports `networkIdle`/`pending` (index.js) — only a bare networkIdle wait
+     times out (Cloudflare long-polls forever).
+  8. **Calm verified results:** a `verified:true` fill / select drops the generic
+     "page was still changing" `settling`/hint (GCP fills carried it on every call).
+- **Why:** this morning's 4.3/phase2 hvm pass (57/59 · 98s · 60 calls): staticform =
+  11 field-by-field calls, flightsearch 11 (the phase2-eval run did the same form in
+  ONE 7-step batch → 4 calls), overlay 1/3 after 14 misses circling a react-select
+  ("Ocean" → Remove chip, fill on react-select-8-input, click on heading "Single");
+  afternoon gcpform 5/6 (second "Add URI" offscreen → "index 1 out of range" → redirect
+  URI written into a JS-origins row), cfworkers overclaim after `role:"a"` refused the
+  links it listed and a 10s networkIdle timeout.
+- **Files:** `fast-dxt/server/batch.js` (new), `fastlink-relay/src/batch.js` (mirror),
+  `fast-dxt/server/handlers.js`, `fastlink-relay/src/mcp.js`, `fast-dxt/server/tools.js`,
+  `fastlink-relay/tools.js`, `fast-dxt/server/transports.js`, `fast-dxt/manifest.json`,
+  `fast-ext/src/actions/page.js`, `fast-ext/src/actions/index.js`,
+  `fast-ext/src/actions/waitIdle.js`, `fast-ext/background.js`, `fast-ext/sidepanel.js`,
+  `fast-ext/src/overlay.js`, `fast-runner/runner.mjs`, `fast-runner/toolset.phase2.json`,
+  `fast-runner/toolset.phase2-eval.json`, `fast-runner/toolset.no-cdp.json`,
+  `fast-runner/test/toolset.test.mjs`, `fast-runner/test/batch.test.mjs` (new),
+  `bench/suite.js`.
+- **Watch out:** `fast_fill_form` no longer exists anywhere — a batch step naming it is
+  rewritten, a direct call is an unknown action. Multi-fill results key on `fields`, not
+  `results`. `fillable` counts EMPTY fields only (checkbox/radio/button/file excluded), so
+  a filled form stops nudging. `matchAll` only affects the internal match pools; model-
+  facing snapshots keep their viewport/cap rules. `selectControlOf` climbs ≤8 ancestors
+  for a class token ending in `control` — never `container` (bootstrap page wrappers).
+  Relay NOT deployed; Windows extension copy NOT synced.
+- **Status:** committed; unit tests (`fast-runner`: 12 + 4 batch); hvm bench below.
+
 ## 2026-09-15 — `toolset.phase2-eval.json`: phase2 + read-only `fast_evaluate` (owner A/B)
 - **What:** generated from `toolset.phase2.json` (test asserts it differs only by the
   added tool); evaluate described as read-only DOM queries, never cookies/storage,

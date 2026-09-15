@@ -1,8 +1,16 @@
 {
-  "_comment": "No chrome.debugger tools (docs/TOOL_TRIAGE_DRAFT.md §3b) for browsers without Advanced control: 12 raw FastLink tools + ask_caller/report_done = 14. Select with --toolset no-cdp.",
+  "_comment": "No chrome.debugger tools (docs/TOOL_TRIAGE_DRAFT.md §3b) for browsers without Advanced control: 11 raw FastLink tools + ask_caller/report_done = 13. Select with --toolset no-cdp.",
   "allow": [
-    "fast_snapshot", "fast_text", "fast_click", "fast_fill", "fast_fill_form",
-    "fast_select_option", "fast_key_press", "fast_scroll", "fast_wait", "fast_tab", "fast_nav",
+    "fast_snapshot",
+    "fast_text",
+    "fast_click",
+    "fast_fill",
+    "fast_select_option",
+    "fast_key_press",
+    "fast_scroll",
+    "fast_wait",
+    "fast_tab",
+    "fast_nav",
     "fast_batch"
   ],
   "rename": {},
@@ -10,14 +18,13 @@
     "fast_snapshot": "Read the current page: interactive elements (text, label, live value, coords) plus readable content blocks. Pass overlay:true when an open menu's options are missing, full:true to lift the ~70-item cap, screenshot:true only to visually confirm.",
     "fast_text": "Return the page's innerText (or one element's via selector; html:true for outerHTML). Use for data extraction such as tables and lists; maxLen caps the size.",
     "fast_click": "Click the element whose text/label/placeholder matches `text` (narrow with role, tag, index). Returns a fresh snapshot, so do not call fast_snapshot right after.",
-    "fast_fill": "Set one field by label/placeholder/name (`match`, `value`; disambiguate with index or section). Replaces the existing value and returns a fresh snapshot.",
-    "fast_fill_form": "Fill many fields in one call with fields:{label:value} (native selects included). Returns a per-field result map and a fresh snapshot.",
+    "fast_fill": "Set fields by label/placeholder/name: one with {match, value} or a whole form with fields:{label: value | {value, index, section}} (native selects included) — a form with 2+ inputs is one call. Returns verified + live value per field and a fresh snapshot.",
     "fast_select_option": "Choose `option` in the dropdown labelled `field` (native, react-select, Angular, ARIA). Use selections:{field:option} to set several in one call.",
     "fast_key_press": "Press `key` (Enter, Escape, Tab, ArrowDown...) on the focused element.",
     "fast_scroll": "Scroll the page or the nearest scroll container: to:\"top\"|\"bottom\"|\"50%\" or pixels (negative = up). Returns a fresh snapshot.",
-    "fast_wait": "Wait until `text` appears (default 5s) or, with networkIdle:true, until requests settle. Use only after an action that triggers async loading; returns the matched element and a snapshot.",
+    "fast_wait": "Wait until `text` appears (case-insensitive substring — use two or more words), or `selector` matches a visible element, or with networkIdle:true (alone) until requests settle; with text + networkIdle the text is the signal and the result reports networkIdle/pending instead of timing out. Use after an action that triggers async loading; returns the matched element and a snapshot, emptyContainer:true when only a stale/empty container matched (the view has not rendered), or the visible headings on timeout.",
     "fast_tab": "Open `url` in a new tab and focus it.",
     "fast_nav": "Go to `url` in the current tab and wait for the load (waitMs, default 10s).",
-    "fast_batch": "Run several tool calls in order in one round-trip (actions:[{name,args}]); stops at the first failure unless continueOnError. Use when the next steps are already certain."
+    "fast_batch": "Run several steps in one round-trip (actions:[{name,args}]) — every step runs even if one misses, and the result leads with a summary line (\"5/6 steps ok; step 3 (fast_fill \\\"Ocean\\\") missed: …\") plus per-step verified state or the miss with candidates; only the last step returns a snapshot. Use it whenever the next steps are already known — a whole form (fast_fill {fields}, fast_select_option, fast_key_press, fast_click) is ONE batch; a conditional step {ifFound:\"text or css selector\", then:[…], else:[…]} branches inside the batch without a model turn."
   }
 }

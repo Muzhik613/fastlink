@@ -1,24 +1,33 @@
 {
-  "_comment": "Phase-2 triage (docs/TOOL_TRIAGE_DRAFT.md §3a): 12 raw FastLink tools + ask_caller/report_done = 14. fast_click_xy stays until the fast_click{x,y} fold lands in tools.js. fast_evaluate dropped 2026-09-15: disabled on the runner's relay account, 11/32 cells wasted a call on it. Select with --toolset phase2. Descriptions keyed by REAL tool name.",
+  "_comment": "Phase-2 triage (docs/TOOL_TRIAGE_DRAFT.md §3a): 12 raw FastLink tools (fast_fill absorbs fill_form: fields:{}; fast_batch never aborts, ifFound branches) + ask_caller/report_done = 14. fast_click_xy stays until the fast_click{x,y} fold lands in tools.js. fast_evaluate dropped 2026-09-15: disabled on the runner's relay account, 11/32 cells wasted a call on it. Select with --toolset phase2. Descriptions keyed by REAL tool name.",
   "allow": [
-    "fast_snapshot", "fast_text", "fast_click", "fast_click_xy", "fast_fill",
-    "fast_select_option", "fast_key_press", "fast_scroll", "fast_wait", "fast_tab", "fast_nav",
+    "fast_snapshot",
+    "fast_text",
+    "fast_click",
+    "fast_click_xy",
+    "fast_fill",
+    "fast_select_option",
+    "fast_key_press",
+    "fast_scroll",
+    "fast_wait",
+    "fast_tab",
+    "fast_nav",
     "fast_batch"
   ],
   "rename": {},
   "describe": {
-    "fast_snapshot": "Read the current page: interactive elements (text, label, live value, coords) plus readable content blocks; a result that starts with truncated:true is partial — call again with full:true (or limit:N) before relying on it. Pass overlay:true when an open menu's options are missing; avoid viewport:true (it hides every control below the fold).",
+    "fast_snapshot": "Read the current page: interactive elements (text, label, live value, coords) plus readable content blocks; `fillable:N` counts the empty fields on the view and when N ≥ 2 they go in ONE fast_fill {fields} (or one fast_batch), never one call per field. A result that starts with truncated:true is partial — call again with full:true (or limit:N) before relying on it; pass overlay:true when an open menu's options are missing; avoid viewport:true (it hides every control below the fold).",
     "fast_text": "Return the page's innerText (or one element's via selector; html:true for outerHTML) — the exact source for data extraction such as tables and lists. truncated:true (first field) means more text exists: call again with a larger maxLen or a narrower selector.",
-    "fast_click": "Click the element whose text/label/placeholder matches `text` (narrow with role, tag, or index = the N-th match in document order — NOT a snapshot id); the result leads with url/urlChanged/focused and a fresh snapshot, so do not call fast_snapshot right after. On a miss nothing was clicked: retry with a name from `candidates`/`available`, and if settling:true the page was still loading — fast_wait for the target text first.",
+    "fast_click": "Click the element whose text/label/placeholder matches `text` (narrow with role — a tag name like \"a\" or \"button\" works too — or index = the N-th match in document order, NOT a snapshot id; offscreen matches are scrolled into view); the result leads with url/urlChanged/focused and a fresh snapshot, so do not call fast_snapshot right after. On a miss nothing was clicked: retry with a name from `candidates`/`available`/`matches` (each says its real role/tag and whether it is offscreen and in which section), a `hint` naming fast_select_option means the target is a dropdown — use that instead, and if settling:true the page was still loading — fast_wait for the target text first.",
     "fast_click_xy": "Trusted click at viewport CSS coordinates x,y; returns no snapshot. Only when fast_click cannot match the element (canvas, cross-origin iframe).",
-    "fast_fill": "Set one field by label/placeholder/name (`match`, `value`; disambiguate with index or section); replaces the existing value and returns the field's live `value` with verified:true/false FIRST, then a fresh snapshot — report `value`, not what you sent. On a miss the result lists `candidates` (visible fields) and `hiddenMatches`: retry with one of those names or open the control that reveals the field; a field that only appears after another choice (such as a type dropdown) must be filled after that choice.",
+    "fast_fill": "Set fields by label/placeholder/name: ONE field with {match, value} or a WHOLE FORM with fields:{label: value | {value, index, section}} (native selects included) — a form with 2+ inputs is always one fast_fill {fields} or one fast_batch, never field-by-field; offscreen fields are scrolled into view. The result leads with verified + the live `value` (per field under `fields` in the form case) — report `value`, not what you sent; a miss lists `candidates`, `hiddenMatches`, `offscreenMatches` (with section) and a `hint` — retry with one of those names, pass section:/index:, or use fast_select_option when the hint names a dropdown.",
     "fast_select_option": "Choose `option` in the dropdown named `field` (its label, placeholder, or the heading above it; native, react-select, Angular, ARIA); the result leads with verified, picked, `value` (what the control shows now) and `field` (which dropdown it acted on) — check both before reporting. On a miss retry with a name from `candidates`; use selections:{field:option} to set several in one call.",
     "fast_key_press": "Press `key` (Enter, Escape, Tab, ArrowDown...) on the focused element; returns the target, url/urlChanged and a fresh settled snapshot so you can see what the key did.",
     "fast_scroll": "Scroll the page or the nearest scroll container: to:\"top\"|\"bottom\"|\"50%\" or pixels (negative = up). Returns a fresh snapshot.",
-    "fast_wait": "Wait until `text` appears (case-insensitive substring — use two or more words or an exact phrase, a single common word matches elsewhere) or, with networkIdle:true, until requests settle. Use after an action that triggers async loading; returns the matched element and a snapshot, or the visible headings on timeout.",
+    "fast_wait": "Wait until `text` appears (case-insensitive substring — use two or more words), or `selector` matches a visible element, or with networkIdle:true (alone) until requests settle; with text + networkIdle the text is the signal and the result reports networkIdle/pending instead of timing out. Use after an action that triggers async loading; returns the matched element and a snapshot, emptyContainer:true when only a stale/empty container matched (the view has not rendered), or the visible headings on timeout.",
     "fast_tab": "Open `url` in a new tab and focus it.",
     "fast_nav": "Go to `url` in the current tab and wait for the load (waitMs, default 10s).",
-    "fast_batch": "Run several tool calls in order in one round-trip (actions:[{name,args}]); stops at the first failure unless continueOnError. Use when the next steps are already certain.",
+    "fast_batch": "Run several steps in one round-trip (actions:[{name,args}]) — every step runs even if one misses, and the result leads with a summary line (\"5/6 steps ok; step 3 (fast_fill \\\"Ocean\\\") missed: …\") plus per-step verified state or the miss with candidates; only the last step returns a snapshot. Use it whenever the next steps are already known — a whole form (fast_fill {fields}, fast_select_option, fast_key_press, fast_click) is ONE batch; a conditional step {ifFound:\"text or css selector\", then:[…], else:[…]} branches inside the batch without a model turn.",
     "report_done": "Finish the task: result = the outcome in at most 3 short sentences that quote names, numbers and field values EXACTLY as the page shows them (no abbreviations, rounding or paraphrase); evidence = ONE short quote copied verbatim from your last fast_snapshot/fast_text result plus its URL. Refused unless a read followed your last action and the evidence quote matches a tool result."
   }
 }

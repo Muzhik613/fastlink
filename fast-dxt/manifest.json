@@ -142,10 +142,6 @@
       "description": "Drag from one element to another (or to coordinates)."
     },
     {
-      "name": "fast_fill_form",
-      "description": "Fill multiple fields in one call (saves N round-trips for large forms)."
-    },
-    {
       "name": "fast_network_replay",
       "description": "Re-fire a request from the active tab's page context, so the page's cookies/auth are sent automatically (no manual header copy)."
     },
