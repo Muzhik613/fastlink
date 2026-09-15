@@ -2762,9 +2762,10 @@ async function runPageAction(action, args) {
       if (offMatches.length) { out.offscreenMatches = offMatches.slice(0, 6).map(matchBrief); out.hint = `${offMatches.length} matching field(s) are offscreen (see offscreenMatches, with their section) — pass section:"<name>" or index:N to fill one of them` + (out.hint ? '; ' + out.hint : ''); }
       let sel = null;
       try {
+        // The name may be an element id the model copied from `focused` (react-select-8-input).
         const hid = rep.hiddenMatches && rep.hiddenMatches.find(h => /^react-select-/.test(h.id || ''));
-        const hidEl = hid ? document.getElementById(hid.id) : null;
-        sel = selectHintFor(hidEl) || (() => { const c = document.querySelector(`[role="combobox"][aria-label*="${CSS.escape(sp.match)}" i]`); return c ? selectHintFor(c) : null; })();
+        const byId = document.getElementById(sp.match) || (hid ? document.getElementById(hid.id) : null);
+        sel = selectHintFor(byId) || (() => { const c = document.querySelector(`[role="combobox"][aria-label*="${CSS.escape(sp.match)}" i]`); return c ? selectHintFor(c) : null; })();
       } catch {}
       if (sel) { out.hint = sel.hint; out.selectField = sel.selectField; }
       return out;

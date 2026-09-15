@@ -168,10 +168,13 @@ async function runOne(action, args) {
 // marshals returned objects through base::Value dicts, which SORT keys
 // alphabetically — the leading `verified` / `truncated` / `url` fields the model
 // must read first would land after `snapshot`. A string keeps the page's order.
-function pageBridge(action, args) {
+// Args cross as a JSON string for the same reason: `fields:{…}` must be filled
+// (and reported) in the caller's order, not alphabetically.
+function pageBridge(action, argsJson) {
   if (!window.__fastlink || !window.__fastlink.run) {
     return { __fastlinkMissing: true };
   }
+  let args = {}; try { args = JSON.parse(argsJson) || {}; } catch {}
   return Promise.resolve(window.__fastlink.run(action, args)).then((r) => (r === undefined ? null : JSON.stringify(r)));
 }
 
@@ -189,7 +192,7 @@ const MAIN_WORLD_FILES = ['src/actions/page.js'];
 async function runBridge(tabId, action, args) {
   try {
     const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId }, world: 'MAIN', func: pageBridge, args: [action, args || {}],
+      target: { tabId }, world: 'MAIN', func: pageBridge, args: [action, JSON.stringify(args || {})],
     });
     return typeof result === 'string' ? JSON.parse(result) : result;
   } catch (e) {
