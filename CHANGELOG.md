@@ -223,7 +223,16 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   facing snapshots keep their viewport/cap rules. `selectControlOf` climbs ≤8 ancestors
   for a class token ending in `control` — never `container` (bootstrap page wrappers).
   Relay NOT deployed; Windows extension copy NOT synced.
-- **Status:** committed; unit tests (`fast-runner`: 12 + 4 batch); hvm bench below.
+- **Status:** committed; unit tests (`fast-runner`: 14 files incl. batch + aria-options);
+  hvm bench `docs/GROK_RUNNER_BENCH_hvm_batch_2026-09-15.md` (rows since 18:16:53Z):
+  4.3/phase2 iterations 1–4 = 57/59 (29c·57s), 57/59 (30c·45s), 56/59 (33c·67s),
+  57/59 (42c·128s) vs this morning 57/59 · 98s · 60c; the remaining miss was always
+  mapsdir (Maps ignored synthetic Enter/ArrowDown without keyCode) — pass 7 mapsdir-only
+  on the keyCode build = 6/6 · 7c · 19s. Best full pass composed = 59/59 · ~36 calls ·
+  ~65s. 4.6/phase2 control (pass 6) = 59/59 · 38c · 95s. Batch/fields usage per cell
+  (4.3, iteration 2): staticform 1 batch (fill{fields}+select+2 clicks), flightsearch 1
+  batch (fill{fields} of 5 + select), mapsdir fill{fields} of 2; multipage/overlay/extract
+  need none.
 
 ## 2026-09-15 — `toolset.phase2-eval.json`: phase2 + read-only `fast_evaluate` (owner A/B)
 - **What:** generated from `toolset.phase2.json` (test asserts it differs only by the
