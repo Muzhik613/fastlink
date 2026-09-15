@@ -135,7 +135,19 @@ export function startConnection(handle, opts = {}) {
 // read the launch timeline without spamming steady-state pings.
 const clog = (...a) => console.log(`[conn ${new Date().toISOString()}]`, ...a);
 
+// One dial in flight at a time. connect() awaits hasAnyWindow() BEFORE it creates
+// the socket, so two callers that arrive together (startConnection's connect()
+// and the onInstalled/onStartup wake() at SW start, both within 2ms) both passed
+// the readyState guard on a null socket; the second's recycle() then closed the
+// first's brand-new socket ("WebSocket is closed before the connection is
+// established" on every launch). The guard is set synchronously on entry.
+let dialing = false;
 async function connect() {
+  if (dialing) return;
+  dialing = true;
+  try { await connectOnce(); } finally { dialing = false; }
+}
+async function connectOnce() {
   if (socket && socket.readyState === WebSocket.OPEN) return;
   if (socket && socket.readyState === WebSocket.CONNECTING && Date.now() - connectStartedAt < CONNECT_TIMEOUT_MS) return;
   // Only present as "connected" to the broker when this profile actually

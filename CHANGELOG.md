@@ -37,6 +37,39 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
   The report text is not what the bench scores, so the terse description cannot move scores.
 - **Status:** committed; not yet benched.
 
+## 2026-09-15 — Extension: one broker dial in flight (SW-start double dial); hvm launch delay root-caused (Chrome keyring wait, not FastLink)
+- **What:** `fast-ext/src/connection.js` — `connect()` takes a synchronous `dialing`
+  lock and delegates to `connectOnce()`. At service-worker start `startConnection()`
+  and the `onInstalled`/`onStartup` `wake()` both call `connect()` within ~2ms; both
+  passed the readyState guard on a still-null socket (the socket is created only
+  AFTER `await hasAnyWindow()`), and the second's `recycle()` closed the first's
+  brand-new socket — the SW console showed "WebSocket is closed before the connection
+  is established" on every launch.
+- **Why:** GLITCH hunt for the hvm rig's slow post-launch attach (~25s every Chrome
+  start; a 90s case made `hvm-run.sh` skip pass 3 `multipage` as "rig down"). CDP
+  attach to the SW showed the surviving dial "open after 24.8s", and a plain `fetch`
+  to a local http server, a second WebSocket and a fetch to the broker port ALL
+  released at that same instant — so it is Chrome's network service, not the
+  extension or broker. `--no-proxy-server` changed nothing; `--password-store=basic`
+  → "open after 19ms". The ≈25s is the D-Bus method-call timeout while os_crypt asks
+  the session bus for a keyring on that headless box; the network service's cookie
+  store waits on it. **Rig fix (not in this repo's code): add `--password-store=basic`
+  to the Chrome flags in `bench/hvm-rig.sh`** (rig agent's file — handed over, not
+  edited here). Also ruled out tonight: a SIGKILLed extension does NOT leave a busy
+  slot — the kernel FIN reaches the broker in ~25ms ("primary disconnected"), so the
+  slot-busy / 60s-cooldown path never ran.
+- **Files:** `fast-ext/src/connection.js`.
+- **Watch out:** the lock is per-call, released in `finally`; keep `connect()` the only
+  public entry (alarm tick, window-created, wake and the slot-busy timer all go
+  through it). It does NOT change backoff, fast-retry or recycle semantics — a
+  CONNECTING socket older than `CONNECT_TIMEOUT_MS` is still recycled by
+  `checkHealth()`.
+- **Status:** committed; `node --check` clean; the double-dial itself was observed
+  before the change on the isolated rig (two "dialing" lines 2ms apart, first one
+  aborted) — the fixed file is rsynced to the hvm repo behind `bench/FIXER_READY` and
+  not yet observed live there (the rig restarts on its own schedule). Windows copy
+  NOT synced.
+
 ## 2026-09-15 — Auto-snapshot byte cap (≤ ~8k chars) on action results, `full` / `limit` pass-through
 - **What:** the `snapshot` attached to every action result (fast_click / fast_fill /
   fast_wait / fast_select_option / fast_hover / … — everything through `withSnap`) is
