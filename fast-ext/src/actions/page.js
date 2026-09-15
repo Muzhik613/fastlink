@@ -112,15 +112,21 @@ const implicitRoleOf = (tag, type) => {
 // instructions:". Without this, source-formatted labels carry stray whitespace
 // that breaks exact/substring matching downstream.
 const cleanLabel = (s) => (s || '').replace(/\s+/g, ' ').trim();
-const labelFor = (el) => {
+// `forLookup(el)` (optional): a caller that resolves MANY elements passes a
+// precomputed <label for> map instead — two document-wide querySelector calls
+// per element made a lookup over thousands of candidates take seconds.
+const labelFor = (el, forLookup) => {
   // 1) Explicit association: <label for="id">. Works across the element's own
   //    root (shadow DOM) and the main document.
   if (el.id) {
-    const escId = CSS.escape(el.id);
-    const root = el.getRootNode && el.getRootNode();
-    const lbl = (root && root.querySelector && root.querySelector(`label[for="${escId}"]`))
-              || document.querySelector(`label[for="${escId}"]`);
-    if (lbl) return cleanLabel(lbl.textContent);
+    if (forLookup) { const t = forLookup(el); if (t != null) return t; }
+    else {
+      const escId = CSS.escape(el.id);
+      const root = el.getRootNode && el.getRootNode();
+      const lbl = (root && root.querySelector && root.querySelector(`label[for="${escId}"]`))
+                || document.querySelector(`label[for="${escId}"]`);
+      if (lbl) return cleanLabel(lbl.textContent);
+    }
   }
   // 2) Implicit association: a wrapping <label> ancestor (the control sits
   //    INSIDE the label, e.g. httpbin's `<label>Delivery instructions:
@@ -2353,31 +2359,58 @@ async function runPageAction(action, args) {
       const role = el.getAttribute('role');
       return !(role && LANDMARK_ROLES.test(role));
     };
+    // Cost model (a heavy SPA under a render storm: thousands of [aria-label]
+    // elements, every layout read forced): ONE composed-tree walk that also
+    // collects the <label>s; label text computed from that set, never per
+    // candidate by document-wide query; layout (usableField) read only for a
+    // candidate whose TEXT already matches. Same pass order and the same answer
+    // as matching over the visible candidates first — the first text match in
+    // order that is usable. (GCP "Application type": resolve 5.6s before.)
     const findField = (fieldRaw, fieldLo) => {
       const nameSel = `[name="${CSS.escape(fieldRaw)}" i]`;
-      // ONE composed-tree walk (a heavy page pays seconds per walk under a storm).
-      const all = queryAllDeep(document, `${nameSel},${CONTROLISH},[aria-labelledby],[aria-label],[placeholder]`);
+      const all = queryAllDeep(document, `${nameSel},${CONTROLISH},[aria-labelledby],[aria-label],[placeholder],label`);
       const byName = all.find(el => el.matches && el.matches(nameSel));
       if (byName) return byName;
       const byId = lookupId(document.documentElement, fieldRaw);
       if (byId) return byId;
-      const usable = all.filter(usableField);
+      const forText = new Map();   // root → (for-id → text of the FIRST such label, as querySelector found it)
+      const hitLabels = [];        // labels whose text holds the wanted name
+      const pool = [];
+      for (const el of all) {
+        if (el.tagName !== 'LABEL') { pool.push(el); continue; }
+        const t = cleanLabel(el.textContent);
+        if (t.toLowerCase().includes(fieldLo)) hitLabels.push(el);
+        const f = el.getAttribute('for');
+        if (!f) continue;
+        const root = el.getRootNode ? el.getRootNode() : document;
+        let m = forText.get(root); if (!m) forText.set(root, m = new Map());
+        if (!m.has(f)) m.set(f, t);
+      }
+      const forLookup = (el) => {
+        const own = forText.get(el.getRootNode ? el.getRootNode() : document);
+        if (own && own.has(el.id)) return own.get(el.id);
+        const doc = forText.get(document);
+        return doc && doc.has(el.id) ? doc.get(el.id) : null;
+      };
+      // containerLabel answers with ONE label of the ≤5-ancestor field group, so it
+      // can only match when a hit label sits inside that group — skip it otherwise.
+      const nearHit = (el) => { let a = el; for (let i = 0; i < 5 && a.parentElement; i++) a = a.parentElement; return hitLabels.some(l => a.contains(l)); };
       const isCtl = (el) => el.matches && el.matches(CONTROLISH);
-      const candidatesAll = usable.filter(isCtl).concat(usable.filter(el => !isCtl(el)));
+      const ordered = pool.filter(isCtl).concat(pool.filter(el => !isCtl(el)));
       // Wired label (for=/wrapping/aria-labelledby) OR a sibling <label> in the
       // same field group — the latter rescues react-select inputs whose only
       // aria-label is an opaque internal id (Greenhouse dropdowns).
-      for (const el of candidatesAll) {
-        const lbl = labelFor(el) || containerLabel(el);
-        if (lbl && lbl.toLowerCase().includes(fieldLo)) return el;
+      for (const el of ordered) {
+        const lbl = labelFor(el, forLookup) || (hitLabels.length && nearHit(el) ? containerLabel(el) : '');
+        if (lbl && lbl.toLowerCase().includes(fieldLo) && usableField(el)) return el;
       }
-      for (const el of candidatesAll) {
+      for (const el of ordered) {
         const al = el.getAttribute && el.getAttribute('aria-label');
-        if (al && al.toLowerCase().includes(fieldLo)) return el;
+        if (al && al.toLowerCase().includes(fieldLo) && usableField(el)) return el;
       }
-      for (const el of candidatesAll) {
+      for (const el of ordered) {
         const ph = el.getAttribute && el.getAttribute('placeholder');
-        if (ph && ph.toLowerCase().includes(fieldLo)) return el;
+        if (ph && ph.toLowerCase().includes(fieldLo) && usableField(el)) return el;
       }
       // HEADING-TITLED dropdown: no label/aria/placeholder carries the name, but a
       // heading does (react-select.com's demo: <h4>Single</h4> above an unlabelled
@@ -2585,13 +2618,18 @@ async function runPageAction(action, args) {
         for (let i = 0; i < els.length && i < 400; i++) { let r; try { r = els[i].getBoundingClientRect(); } catch { continue; } if (visible(els[i], r)) out.push(els[i]); }
         return out;
       };
-      const optionEls = () => {
+      // Cheap: the panel the control names (attribute reads + that panel's rects).
+      const ariaOptionEls = () => {
         for (const id of ariaPanelIds(field)) {
           const panel = lookupId(field, id) || document.getElementById(id);
           if (!panel) continue;
           const els = visibleOnly(panel.querySelectorAll(OPTION_SEL));
           if (els.length) return { els, via: 'aria-controls' };
         }
+        return null;
+      };
+      // Expensive: document-wide overlay sweep (walk + indexing), then the index's options.
+      const sweptOptionEls = () => {
         let swept = null; try { swept = collectOverlayEls(); } catch {}
         if (swept && swept.size) {
           const els = visibleOnly([...swept].filter(el => el.matches && el.matches(OPTION_SEL)));
@@ -2601,6 +2639,7 @@ async function runPageAction(action, args) {
         for (const el of INDEX.options) if (el.isConnected) els.push(el);
         return { els: visibleOnly(els), via: 'index' };
       };
+      const optionEls = () => ariaOptionEls() || sweptOptionEls();
       // The element that opens the list: the field itself when it is the
       // combobox/popup button, else the first such descendant (a labelled
       // wrapper around a role=combobox host).
@@ -2615,20 +2654,34 @@ async function runPageAction(action, args) {
       // "Open" = visible options in a panel this field names / an overlay, or
       // index options while the trigger claims aria-expanded — never bare index
       // options (another widget's).
-      const panelOpen = () => { const f = optionEls(); return f.els.length && (f.via !== 'index' || expanded()) ? f : null; };
+      const sweptOpen = () => { const f = sweptOptionEls(); return f.els.length && (f.via !== 'index' || expanded()) ? f : null; };
+      const panelOpen = () => ariaOptionEls() || sweptOpen();
+      // Mutations only SCHEDULE a probe (one pending macrotask, ≥30ms out): a
+      // probe inside the MutationObserver callback reads layout in the middle of
+      // the page's own render work, and under a render storm that back-to-back
+      // forced layout starved the very panel we were waiting for (GCP open 2.8s).
+      // Each probe is the cheap aria-named panel; the document-wide sweep runs at
+      // most every 250ms. A 100ms tick covers shadow-root panels the observer misses.
       const waitForPanel = (capMs) => new Promise((resolve) => {
-        const t0 = nowMs(); let done = false, mo = null, timer = null, lastCheck = 0;
+        const t0 = nowMs(); let done = false, mo = null, timer = null, due = 0, lastSweep = t0;
         const finish = (f) => { if (done) return; done = true; try { if (mo) mo.disconnect(); } catch {} clearTimeout(timer); resolve(f); };
-        const check = () => {
-          if (done || nowMs() - lastCheck < 30) return;   // a mutation storm must not turn the probe into the load
-          lastCheck = nowMs();
-          const f = panelOpen();
-          if (f) finish(f); else if (nowMs() - t0 >= capMs) finish(null);
+        const schedule = (ms) => {
+          if (done) return;
+          const at = nowMs() + ms;
+          if (timer && due <= at) return;
+          clearTimeout(timer); due = at; timer = setTimeout(probe, ms);
         };
-        try { mo = new MutationObserver(check); mo.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded', 'aria-controls', 'aria-owns', 'hidden', 'style', 'class'] }); } catch {}
-        // Shadow-root panels are invisible to a document observer: coarse fallback tick, wall-clock capped.
-        const tick = () => { if (done) return; check(); if (!done) timer = setTimeout(tick, 100); };
-        check(); if (!done) timer = setTimeout(tick, 100);
+        const probe = () => {
+          timer = null;
+          if (done) return;
+          let f = ariaOptionEls();
+          if (!f && nowMs() - lastSweep >= 250) { lastSweep = nowMs(); f = sweptOpen(); }
+          if (f) return finish(f);
+          if (nowMs() - t0 >= capMs) return finish(null);
+          schedule(100);
+        };
+        try { mo = new MutationObserver(() => schedule(30)); mo.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded', 'aria-controls', 'aria-owns', 'hidden', 'style', 'class'] }); } catch {}
+        schedule(0);
       });
       const fire = (el, types) => {
         for (const type of types) {

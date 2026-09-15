@@ -33,6 +33,29 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast_select_option: field resolve text-first (no per-candidate document queries / layout), panel wait probes outside the MutationObserver callback
+- **What:** page.js, generic (no site selectors). (1) `findField`: the one composed-tree walk
+  also collects `<label>`s; `for=` text comes from a per-root map built once (module `labelFor`
+  takes an optional `forLookup`); `containerLabel` runs only when a label holding the wanted
+  name sits inside the candidate's ≤5-ancestor group; `usableField` (rect + computed style) is
+  read only for a candidate whose text already matches. Same pass order (label → aria-label →
+  placeholder, controls first) and the same answer as before. (2) `waitForPanel`: mutations only
+  SCHEDULE one pending probe (≥30ms out, a macrotask) instead of probing inside the observer
+  callback; each probe is the cheap aria-controls/-owns panel (`ariaOptionEls`), the
+  document-wide overlay sweep + index options (`sweptOptionEls`) run at most every 250ms; 100ms
+  tick kept for shadow-root panels.
+- **Why:** GCP recording on 4a25024 (owner's Chrome, grok-4.3 over relay): `fast_select_option
+  "Application type"` in a batch took 11.7s — `timing {resolveMs:5574, openMs:2811}`, the
+  dropdown closed and idle for ~10s. `labelFor` ran two document-wide `label[for=…]` queries and
+  `containerLabel` up to 5 `querySelectorAll('label')` per candidate over thousands of
+  `[aria-haspopup]`/`[aria-label]` controls; the panel probe ran the overlay sweep + forced
+  layout every 30ms in the middle of the page's render storm.
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** a portal panel NOT named by aria-controls/-owns is now found ≤250ms after it
+  renders (the sweep cadence), not ≤30ms. A `for=` label is looked up in the control's own root
+  then the document, like before.
+- **Status:** committed; measured on hvm below.
+
 ## 2026-09-15 — fast-runner gate wording: "If the task asked you to <verb>, do it now"; system prompt "do every step the task names"
 - **What:** the claimMismatch refusal reads `your result says "<verb>" but no <family> call
   succeeded. If the task asked you to <base verb>, do it now; only if it did not, rewrite result
