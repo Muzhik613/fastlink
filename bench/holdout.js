@@ -69,8 +69,8 @@ const SELECT2_SINGLE = `() => {
   const w = s.nextElementSibling;
   const r = w && w.querySelector('.select2-selection__rendered');
   const shown = r ? (r.textContent || '') : '';
-  // HARNESS TRAP: never name a reader field `value` (or `result`) — bench/fastlink.js
-  // evalIn unwraps `r.value`, so {value:'AK', shown:'Alaska'} came back as the bare
+  // HARNESS TRAP: never name a reader field "value" (or "result") — bench/fastlink.js
+  // evalIn unwraps r.value, so {value:'AK', shown:'Alaska'} came back as the bare
   // string "AK" and every pick read "AK" (widget shown scored "OR" on a page showing Oregon).
   return { url: location.href, code: s.value, shown: shown.replace(/^×/, '').trim() };
 }`;
