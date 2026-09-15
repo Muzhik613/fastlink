@@ -89,7 +89,7 @@ export function inferClaim(text) {
 
 // ---------------------------------------------------------------------------
 export async function runCell({
-  client, testId, transport = 'relay', driver = 'web', install = null, browser = null, toolset = null,
+  client, testId, transport = 'relay', driver = 'web', install = 'primary', browser = null, toolset = null,
   claimed = null, quietMs = DEFAULTS.quietMs, ceilingMs = DEFAULTS.ceilingMs,
   reset = true, force = false, dryRun = false, deviceToken = null,
 }) {
@@ -116,6 +116,8 @@ export async function runCell({
     // the same browser or every checkpoint reads the wrong Chrome and fails.
     // Concretely: claude.ai authorized under one Google account drives Profile 1
     // (slot "primary"), grok.com under another drives Profile 6 ("secondary").
+    // Default 'primary': since 8498cbe the broker REFUSES unpinned calls when >1
+    // profile is connected, so an unpinned readback scored every checkpoint FAIL.
     if (install) {
       await pinInstall(install);
       notes.push(transport === 'local'

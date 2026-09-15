@@ -1105,3 +1105,10 @@ accidentally revert them:
 - **Files:** `bench/hvm-rig.sh`.
 - **Watch out:** rig-only. Any container start script that wipes SW cache must wipe the registration with it.
 - **Status:** in code / pushed / applied on hvm via git pull.
+
+## 2026-09-15 — bench: observation readback pins `primary` by default
+- **What:** `runCell` default `install` is now `primary` (was `null`).
+- **Why:** since 8498cbe the local broker refuses unpinned calls when >1 profile is connected; an unpinned scoring readback returned errors for every checkpoint, so two 4.3 cells at 18:44Z scored all-FAIL while the runner had actually filled the form (runs.jsonl: all four GCP values set, 10 calls, 38s).
+- **Files:** `bench/run.js`.
+- **Watch out:** pass `--install <label>` explicitly when observing another profile; never rely on the broker default again.
+- **Status:** in code.
