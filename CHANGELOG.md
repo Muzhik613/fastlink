@@ -19,6 +19,15 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — toolset test: 45 server tools (fast_ext_reload), asserted absent from phase2 / no-cdp
+- **What:** `fast-runner/test/toolset.test.mjs` `TOOLS.length` 44 → 45 plus: `fast_ext_reload`
+  is on the server (default `"*"` toolset exposes it) and is NOT in the phase2 or no-cdp tool
+  lists (phase2-eval inherits phase2's allow list, already asserted equal + `fast_evaluate`).
+- **Why:** the new INTERNAL ops tool broke the hard-coded count; the Grok toolsets must never
+  offer it.
+- **Files:** `fast-runner/test/toolset.test.mjs`.
+- **Status:** committed; `node --test test/toolset.test.mjs` 7/7.
+
 ## 2026-09-15 — Passive URL trail: extension records tab URL changes, `fast_list` returns `trail`, bench polls 3s instead of 500ms
 - **What:** new `fast-ext/src/actions/trail.js`: `chrome.tabs.onUpdated` URL changes are
   stamped `{t,url}` into a per-tab ring (≤50, deduped when unchanged, dropped on `onRemoved`,
