@@ -1,6 +1,6 @@
 # fast-runner tool usage
 
-220 cell(s), ALL passes, one table per toolset × model, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
+232 cell(s), ALL passes, one table per toolset × model, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
 
 fumble columns: `retry` = call immediately followed by the same tool on the same target; `switch` = followed by a different tool on the same target; `fumble %` = (retry+switch)/calls.
 
@@ -55,24 +55,24 @@ Total: 66 calls across 18 distinct tools; 0 fumbles (0%).
 
 Total: 229 calls across 19 distinct tools; 17 fumbles (7%).
 
-## toolset `phase2 / grok-4.3` — 177 cell(s): multipage×24, staticform×23, overlay×23, flightsearch×23, mapsdir×26, extract×23, h_conditional×4, h_datepicker×4, h_combobox×4, h_table×4, h_repeat×4, h_spa×4, h2_wizard×2, h2_slider×1, h2_tree×2, h2_autocomplete×2, h2_modal×2, h2_infinite×2
+## toolset `phase2 / grok-4.3` — 189 cell(s): multipage×25, staticform×24, overlay×24, flightsearch×24, mapsdir×27, extract×24, h_conditional×5, h_datepicker×5, h_combobox×5, h_table×5, h_repeat×5, h_spa×5, h2_wizard×2, h2_slider×1, h2_tree×2, h2_autocomplete×2, h2_modal×2, h2_infinite×2
 
 | tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
 |---|---:|---:|---:|---:|---:|---:|---|
-| fast_snapshot | 251 | 15 | 87 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract, h_conditional, h_datepicker, h_combobox, h_table, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
-| fast_click | 153 | 42 | 495 | 19 | 8 | 18 | multipage, staticform, overlay, mapsdir, h_conditional, h_datepicker, h_combobox, h_table, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
-| fast_tab | 151 | 0 | 307 | 0 | 2 | 1 | multipage, staticform, overlay, flightsearch, mapsdir, extract, h_conditional, h_datepicker, h_combobox, h_table, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
-| fast_text | 67 | 4 | 27 | 2 | 1 | 4 | staticform, overlay, flightsearch, mapsdir, extract, h_conditional, h_datepicker, h_table, h2_wizard, h2_tree |
-| fast_fill | 65 | 8 | 508 | 5 | 0 | 8 | staticform, overlay, flightsearch, mapsdir, h_conditional, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
-| fast_wait | 37 | 25 | 7616 | 0 | 1 | 3 | multipage, mapsdir, extract, h_spa, h2_wizard, h2_tree |
-| fast_batch | 34 | 0 | 2682 | 0 | 0 | 0 | staticform, flightsearch, h_repeat |
-| fast_select_option | 34 | 3 | 698 | 2 | 0 | 6 | staticform, overlay, flightsearch, mapsdir, h_combobox, h_repeat, h2_wizard |
-| fast_key_press | 29 | 0 | 82 | 0 | 0 | 0 | overlay, mapsdir, h_spa |
+| fast_snapshot | 265 | 15 | 89 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract, h_conditional, h_datepicker, h_combobox, h_table, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
+| fast_click | 163 | 42 | 480 | 20 | 11 | 19 | multipage, staticform, overlay, mapsdir, h_conditional, h_datepicker, h_combobox, h_table, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
+| fast_tab | 161 | 0 | 307 | 0 | 2 | 1 | multipage, staticform, overlay, flightsearch, mapsdir, extract, h_conditional, h_datepicker, h_combobox, h_table, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
+| fast_fill | 71 | 11 | 540 | 5 | 0 | 7 | staticform, overlay, flightsearch, mapsdir, h_conditional, h_repeat, h_spa, h2_wizard, h2_tree, h2_autocomplete |
+| fast_text | 69 | 4 | 27 | 2 | 1 | 4 | staticform, overlay, flightsearch, mapsdir, extract, h_conditional, h_datepicker, h_table, h2_wizard, h2_tree |
+| fast_wait | 41 | 26 | 7147 | 0 | 2 | 5 | multipage, mapsdir, extract, h_spa, h2_wizard, h2_tree |
+| fast_batch | 38 | 0 | 2697 | 0 | 0 | 0 | staticform, flightsearch, h_repeat |
+| fast_select_option | 37 | 4 | 675 | 3 | 0 | 8 | staticform, overlay, flightsearch, mapsdir, h_combobox, h_repeat, h2_wizard |
+| fast_key_press | 31 | 0 | 80 | 0 | 0 | 0 | overlay, mapsdir, h_spa |
 | fast_nav | 16 | 0 | 415 | 3 | 4 | 44 | staticform, overlay, flightsearch, extract |
 | fast_scroll | 3 | 0 | 244 | 0 | 0 | 0 | h_repeat, h2_tree |
 | fast_click_xy | 2 | 0 | 67 | 0 | 0 | 0 | overlay |
 
-Total: 842 calls across 12 distinct tools; 47 fumbles (6%).
+Total: 897 calls across 12 distinct tools; 53 fumbles (6%).
 
 ## toolset `phase2 / grok-4.6` — 12 cell(s): multipage×2, staticform×2, overlay×2, flightsearch×2, mapsdir×2, extract×2
 
