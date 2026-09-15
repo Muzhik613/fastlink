@@ -118,7 +118,12 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   Select2 reports the pick but it never commits (honest `verified:false`); on a Choices.js field it
   resolves the enhanced, option-less hidden `<select>` ("available: []"). Workarounds used:
   fast_evaluate rect → fast_click_xy, and trusted click + fast_type + Enter.
-- **Status:** in code / validated both ways on hvm / baseline run BASELINE_PENDING.
+- **Status:** in code / validated both ways on hvm / baseline run (grok-4.3, phase2, gate on,
+  cdf5f6c): **18/32**, 58 calls, 103.9s, 2 overclaims — h_table 6/6, h_spa 5/5, h_repeat 4/7 (3/7
+  with the tightened seed check: it overwrote Joe's seeded Birthdate), h_conditional 1/6,
+  h_datepicker 1/4, h_combobox 1/4 (set the native twin select; Select2 unchanged). Both overclaims
+  passed the gate because a tool's `verified` was wrong or wrongly aggregated. Six generic
+  contracts are listed in the doc.
 
 ## 2026-09-15 — fast-runner gate mode: on | record | off (measure the model alone)
 - **What:** one gate mode per run: `FASTRUN_GATE` env, `--gate <mode>` (cli.mjs), `gate` arg on
