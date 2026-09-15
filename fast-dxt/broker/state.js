@@ -1,5 +1,7 @@
-// Slots keyed by arbitrary `hello` label → N profiles concurrent. Route to
-// FASTLINK_ACTIVE (default 'primary') unless a session pins via fast_profile.
+// Slots keyed by arbitrary `hello` label → N profiles concurrent. An MCP session
+// pins a slot via fast_profile (envelope `install`); "auto" = FASTLINK_ACTIVE
+// (default 'primary') then any-connected. Unpinned + >1 slot connected =
+// ambiguous → router.js refuses (never lands on the owner's main profile).
 // Custom labels learned from `hello` → `slots`.
 import { EXT_PORTS } from './config.js';
 
@@ -38,6 +40,7 @@ export const state = {
   // Fixed listener slots ∪ every custom label seen live this lifetime (tracked
   // in `slots`). Listeners first. Gates routing (router.js) + status output.
   knownInstalls() { return [...new Set([...LISTENER_INSTALLS, ...slots.keys()])]; },
+  connectedInstalls() { return [...slots.entries()].filter(([, s]) => isOpen(s)).map(([id]) => id); },
 
   setExtensionSocket(installId, ws, reason) {
     const s = ensureSlot(installId);
@@ -62,7 +65,9 @@ export const state = {
     const s = ensureSlot(installId);
     s.lastPingAt = Date.now();
   },
-  // ACTIVE if connected, else any connected slot, else null.
+  // "auto" resolution: ACTIVE if connected, else any connected slot, else null.
+  // Only used for sessions explicitly pinned to "auto" (router.js) and for the
+  // idle watchdog / status; an unpinned session with >1 slot up never gets here.
   getRoutedInstall() {
     if (isOpen(slots.get(ACTIVE))) return ACTIVE;
     for (const [id, s] of slots.entries()) {
@@ -116,9 +121,11 @@ export const state = {
         recent: s?.recent ? [...s.recent] : [],
       };
     }
-    // Top-level fields reflect whichever install tool calls actually route to.
+    // Top-level fields reflect the "auto" target (routedInstall). With >1 slot
+    // connected, `pinRequired:true` says unpinned calls are refused instead.
     const routed = state.getRoutedInstall();
     const routedSnap = routed ? installs[routed] : null;
+    const connectedInstalls = state.connectedInstalls();
     return {
       connected: !!routedSnap?.connected,
       totalConnections: routedSnap?.totalConnections ?? 0,
@@ -128,6 +135,8 @@ export const state = {
       lastPingAgo: routedSnap?.lastPingAgo ?? 'never',
       activeInstall: ACTIVE,
       routedInstall: routed,
+      connectedInstalls,
+      pinRequired: connectedInstalls.length > 1,
       installs,
     };
   },
