@@ -1,7 +1,7 @@
 // node --test — the report_done evidence gate on synthetic tool logs (no browser, no model).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gateProblems, recordResult, corpusRow, unresolvedFailures, claimMismatch, partialFailures, resultSections, buildSystem, loadToolset, reportDone, gateMode } from '../runner.mjs';
+import { gateProblems, recordResult, corpusRow, unresolvedFailures, claimMismatch, partialFailures, entryFacts, buildSystem, loadToolset, reportDone, gateMode } from '../runner.mjs';
 
 const LIST = 'https://dash.cloudflare.com/acc/workers-and-pages';
 const WORKER = 'https://dash.cloudflare.com/acc/workers/services/view/fastlink-relay/production';
@@ -11,9 +11,7 @@ function runOf(rows) {
   const run = { toolLog: [], corpus: [], urlTrail: [], gateRefusals: [] };
   rows.forEach(([name, args, text = '{}', isError = false], i) => {
     const ok = recordResult(run, text, isError);
-    const partial = ok ? partialFailures(name, args, text) : [];
-    const sections = ok ? resultSections(text) : [];
-    run.toolLog.push({ t: i * 1000, name, args, ok, preview: text.slice(0, 100), ...(partial.length ? { partial } : {}), ...(sections.length ? { sections } : {}) });
+    run.toolLog.push({ t: i * 1000, name, args, ok, preview: text.slice(0, 100), ...entryFacts(name, args, text, ok) });
   });
   return run;
 }
@@ -376,4 +374,70 @@ test('gate mode: default on, FASTRUN_GATE / explicit spec, bad values throw', ()
   assert.equal(gateMode('OFF'), 'off');
   assert.throws(() => gateMode('maybe'), /must be one of on \| record \| off/);
   if (env == null) delete process.env.FASTRUN_GATE; else process.env.FASTRUN_GATE = env;
+});
+
+// ── gate=record 2026-09-15 would-refuse entries (docs/GROK_RUNNER_BENCH_hvm_gate_record_2026-09-15.md) ──
+const RS = 'https://react-select.com/home';
+const forest = JSON.stringify({ verified: true, picked: 'Forest', value: 'Forest', field: { tag: 'input', role: 'combobox', id: 'react-select-3-input', section: 'Single' }, kind: 'react-select', snapshot: { url: RS, items: [] } });
+const oceanMiss = JSON.stringify({ error: 'Found 1 match(es) for "Ocean" but none satisfied role="combobox". Nothing was clicked', hint: 'this is a select control (field "Multi Select"); use fast_select_option {field:"Multi Select", option:"<choice>"} instead of clicking/typing its value', selectField: { tag: 'input', role: 'combobox', id: 'react-select-8-input', section: 'Multi Select' } });
+const overlay = [
+  ['fast_tab', { url: RS }, `{"id":1,"url":"${RS}"}`],
+  ['fast_snapshot', { full: true }, snap(RS, 'Single', 'Multi Select')],
+  ['fast_select_option', { field: 'Single', option: 'Forest' }, forest],
+];
+const overlayEv = { result: 'Selected "Forest" in the first (Single) dropdown.', evidence: `picked:"Forest", value:"Forest", field section:"Single" (URL ${RS})` };
+
+test('check 1: a write whose own result is verified:true is its read-back (overlay p2/p3 9f8e55fd-class)', () => {
+  const run = runOf(overlay);
+  assert.equal(run.toolLog[2].verified, true);
+  assert.deepEqual(gateProblems(run, overlayEv), []);
+  // not for a LATER action: a click after the verified select still needs a read
+  const clicked = runOf([...overlay, ['fast_click', { text: 'Go' }, '{"clicked":{}}']]);
+  assert.match(gateProblems(clicked, overlayEv).join(), /no tool has read the page since your last fast_click/);
+  // verified:false (a missed field) is no read-back
+  const unverified = runOf([...overlay.slice(0, 2), ['fast_fill', { fields: { A: 'x', B: 'y' } }, JSON.stringify({ verified: false, fields: { A: { verified: true, value: 'x' }, B: { error: 'no match' } } })]]);
+  assert.match(gateProblems(unverified, { result: 'r', evidence: '"Single"' }).join(), /no tool has read the page since your last fast_fill/);
+  // fast_fill {fields} and fast_batch whose LAST state-changing step is a verified write
+  assert.equal(entryFacts('fast_fill', { fields: { A: 'x' } }, '{"verified":true,"fields":{"A":{"verified":true}}}', true).verified, true);
+  const b = (steps, results) => entryFacts('fast_batch', { actions: steps }, JSON.stringify({ results }), true).verified;
+  assert.equal(b([{ name: 'fast_fill', args: {} }, { name: 'fast_select_option', args: {} }, { name: 'fast_snapshot', args: {} }],
+    [{ step: 0, name: 'fast_fill', ok: true, result: { verified: true } }, { step: 1, name: 'fast_select_option', ok: true, result: { verified: true } }, { step: 2, name: 'fast_snapshot', ok: true, result: {} }]), true);
+  assert.equal(b([{ name: 'fast_fill', args: {} }, { name: 'fast_click', args: {} }],
+    [{ step: 0, name: 'fast_fill', ok: true, result: { verified: true } }, { step: 1, name: 'fast_click', ok: true, result: {} }]), undefined, 'a click after the fill is unread');
+  assert.equal(entryFacts('fast_click', {}, '{"verified":true}', true).verified, undefined, 'only writes carry a read-back');
+});
+
+test('check 3: a failed click whose error redirected to fast_select_option is superseded by a later successful select (overlay p1)', () => {
+  const rows = [...overlay.slice(0, 2), ['fast_click', { text: 'Ocean', role: 'combobox', index: 0 }, oceanMiss], overlay[2]];
+  const run = runOf(rows);
+  assert.equal(run.toolLog[2].redirect, 'fast_select_option');
+  assert.deepEqual(unresolvedFailures(run.toolLog), []);
+  assert.deepEqual(gateProblems(run, overlayEv), []);
+  // without the later select, the failed click stands
+  assert.deepEqual(unresolvedFailures(runOf(rows.slice(0, 3)).toolLog).map(f => f.target), ['Ocean']);
+  // a plain failed click (no redirect) is not superseded by an unrelated select
+  const plain = runOf([...overlay.slice(0, 2), ['fast_click', { text: 'Ocean' }, '{"error":"nothing matched"}'], overlay[2]]);
+  assert.deepEqual(unresolvedFailures(plain.toolLog).map(f => f.target), ['Ocean']);
+});
+
+test('check 4: the first load satisfies a claim that names its URL or its tab, whatever the phrasing (flightsearch p1-p3)', () => {
+  const AA_ASK = 'https://www.aa.com/booking/find-flights';
+  const run = runOf([['fast_tab', { url: AA_ASK }, `{"id":1,"url":"${AA}"}`], ...aaRows().slice(1)]);
+  for (const result of [
+    `New tab opened to ${AA}; fields set to: Round trip, From=JFK, To=LAX, Dep=10/15/2026, Ret=10/22/2026, Passengers=2, Class=Business / First, Airline=American Airlines (verified live; Search untouched).`,
+    `New tab opened to ${AA}. Round-trip form fields set (no Search clicked): Leaving from=JFK, Going to=LAX. All read back from page.`,
+    `New tab opened to ${AA}. Round-trip fields set: From=JFK, To=LAX (no Search clicked).`,
+    `Navigated to ${AA_ASK} and filled the form.`,           // the requested URL counts as well as the landed one
+    'Opened aa.com/booking/search/find-flights/ in the browser.',
+  ]) assert.deepEqual(claimMismatch(run.toolLog, result), [], result);
+  // a claim naming another page is not satisfied by the first load
+  assert.deepEqual(claimMismatch(run.toolLog, 'Opened https://www.aa.com/booking/flights/results and picked the cheapest').map(c => c.verb), ['opened']);
+  // cfworkers fbc16cf2 still flagged (see check 4 above): the clause names neither the list URL nor a tab
+  const cf = runOf([['fast_tab', { url: CF }, `{"id":1,"url":"${CF}"}`], ['fast_snapshot', {}, snap(LIST, 'fastlink-relay')]]);
+  assert.deepEqual(claimMismatch(cf.toolLog, 'Worker "fastlink-relay" opened; other Workers listed: gauth-father.').map(c => c.verb), ['opened']);
+  assert.deepEqual(claimMismatch(cf.toolLog, `Opened ${CF}; the Worker "fastlink-relay" is listed.`), []);
+  // a fast_nav first load has no tab to name
+  const nav = runOf([['fast_nav', { url: 'https://example.com/a' }, '{"url":"https://example.com/a"}']]);
+  assert.deepEqual(claimMismatch(nav.toolLog, 'Opened a new tab with the report').map(c => c.verb), ['opened']);
+  assert.deepEqual(claimMismatch(nav.toolLog, 'Navigated to https://example.com/a.'), []);
 });

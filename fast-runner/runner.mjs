@@ -34,7 +34,8 @@ Rules:
 - When finished call report_done with a concise result and evidence (what you read back, URL). report_done is refused unless a read (fast_snapshot/fast_text) followed your last action and evidence quotes that result verbatim. A tool call that failed and was never retried also blocks report_done — retry it, or say in result why it is not needed. So does a result that claims an action (opened, clicked, selected, filled, submitted…) no successful tool call performed — say what you observed, not what you intended. Do not end your turn without calling report_done or ask_caller.`;
 
 // Evidence gate for report_done (a caller-facing contract, every toolset):
-//  1. the run must have READ the page after its last state-changing call;
+//  1. the run must have READ the page after its last state-changing call (that
+//     call's own verified:true read-back counts — readBack below);
 //  2. `evidence` must quote a tool result of this run, taken on the CURRENT
 //     (last-seen) URL — a quote from an earlier page is not evidence for this one;
 //  3. a failed call never retried (same tool+target, or another tool on that
@@ -163,6 +164,45 @@ export function partialFailures(name, args, text) {
   }
   return out;
 }
+// A write whose OWN result read the value back from the page (`verified:true` on a
+// fast_fill / fast_fill {fields} / fast_select_option; for a fast_batch, its LAST
+// state-changing step is such a verified write) is the read-after-action for that
+// write — not for any later action. overlay p1-p3 (gate=record, 2026-09-15): the
+// select result carried verified:true, picked:"Forest", value:"Forest".
+const VERIFYING_WRITES = new Set(['fast_fill', 'fast_fill_form', 'fast_select_option']);
+function readBack(name, args, o) {
+  if (VERIFYING_WRITES.has(name)) return o?.verified === true;
+  if (name !== 'fast_batch' || !Array.isArray(o?.results)) return false;
+  const steps = args?.actions || args?.steps || [];
+  for (let i = o.results.length - 1; i >= 0; i--) {
+    const r = o.results[i];
+    const nm = (r && steps[r.step]?.name) || r?.name;
+    if (!STATE_TOOLS.has(nm) && nm !== 'fast_fill_form') continue;
+    return r.ok !== false && VERIFYING_WRITES.has(nm) && r.result?.verified === true;
+  }
+  return false;
+}
+// What the gate needs from one result, stored on its toolLog entry (parsed once):
+// `partial` (missed fields / failed batch steps), `sections` (where writes landed),
+// `verified` (its own read-back, above), `url` (the page it reports), and for a
+// FAILED call whose error says its target is a select control (`selectField`),
+// `redirect:"fast_select_option"` — the tool that error told the model to use.
+export function entryFacts(name, args, text, ok) {
+  let o = null;
+  try { o = JSON.parse(text); } catch {}
+  const out = {};
+  if (typeof o?.url === 'string') out.url = o.url;
+  if (!ok) {
+    if (o?.selectField && typeof o.selectField === 'object') out.redirect = 'fast_select_option';
+    return out;
+  }
+  const partial = partialFailures(name, args, text);
+  const sections = resultSections(text);
+  if (partial.length) out.partial = partial;
+  if (sections.length) out.sections = sections;
+  if (readBack(name, args, o)) out.verified = true;
+  return out;
+}
 // Sections a successful fill/select RESULT says it acted in: the `section` of each
 // written field's `filled` / `field` descriptor (fast_select_option reports one).
 export function resultSections(text) {
@@ -223,7 +263,10 @@ export function unresolvedFailures(log) {
     const retried = later.some(x => x.ok && (x.name === e.name ? target(x) === tg : tg !== '' && target(x) === tg))
       || (tg !== '' && later.some(x => succeededTargets(x).some(t => sameTarget(t, tg))));
     const overtaken = isReadOrWait(e) && later.some((x, j) => x.ok && isStateChanging(x) && later.slice(j + 1).some(y => y.ok && isRead(y)));
-    if (!retried && !overtaken) out.set(`${e.name}\0${tg}`, { name: e.name, target: tg, t: e.t });
+    // the error named the tool to use instead (a click/type on a select control →
+    // fast_select_option); that tool succeeding later supersedes the failed call
+    const redirected = !!e.redirect && later.some(x => x.ok && x.name === e.redirect);
+    if (!retried && !overtaken && !redirected) out.set(`${e.name}\0${tg}`, { name: e.name, target: tg, t: e.t });
   });
   return [...out.values()];
 }
@@ -231,8 +274,13 @@ export function unresolvedFailures(log) {
 // The model's OWN action claims vs. the calls it made (no task parsing): a
 // `result` saying "opened / clicked / selected / filled / submitted …" needs a
 // successful call of that family (fast_batch steps count). Negated mentions
-// ("Search NOT clicked", "form not submitted") and "opened a (new) tab" (the
-// first page load itself) are not claims.
+// ("Search NOT clicked", "form not submitted") are not claims. The run's FIRST
+// fast_tab / fast_nav satisfies an open/navigate claim whose clause names what that
+// call loaded, whatever the phrasing: its URL (requested or landed; scheme, www,
+// query, trailing slash ignored), or a tab when it was fast_tab. Structural, not
+// wording: "New tab opened to https://www.aa.com/booking/search/find-flights"
+// (flightsearch p1-p3) passes; 'Worker "fastlink-relay" opened' with only the list
+// page loaded (cfworkers fbc16cf2) names neither, so it still needs a click/2nd load.
 // A custom dropdown is "selected" by clicking its option and a native <select>
 // can be set by fast_fill, so the select family includes both; fast_do (vision
 // act) counts for every family; fast_fill_form is still a valid batch step name.
@@ -246,24 +294,36 @@ const CLAIMS = [
 ];
 const VERB_BASE = { opened: 'open', navigated: 'navigate', drilled: 'drill in', 'went to': 'go to', clicked: 'click', added: 'add', checked: 'check', selected: 'select', picked: 'pick', filled: 'fill', entered: 'enter', typed: 'type', submitted: 'submit' };
 const NEGATED_BEFORE =/(?:\b(?:not|never|no|nothing|none|neither|without|nor)|n't)\s+(?:[\w-]+\s+){0,2}$/i;
-const TAB_OPEN = /^opened\s+(?:a\s+)?(?:new\s+)?tab\b/i;
-// Successful calls, fast_batch steps flattened (incl. ifFound then/else), in log order.
+// Successful calls, fast_batch steps flattened (incl. ifFound then/else), in log order;
+// a top-level call keeps the url its result reported.
 const successfulCalls = (log) => {
   const out = [];
   const steps = (list) => { for (const s of list || []) { if (!s || typeof s !== 'object') continue; if (s.name) out.push({ name: s.name, args: s.args || {} }); steps(s.then); steps(s.else); } };
-  for (const e of log) { if (!e.ok) continue; out.push({ name: e.name, args: e.args || {} }); if (e.name === 'fast_batch') steps(e.args?.actions || e.args?.steps); }
+  for (const e of log) { if (!e.ok) continue; out.push({ name: e.name, args: e.args || {}, url: e.url }); if (e.name === 'fast_batch') steps(e.args?.actions || e.args?.steps); }
   return out;
+};
+const normUrl = (u) => String(u || '').trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/^www\./, '').replace(/[?#].*$/, '').replace(/\/+$/, '');
+const URL_IN = /\b(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s"'<>(),;]*)?/gi;
+// The clause (sentence / ;-part / line) holding position i; a "." inside a URL is not an end.
+const clauseAt = (text, i) => {
+  const end = /[.!?;](?=\s|$)|\n/g;
+  let start = 0, m;
+  while ((m = end.exec(text))) { if (m.index >= i) return text.slice(start, m.index); start = m.index + 1; }
+  return text.slice(start);
 };
 export function claimMismatch(log, result) {
   const text = String(result ?? '');
   const calls = successfulCalls(log || []);
   const loads = calls.filter(c => c.name === 'fast_tab' || c.name === 'fast_nav');
+  const firstUrls = new Set(loads.length ? [normUrl(loads[0].args.url), normUrl(loads[0].url)].filter(Boolean) : []);
+  const namesFirstLoad = (clause) => [...clause.matchAll(URL_IN)].some(u => firstUrls.has(normUrl(u[0].replace(/[.!?:]+$/, ''))))
+    || (loads[0]?.name === 'fast_tab' && /\btab\b/i.test(clause));
   const out = [];
   for (const c of CLAIMS) {
     let verb = null;
     for (const m of text.matchAll(c.re)) {
       if (NEGATED_BEFORE.test(text.slice(Math.max(0, m.index - 40), m.index))) continue;
-      if (c.nav && TAB_OPEN.test(text.slice(m.index)) && loads.length) continue;
+      if (c.nav && loads.length && namesFirstLoad(clauseAt(text, m.index))) continue;
       verb = m[1].toLowerCase(); break;
     }
     if (!verb) continue;
@@ -282,7 +342,8 @@ export function gateProblems(run, args) {
   else {
     let last = -1;
     for (let i = log.length - 1; i >= 0; i--) if (isStateChanging(log[i])) { last = i; break; }
-    if (!log.slice(last + 1).some(e => e.ok && isRead(e))) {
+    const selfVerified = last >= 0 && log[last].ok && log[last].verified === true;
+    if (!selfVerified && !log.slice(last + 1).some(e => e.ok && isRead(e))) {
       problems.push(last >= 0
         ? `no tool has read the page since your last ${log[last].name}; call fast_snapshot or fast_text (its own auto-snapshot is not a read-back) and cite what it returned`
         : 'no successful read of the page yet; call fast_snapshot or fast_text and cite what it returned');
@@ -587,9 +648,7 @@ async function loop(run) {
       // (an error's candidates / a batch's per-step results); 160 showed only the
       // first key of a snapshot.
       const preview = firstText.slice(0, 1200);
-      const partial = ok ? partialFailures(real || u.name, args, firstText) : [];
-      const sections = ok ? resultSections(firstText) : [];
-      run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview, ...(partial.length ? { partial } : {}), ...(sections.length ? { sections } : {}) });
+      run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview, ...entryFacts(real || u.name, args, firstText, ok) });
       onEvent?.({ type: 'tool', name: real || u.name, args, ms, ok, preview });
       run.consecutiveErrors = ok ? 0 : run.consecutiveErrors + 1;
       results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResultContent(res), ...(ok ? {} : { is_error: true }) });

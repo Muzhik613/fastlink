@@ -63,6 +63,34 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   both direction inputs "" → both values. aa.com blocks headless (no fields rendered). Extension
   path on hvm not yet exercised.
 
+## 2026-09-15 — fast-runner gate: a write's own verified read-back is its read; a redirected failure is superseded; first-load claims are structural
+- **What:** runner.mjs. (1) New exported `entryFacts(name, args, text, ok)` is the ONE parse of a
+  result for the toolLog entry: `partial`, `sections`, `url`, `verified` (a fast_fill /
+  fast_fill {fields} / fast_select_option with `verified:true`, or a fast_batch whose LAST
+  state-changing step is such a write), and on a failed call whose error carries `selectField`,
+  `redirect:"fast_select_option"`. The loop and the test harness both use it. Check 1: the last
+  state-changing call's own `verified` counts as the read after it (never for a later action).
+  Check 3: a failed call with `redirect` is resolved by a later successful call of that tool.
+  (2) Check 4: `TAB_OPEN` wording deleted; the FIRST fast_tab/fast_nav satisfies an
+  opened/navigated claim whose clause (sentence / ;-part / line) names that call's URL — requested
+  or landed, scheme/www/query/trailing slash ignored — or a tab when the call was fast_tab.
+- **Why:** gate=record bench: overlay p1-p3 would have been refused "no read after
+  fast_select_option" although the select returned `verified:true, picked:"Forest"`; p1 also for
+  the failed `fast_click "Ocean"` whose error said "this is a select control … use
+  fast_select_option" (it had matched the Multi Select chip, react-select-8; the model then used
+  fast_select_option on Single — so no same-field id link exists, the redirect is the structural
+  one). flightsearch p1-p3: "New tab opened to https://www.aa.com/…" was flagged because only
+  "opened a new tab" was exempt. All six scored full.
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/test/gate.test.mjs`.
+- **Watch out:** an UNverified write still needs a fast_snapshot/fast_text after it. A claim that
+  names the first URL but means another page ("Opened https://first/… and the Worker") passes; a
+  fast_nav first load names no tab. cfworkers fbc16cf2 ('Worker "fastlink-relay" opened', list
+  page only) is still flagged (test).
+- **Status:** committed; `node --test test/*.test.mjs` 47/47. Replay of the 7 would-refuse rows
+  (toolLogs from hvm runs.jsonl through the new gateProblems; evidence verdict carried over — the
+  corpus is not stored): overlay ×3 and flightsearch ×3 now pass; only mapsdir p2 (61581163) still
+  refuses (unquoted evidence + unretried wait) — the one the gate was right about.
+
 ## 2026-09-15 — bench HOLDOUT set: 6 untuned public sites (bench/holdout.js, ids h_*)
 - **What:** `bench/holdout.js` exports `HOLDOUT` (same shape as suite.js): `h_conditional` GOV.UK
   conditional-reveal radios, `h_datepicker` jQuery UI inline calendar (no input), `h_combobox`
