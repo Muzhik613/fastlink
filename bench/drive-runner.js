@@ -24,7 +24,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { DEFAULTS, summarize } from './monitor.js';
-import { TESTS } from './suite.js';
+import { ALL_TESTS as TESTS } from './suite.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'fast-runner', 'cli.mjs');

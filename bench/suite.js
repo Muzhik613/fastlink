@@ -10,8 +10,10 @@
 // scored from what the model says it did. Checkpoints are ORDERED: they are listed
 // in the order the work must happen, so `firstFailure` tells you where a run died.
 //
+import { HOLDOUT } from './holdout.js';
+
 // Kinds:
-//   tab      {urlIncludes}                 – some tab is open on that URL
+//   tab     {urlIncludes}                 – some tab is open on that URL
 //   trail    {urlIncludes}                 – the recorder saw that URL during the run
 //                                            (falls back to currently-open tabs when
 //                                            scoring standalone with no trail)
@@ -427,5 +429,9 @@ export const TESTS = [
   },
 ];
 
-export const byId = (id) => TESTS.find((t) => t.id === id);
-export const TEST_IDS = TESTS.map((t) => t.id);
+// The holdout set (bench/holdout.js, ids `h_*`) resolves through the same lookup, so
+// run.js / score.js take `--test h_table` with no second code path.
+export const SUITES = { main: TESTS, holdout: HOLDOUT };
+export const ALL_TESTS = [...TESTS, ...HOLDOUT];
+export const byId = (id) => ALL_TESTS.find((t) => t.id === id);
+export const TEST_IDS = ALL_TESTS.map((t) => t.id);

@@ -26,7 +26,7 @@
 import { appendFileSync, readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { byId, TEST_IDS } from './suite.js';
+import { byId, TEST_IDS, ALL_TESTS, SUITES } from './suite.js';
 import { closeMatching, clearStorageFor, pinInstall, status } from './fastlink.js';
 import { RelayTrace, LocalTrace, TrailWatcher, watchRun, renderTiming, summarize, resolveDeviceToken, TOKEN_HELP, DEFAULTS } from './monitor.js';
 import { scoreTest, renderScore } from './score.js';
@@ -311,7 +311,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const flag = (n, d = null) => { const i = argv.indexOf(n); if (i === -1) return d; const v = argv[i + 1]; argv.splice(i, 2); return v; };
 
   if (has('--list')) {
-    for (const id of TEST_IDS) console.log(`${id.padEnd(12)} ${byId(id).name}`);
+    const suite = flag('--suite'); // main | holdout; omitted = both
+    if (suite && !SUITES[suite]) { console.error(`unknown suite "${suite}" (have: ${Object.keys(SUITES).join(', ')})`); process.exit(2); }
+    for (const t of suite ? SUITES[suite] : ALL_TESTS) console.log(`${t.id.padEnd(14)} ${t.name}`);
     process.exit(0);
   }
   if (has('--force-unlock')) { releaseLock(); console.log('lock released'); }
@@ -348,7 +350,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       '                            (e.g. claude=primary, grok=secondary) or you score the wrong Chrome.',
       '  --claimed   yes|no        override the completion-claim reading of the final message',
       '  --quiet-ms / --ceiling-ms finish / stuck thresholds (default 25000 / 300000)',
-      '  --no-reset --force --force-unlock --dry-run --list',
+      '  --no-reset --force --force-unlock --dry-run --list [--suite main|holdout]',
     ].join('\n'));
     process.exit(2);
   }

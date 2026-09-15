@@ -12,7 +12,7 @@
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { TESTS } from './suite.js';
+import { ALL_TESTS as TESTS } from './suite.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 

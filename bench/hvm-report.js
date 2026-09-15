@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { TESTS } from './suite.js';
+import { ALL_TESTS as TESTS } from './suite.js';
 import { loadUsage } from './drive-runner.js';
 import { load as loadResults } from './report.js';
 
