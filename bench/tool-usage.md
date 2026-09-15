@@ -1,66 +1,73 @@
 # fast-runner tool usage
 
-32 cell(s), ALL passes, one table per toolset × model, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
+36 cell(s), ALL passes, one table per toolset × model, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
 
 fumble columns: `retry` = call immediately followed by the same tool on the same target; `switch` = followed by a different tool on the same target; `fumble %` = (retry+switch)/calls.
 
-## toolset `default / grok-4.6` — 16 cell(s): multipage×2, gcpform×2, staticform×2, overlay×2, flightsearch×2, mapsdir×2, extract×2, cfworkers×2
+## toolset `default / ?` — 6 cell(s): multipage×1, gcpform×1, staticform×1, overlay×1, extract×2
 
 | tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
 |---|---:|---:|---:|---:|---:|---:|---|
-| fast_click | 41 | 5 | 179 | 0 | 4 | 10 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, cfworkers |
-| fast_wait | 30 | 2 | 886 | 0 | 10 | 33 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, extract, cfworkers |
-| fast_snapshot | 27 | 0 | 148 | 0 | 0 | 0 | gcpform, staticform, overlay, flightsearch, mapsdir, cfworkers |
-| fast_fill | 16 | 0 | 187 | 0 | 0 | 0 | gcpform, flightsearch, mapsdir |
-| fast_tab | 16 | 0 | 679 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, extract, cfworkers |
-| fast_status | 14 | 0 | 158 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, cfworkers |
-| fast_prewarm | 12 | 0 | 87 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, cfworkers |
-| fast_scroll | 9 | 0 | 193 | 0 | 0 | 0 | gcpform, overlay, flightsearch, cfworkers |
-| fast_click_xy | 7 | 0 | 198 | 0 | 0 | 0 | overlay |
-| fast_text | 7 | 0 | 125 | 0 | 0 | 0 | staticform, flightsearch, mapsdir, extract |
-| fast_key_press | 6 | 0 | 152 | 0 | 0 | 0 | staticform, overlay, flightsearch, mapsdir |
-| fast_scout | 6 | 0 | 1566 | 0 | 0 | 0 | gcpform, staticform, overlay, flightsearch, mapsdir, cfworkers |
-| fast_select_option | 6 | 3 | 1138 | 0 | 1 | 17 | gcpform, staticform, overlay, flightsearch |
-| fast_evaluate | 5 | 5 | 132 | 0 | 0 | 0 | staticform, flightsearch, extract |
+| fast_click | 9 | 0 | 170 | 0 | 0 | 0 | multipage, gcpform, overlay |
+| fast_snapshot | 9 | 0 | 159 | 0 | 0 | 0 | gcpform, staticform, overlay, extract |
+| fast_wait | 7 | 0 | 433 | 0 | 0 | 0 | multipage, gcpform, overlay, extract |
+| fast_tab | 6 | 0 | 1183 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, extract |
+| fast_status | 5 | 0 | 147 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, extract |
+| fast_click_xy | 4 | 0 | 208 | 0 | 0 | 0 | overlay |
+| fast_scroll | 4 | 0 | 241 | 0 | 0 | 0 | gcpform, overlay |
 | fast_batch | 3 | 0 | 2976 | 0 | 0 | 0 | gcpform, staticform |
-| fast_screenshot | 2 | 0 | 461 | 0 | 0 | 0 | staticform |
-| fast_type | 2 | 0 | 209 | 0 | 1 | 50 | overlay |
+| fast_fill | 3 | 0 | 141 | 0 | 0 | 0 | gcpform |
+| fast_prewarm | 3 | 0 | 75 | 0 | 0 | 0 | gcpform, overlay, extract |
+| fast_text | 3 | 0 | 118 | 0 | 0 | 0 | staticform, extract |
+| fast_evaluate | 2 | 2 | 154 | 0 | 0 | 0 | staticform, extract |
+| fast_key_press | 2 | 0 | 224 | 0 | 0 | 0 | staticform, overlay |
+| fast_scout | 2 | 0 | 1654 | 0 | 0 | 0 | gcpform, overlay |
 | fast_do | 1 | 0 | 3600 | 0 | 0 | 0 | overlay |
-| fast_fill_form | 1 | 0 | 231 | 0 | 0 | 0 | staticform |
+| fast_screenshot | 1 | 0 | 440 | 0 | 0 | 0 | staticform |
+| fast_select_option | 1 | 1 | 117 | 0 | 0 | 0 | overlay |
+| fast_type | 1 | 0 | 192 | 0 | 0 | 0 | overlay |
 
-Total: 211 calls across 19 distinct tools; 16 fumbles (8%).
+Total: 66 calls across 18 distinct tools; 0 fumbles (0%).
 
-## toolset `phase2 / grok-4.6` — 8 cell(s): multipage×1, gcpform×1, staticform×1, overlay×1, flightsearch×1, mapsdir×1, extract×1, cfworkers×1
-
-| tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
-|---|---:|---:|---:|---:|---:|---:|---|
-| fast_snapshot | 19 | 0 | 211 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, extract, cfworkers |
-| fast_click | 18 | 4 | 1839 | 1 | 2 | 17 | multipage, gcpform, overlay, flightsearch, mapsdir, cfworkers |
-| fast_fill | 10 | 1 | 160 | 0 | 0 | 0 | gcpform, overlay, flightsearch, mapsdir |
-| fast_text | 9 | 0 | 141 | 0 | 0 | 0 | gcpform, staticform, overlay, extract, cfworkers |
-| fast_tab | 8 | 0 | 420 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, extract, cfworkers |
-| fast_wait | 6 | 0 | 231 | 0 | 1 | 17 | multipage, mapsdir, cfworkers |
-| fast_evaluate | 5 | 5 | 207 | 0 | 0 | 0 | gcpform, staticform, overlay, flightsearch, extract |
-| fast_scroll | 4 | 0 | 232 | 0 | 0 | 0 | gcpform, overlay |
-| fast_batch | 3 | 0 | 1366 | 0 | 0 | 0 | staticform, flightsearch |
-| fast_click_xy | 3 | 0 | 224 | 0 | 0 | 0 | overlay |
-| fast_select_option | 3 | 2 | 2380 | 0 | 1 | 33 | gcpform, overlay |
-| fast_key_press | 2 | 0 | 156 | 0 | 0 | 0 | staticform, mapsdir |
-| fast_nav | 1 | 0 | 730 | 0 | 0 | 0 | overlay |
-
-Total: 91 calls across 13 distinct tools; 5 fumbles (5%).
-
-## toolset `phase2 / grok-4.3` — 8 cell(s): multipage×1, gcpform×1, staticform×1, overlay×1, flightsearch×1, mapsdir×1, extract×1, cfworkers×1
+## toolset `default / grok-4.6` — 18 cell(s): multipage×3, staticform×3, overlay×3, flightsearch×3, mapsdir×3, extract×3
 
 | tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
 |---|---:|---:|---:|---:|---:|---:|---|
-| fast_fill | 13 | 3 | 137 | 0 | 0 | 0 | gcpform, staticform, flightsearch, mapsdir |
-| fast_snapshot | 11 | 0 | 208 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, extract, cfworkers |
-| fast_click | 9 | 3 | 137 | 2 | 1 | 33 | multipage, staticform, overlay, mapsdir |
-| fast_tab | 8 | 0 | 436 | 0 | 0 | 0 | multipage, gcpform, staticform, overlay, flightsearch, mapsdir, extract, cfworkers |
-| fast_select_option | 6 | 1 | 1206 | 0 | 0 | 0 | gcpform, staticform, overlay, flightsearch |
-| fast_evaluate | 1 | 1 | 114 | 0 | 0 | 0 | flightsearch |
-| fast_text | 1 | 0 | 99 | 0 | 0 | 0 | staticform |
-| fast_wait | 1 | 0 | 2987 | 0 | 0 | 0 | cfworkers |
+| fast_status | 54 | 0 | 5 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir |
+| fast_wait | 39 | 4 | 177 | 0 | 10 | 26 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
+| fast_click | 22 | 2 | 57 | 0 | 5 | 23 | multipage, overlay, flightsearch, mapsdir |
+| fast_snapshot | 22 | 0 | 40 | 0 | 0 | 0 | multipage, overlay, flightsearch, mapsdir |
+| fast_tab | 18 | 0 | 273 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
+| fast_evaluate | 16 | 0 | 36 | 0 | 0 | 0 | staticform, overlay, flightsearch, mapsdir, extract |
+| fast_fill | 14 | 0 | 80 | 0 | 0 | 0 | flightsearch, mapsdir |
+| fast_prewarm | 12 | 0 | 2 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir |
+| fast_click_xy | 9 | 0 | 53 | 0 | 0 | 0 | overlay, mapsdir |
+| fast_select_option | 5 | 1 | 444 | 0 | 0 | 0 | overlay, flightsearch |
+| fast_batch | 4 | 0 | 1592 | 0 | 0 | 0 | staticform, flightsearch |
+| fast_scout | 3 | 0 | 3317 | 0 | 0 | 0 | flightsearch |
+| fast_type | 3 | 0 | 59 | 0 | 2 | 67 | overlay, mapsdir |
+| fast_list | 2 | 1 | 10 | 0 | 0 | 0 | multipage, flightsearch |
+| fast_text | 2 | 0 | 13 | 0 | 0 | 0 | mapsdir |
+| fast_fill_form | 1 | 0 | 66 | 0 | 0 | 0 | mapsdir |
+| fast_key_press | 1 | 0 | 17 | 0 | 0 | 0 | mapsdir |
+| fast_nav | 1 | 1 | 3 | 0 | 0 | 0 | multipage |
+| fast_scroll | 1 | 0 | 65 | 0 | 0 | 0 | overlay |
 
-Total: 50 calls across 8 distinct tools; 3 fumbles (6%).
+Total: 229 calls across 19 distinct tools; 17 fumbles (7%).
+
+## toolset `phase2 / grok-4.3` — 12 cell(s): multipage×2, staticform×2, overlay×2, flightsearch×2, mapsdir×2, extract×2
+
+| tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
+|---|---:|---:|---:|---:|---:|---:|---|
+| fast_click | 26 | 11 | 439 | 6 | 0 | 23 | multipage, staticform, overlay, mapsdir |
+| fast_fill | 21 | 4 | 382 | 1 | 0 | 5 | staticform, overlay, flightsearch, mapsdir |
+| fast_snapshot | 19 | 0 | 130 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
+| fast_tab | 12 | 0 | 242 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
+| fast_key_press | 5 | 0 | 40 | 0 | 0 | 0 | overlay, mapsdir |
+| fast_select_option | 5 | 0 | 64 | 0 | 0 | 0 | staticform, flightsearch |
+| fast_text | 4 | 0 | 27 | 0 | 0 | 0 | staticform, mapsdir, extract |
+| fast_click_xy | 2 | 0 | 67 | 0 | 0 | 0 | overlay |
+| fast_wait | 2 | 0 | 523 | 0 | 0 | 0 | mapsdir |
+| fast_batch | 1 | 0 | 3105 | 0 | 0 | 0 | staticform |
+
+Total: 97 calls across 10 distinct tools; 7 fumbles (7%).
