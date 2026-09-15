@@ -33,6 +33,37 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast_fill reports an uncommitted autocomplete (`committed:false` + suggestions), per field; fast_wait timeout names it
+- **What:** one autocomplete path in page.js: `isAutocomplete(el)` (typeable control with
+  `role=combobox` on itself or its ARIA-1.1 wrapper, `aria-autocomplete` ≠ none,
+  `aria-controls`/`aria-owns`, or `aria-haspopup`; a native `<input list=datalist>` is NOT one),
+  `panelOptions(el)` (visible outermost option rows of the popup named by aria-controls/-owns on
+  the control, its descendants or its combobox wrapper — shared by `openSuggestions` and
+  `suggestionByText`), `openSuggestions(el)` → `{committed:false, suggestions:[≤5, icon-font
+  glyphs stripped], hint:"autocomplete is open; pick a suggestion (fast_click its text) or
+  fast_key_press Enter, then read back"}` on fast_fill / fast_key_press / fast_click alike.
+  (1) **fast_fill** (single + `{fields}`): after writing an autocomplete it polls ≤1.2s for the
+  popup (apps open it on a debounce/network round-trip) and captures it BEFORE the next field's
+  write moves focus and closes it; each field result carries it, the multi head adds
+  `uncommitted:[labels]` + the hint. `verified` stays about the value. (2) Per-page record
+  `INDEX.acPending` (last ≤4 autocomplete writes: value + URL at write time); settled by a
+  suggestion pick, an Enter/Tab that leaves no list open, a changed live value or a URL change.
+  (3) **fast_wait** timeout (text + selector): when the focused / last-filled autocomplete still
+  has its list open or its typed value was never accepted, the error carries
+  `hint:"\"<field>\" has an open suggestion list|an uncommitted value; submit it (Enter or pick a
+  suggestion) before waiting"` + `field` (+ `suggestions`). The bf55fda `suggestions`/hint shape
+  (≤6, "a suggestion list is open…") is replaced by this one.
+- **Why:** hvm mapsdir 9555f5ff / 3ceec99d (grok-4.3/phase2 on 53fdb0b): `fast_fill {fields:
+  {origin, destination}}` returned verified:true for both in 29-228ms — before Maps' debounced
+  grid appeared — so no suggestions were reported, the URL stayed /maps/dir///, and both waits
+  timed out with `headings:["Delays"]` and no clue (10-25s lost).
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** a fill into an autocomplete whose list never opens now costs up to 1.2s (other
+  fields: nothing). The pending record is heuristic (typed value unchanged + same URL): an exact
+  typed value accepted by a click on the app's own Go button is still flagged — only on a
+  fast_wait TIMEOUT. `commitSuggestion`'s "still open" check uses the same `openSuggestions`.
+- **Status:** committed; live proof on hvm below.
+
 ## 2026-09-15 — bench scorer: literal `\n` in a report compares as a newline (SCORER CHANGE)
 - **What:** `bench/score.js` `reportContains` (every `live` checkpoint) and `runLiveList` read a
   literal `\n` / `\r\n` / `\r` as a newline on both sides before `norm()` folds whitespace.

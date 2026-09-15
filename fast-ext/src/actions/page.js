@@ -1775,28 +1775,106 @@ async function runPageAction(action, args) {
     }
     return out;
   };
-  // An autocomplete/suggestion list the control just opened (aria-controls /
-  // aria-owns → a visible listbox/grid/menu with options): Enter or a fill alone
-  // does not commit such a value — the model must pick an entry.
-  const openSuggestions = (el) => {
+  // ── Autocomplete inputs: ONE path for fast_fill / fast_key_press / fast_click /
+  // fast_wait. An autocomplete's typed text is not the app's value until the app
+  // accepts it (a suggestion picked, Enter) — a fill that "holds" is not a commit.
+  // Autocomplete = a typeable control that is an ARIA combobox (on itself or its
+  // ARIA 1.1 wrapper), declares aria-autocomplete, or names a popup via
+  // aria-controls / aria-owns / aria-haspopup. A native <input list=datalist> is
+  // NOT one: its typed text is the value.
+  const comboWrapperOf = (el) => {
+    let p = el.parentElement;
+    for (let i = 0; p && i < 3; i++, p = p.parentElement) if (p.getAttribute && p.getAttribute('role') === 'combobox') return p;
+    return null;
+  };
+  const isAutocomplete = (el) => {
     try {
-      if (!el || el.nodeType !== 1) return null;
-      for (const id of ariaPanelIds(el)) {
+      if (!el || el.nodeType !== 1) return false;
+      if (!(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return false;
+      if (el.tagName === 'INPUT' && !/^(text|search|url|email|tel|)$/i.test(el.getAttribute('type') || '')) return false;
+      const ac = (el.getAttribute('aria-autocomplete') || '').toLowerCase();
+      const hp = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+      return (ac && ac !== 'none') || el.getAttribute('role') === 'combobox' || !!el.getAttribute('aria-controls') || !!el.getAttribute('aria-owns')
+        || (hp && hp !== 'false') || !!comboWrapperOf(el);
+    } catch { return false; }
+  };
+  // Visible option rows of the control's OPEN popup (aria-controls / aria-owns on
+  // the control, its descendants or its combobox wrapper), outermost only (a grid
+  // row wrapping a row would double-count). [] when no popup is open.
+  const OPTION_ROWS = '[role="option"],[role="row"],[role="menuitem"],[role="treeitem"]';
+  const panelOptions = (el) => {
+    try {
+      if (!el || el.nodeType !== 1) return [];
+      const wrap = comboWrapperOf(el);
+      const ids = ariaPanelIds(el);
+      if (wrap) for (const id of ariaPanelIds(wrap)) if (!ids.includes(id)) ids.push(id);
+      for (const id of ids) {
         const panel = lookupId(el, id) || document.getElementById(id);
         if (!panel) continue;
         let r; try { r = panel.getBoundingClientRect(); } catch { continue; }
         if (!visible(panel, r)) continue;
-        const seen = [];
-        for (const o of panel.querySelectorAll('[role="option"],[role="row"],[role="menuitem"],[role="treeitem"]')) {
-          if (seen.length >= 6) break;
+        const opts = [];
+        for (const o of panel.querySelectorAll(OPTION_ROWS)) {
           let or; try { or = o.getBoundingClientRect(); } catch { continue; }
-          if (!visible(o, or)) continue;
-          const t = cleanLabel(o.textContent).slice(0, 80);
-          if (t && !seen.includes(t)) seen.push(t);
+          if (visible(o, or)) opts.push(o);
         }
-        if (seen.length) return { suggestions: seen, hint: `a suggestion list is open (${seen.length} shown) — the value is not committed until one entry is chosen: fast_click its text (or press ArrowDown then Enter)` };
+        const outer = opts.filter(o => !opts.some(p => p !== o && p.contains(o)));
+        if (outer.length) return outer;
       }
     } catch {}
+    return [];
+  };
+  // Icon-font glyphs (Private Use Area) are not text a model can click by.
+  const optionText = (o) => cleanLabel(String(o.textContent || '').replace(/[-]/g, ' '));
+  const AC_OPEN_HINT = 'autocomplete is open; pick a suggestion (fast_click its text) or fast_key_press Enter, then read back';
+  // The control's open suggestion list, reported the same way by every tool.
+  const openSuggestions = (el) => {
+    const seen = [];
+    for (const o of panelOptions(el)) {
+      if (seen.length >= 5) break;
+      const t = optionText(o).slice(0, 80);
+      if (t && !seen.includes(t)) seen.push(t);
+    }
+    return seen.length ? { committed: false, suggestions: seen, hint: AC_OPEN_HINT } : null;
+  };
+  // Apps open the list on a debounce / after a network round-trip (Maps: the
+  // grid shows ~0.3-1s after the input event), so a read right after the write
+  // sees nothing. Bounded poll; returns at once for a non-autocomplete.
+  const AC_PANEL_WAIT_MS = 1200;
+  const awaitSuggestions = async (el) => {
+    if (!isAutocomplete(el)) return null;
+    const tEnd = nowMs() + AC_PANEL_WAIT_MS;
+    for (;;) {
+      const s = openSuggestions(el);
+      if (s || nowMs() >= tEnd) return s;
+      await wait(50);
+    }
+  };
+  // Per-page record of autocomplete values written by fast_fill and not yet
+  // seen accepted (kept on INDEX so it survives between calls). An entry is
+  // settled when the app took it: a suggestion pick / Enter that closed the
+  // list, the live value changed from what was typed, or the URL moved.
+  const acField = (el) => { const f = describeField(el); return f.label || f.ariaLabel || f.placeholder || f.name || f.id || 'the autocomplete input'; };
+  const acRecord = (el, value) => {
+    const list = (INDEX.acPending || []).filter(p => p.el !== el && p.el.isConnected).slice(-3);
+    list.push({ el, value: String(value), url: location.href, committed: false });
+    INDEX.acPending = list;
+  };
+  const acSettle = (el) => { for (const p of INDEX.acPending || []) if (p.el === el) p.committed = true; };
+  // fast_wait timeout: the focused or last-filled autocomplete that is still open
+  // or never accepted is the likely reason the awaited view never came.
+  const acWaitHint = () => {
+    const cands = [document.activeElement, ...(INDEX.acPending || []).map(p => p.el).reverse()];
+    const seen = new Set();
+    for (const el of cands) {
+      if (!el || seen.has(el) || !el.isConnected || !isAutocomplete(el)) continue;
+      seen.add(el);
+      const name = JSON.stringify(acField(el));
+      const sug = openSuggestions(el);
+      if (sug) return { hint: `${name} has an open suggestion list; submit it (Enter or pick a suggestion) before waiting`, field: acField(el), suggestions: sug.suggestions };
+      const p = (INDEX.acPending || []).find(q => q.el === el);
+      if (p && !p.committed && liveValueOf(el) === p.value && location.href === p.url) return { hint: `${name} has an uncommitted value; submit it (Enter or pick a suggestion) before waiting`, field: acField(el) };
+    }
     return null;
   };
   // The entry of an open suggestion list (aria-controls panel of the focused
@@ -1807,19 +1885,9 @@ async function runPageAction(action, args) {
       const t = String(text || '').toLowerCase().trim();
       const el = document.activeElement;
       if (!t || !el) return null;
-      for (const id of ariaPanelIds(el)) {
-        const panel = lookupId(el, id) || document.getElementById(id);
-        if (!panel) continue;
-        const opts = [];
-        for (const o of panel.querySelectorAll('[role="option"],[role="row"],[role="menuitem"],[role="treeitem"]')) {
-          let r; try { r = o.getBoundingClientRect(); } catch { continue; }
-          if (visible(o, r)) opts.push(o);
-        }
-        // Nested rows (a grid row wrapping a row) would double-count: keep outermost.
-        const outer = opts.filter(o => !opts.some(p => p !== o && p.contains(o)));
-        const target = pickByText(outer, (o) => cleanLabel(o.textContent).toLowerCase(), t);
-        if (target) return { el: target, input: el, index: outer.indexOf(target) };
-      }
+      const outer = panelOptions(el);
+      const target = pickByText(outer, (o) => optionText(o).toLowerCase(), t);
+      if (target) return { el: target, input: el, index: outer.indexOf(target) };
     } catch {}
     return null;
   };
@@ -1836,14 +1904,16 @@ async function runPageAction(action, args) {
     for (let i = 0; i <= index; i++) { key(input, 'ArrowDown'); await wait(40); }
     key(input, 'Enter');
     await wait(300);
-    if (took()) return { via: 'keyboard', committed: true };
+    if (took()) { acSettle(input); return { via: 'keyboard', committed: true }; }
     flashEl(el, 'click');
     for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
       const Ev = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
       el.dispatchEvent(new Ev(type, { bubbles: true, cancelable: true, composed: true, button: 0 }));
     }
     await wait(300);
-    return { via: 'mouse', committed: took() };
+    const ok = took();
+    if (ok) acSettle(input);
+    return { via: 'mouse', committed: ok };
   };
   // Bring an offscreen target into view before acting on it (a heavy page's
   // match pool now includes offscreen controls).
@@ -2015,6 +2085,7 @@ async function runPageAction(action, args) {
     const head = { keyDispatched: key, target: describeEl(el), url: location.href, urlChanged: location.href !== urlBefore };
     const sug = openSuggestions(document.activeElement);
     if (sug) Object.assign(head, sug);
+    else if (key === 'Enter' || key === 'Tab') acSettle(el);   // submitted and no list left open
     return frontload(out, head);
   }
 
@@ -2158,7 +2229,7 @@ async function runPageAction(action, args) {
         polls++;
         if (selector) {
           if (pollSelector() !== null) return;
-          if (Date.now() > deadline) return emptyHit ? resolveEmpty() : resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}`, ...pageActivity() });
+          if (Date.now() > deadline) return emptyHit ? resolveEmpty() : resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}`, ...pageActivity(), ...(acWaitHint() || {}) });
           return setTimeout(poll, 150);
         }
         // Storm-tripped page (Maps, GCP): the observer is OFF, so nothing new is
@@ -2243,7 +2314,7 @@ async function runPageAction(action, args) {
               if (txt) headings.push(txt);
             }
           } catch {}
-          return resolve({ error: `Timed out waiting for "${args.text}"`, ...pageActivity(), headings });
+          return resolve({ error: `Timed out waiting for "${args.text}"`, ...pageActivity(), headings, ...(acWaitHint() || {}) });
         }
         setTimeout(poll, 150);
       };
@@ -3073,7 +3144,11 @@ async function runPageAction(action, args) {
       if (it.ariaLabel && !r.filled.label) r.filled.ariaLabel = it.ariaLabel;
       const sel = (el && el.matches && el.matches(RS_INPUT_SEL)) ? selectHintFor(el) : null;
       if (sel) { r.hint = sel.hint; r.selectField = sel.selectField; }
-      written.set(sp, { el, r });
+      // Autocomplete: capture ITS list before the next field's write moves focus
+      // (which closes it) — a later field must not hide an earlier uncommitted one.
+      let ac = null;
+      if (el && isAutocomplete(el)) { acRecord(el, sp.value); ac = await awaitSuggestions(el); }
+      written.set(sp, { el, r, ac });
     }
     // Verified state: each field's LIVE value after the page settled, compared
     // with what was written (native select: the selected option's text/value).
@@ -3094,10 +3169,10 @@ async function runPageAction(action, args) {
         const miss = enrichMiss(sp, res.misses.get(sp) || { error: 'not filled' });
         return frontload(miss, { error: miss.error, waitedMs, ...settleTail, ...(settleTail.hint && miss.hint ? { hint: settleTail.hint + '; ' + miss.hint } : {}) });
       }
-      const { el, r } = written.get(sp);
+      const { el, r, ac } = written.get(sp);
       const out = await withSnap(r, snap);
       const head = verifyOne(sp, el, r);
-      const sug = openSuggestions(el); if (sug) Object.assign(head, sug);
+      if (ac) Object.assign(head, ac);
       return calmIfVerified(frontload(out, head));
     }
 
@@ -3114,8 +3189,8 @@ async function runPageAction(action, args) {
     let filled = 0, missed = 0;
     for (const sp of specs) {
       if (written.has(sp)) {
-        const { el, r } = written.get(sp);
-        fields[sp.match] = { ...verifyOne(sp, el, r), ...(openSuggestions(el) || {}), ...r };
+        const { el, r, ac } = written.get(sp);
+        fields[sp.match] = { ...verifyOne(sp, el, r), ...(ac || {}), ...r };
         filled++;
       } else {
         fields[sp.match] = enrichMiss(sp, res.misses.get(sp) || { error: 'not filled' });
@@ -3126,7 +3201,9 @@ async function runPageAction(action, args) {
     const head = { verified: missed === 0 && reverted.length === 0, filled, missed, total: specs.length };
     if (missed) head.summary = `${filled}/${specs.length} filled; missed: ${Object.keys(fields).filter(k => fields[k].error).join(', ')}`;
     if (reverted.length) head.reverted = reverted;
-    if (missed && act.settling) { head.settling = true; head.hint = settleTail.hint; }
+    const uncommitted = Object.keys(fields).filter(k => fields[k].committed === false);
+    if (uncommitted.length) { head.uncommitted = uncommitted; head.hint = `${uncommitted.map(k => JSON.stringify(k)).join(', ')}: ${AC_OPEN_HINT} (one field at a time)`; }
+    if (missed && act.settling) { head.settling = true; head.hint = settleTail.hint + (head.hint ? ' | ' + head.hint : ''); }
     return calmIfVerified(frontload(snapped, head));
   }
 
