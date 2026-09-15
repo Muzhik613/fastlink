@@ -1837,9 +1837,10 @@ async function runPageAction(action, args) {
     return { selectField: f, hint: `this is a select control (field ${JSON.stringify(name)}); use fast_select_option {field:${JSON.stringify(name)}, option:"<choice>"} instead of clicking/typing its value` };
   };
   // A verified fill/pick is settled by definition — the generic "page still
-  // changing" settle hint on such a result only provokes needless waits.
-  const calmIfVerified = (out) => {
-    if (out && out.verified === true && out.settling) {
+  // changing" settle hint on such a result only provokes needless waits. So is a
+  // {fields} result whose writes held and whose every miss is explained (`settled`).
+  const calmIfVerified = (out, settled = !!out && out.verified === true) => {
+    if (out && settled && out.settling) {
       delete out.settling;
       if (out.hint) { const keep = String(out.hint).split(' | ').filter(h => !/still changing/.test(h)); if (keep.length) out.hint = keep.join(' | '); else delete out.hint; }
     }
@@ -3385,7 +3386,8 @@ async function runPageAction(action, args) {
       const hints = [mh.hint, head.hint].filter(Boolean);
       if (hints.length) head.hint = hints.join(' | ');
     }
-    return calmIfVerified(frontload(snapped, head));
+    // the auto-snapshot's own settle flag must not re-add "still changing" over explained misses
+    return calmIfVerified(frontload(snapped, head), head.verified || (!head.settling && !reverted.length));
   }
 
   return { error: `Unknown action: ${action}` };
