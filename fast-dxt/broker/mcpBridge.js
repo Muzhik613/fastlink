@@ -12,8 +12,8 @@ import { state } from './state.js';
 import { log, onFatalListenError } from './lifecycle.js';
 import { dispatchCall, dropPendingForClient } from './router.js';
 import { attachHeartbeat, startHeartbeatLoop } from './heartbeat.js';
+import { MCP_PORT } from './config.js';
 
-const MCP_PORT = 9870;
 const clients = new Set();
 
 export const hasMcpClients = () => clients.size > 0;

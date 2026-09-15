@@ -8,12 +8,15 @@ import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { log } from './lifecycle.js';
+import { IS_DEFAULT_INSTANCE } from './config.js';
 
 const TUNNEL_CONFIG = join(homedir(), '.cloudflared', 'config.yml');
 let proc = null;
 
 export function startTunnel() {
   if (proc) return;
+  // A throwaway broker (non-default ports) must not spawn a second cloudflared.
+  if (!IS_DEFAULT_INSTANCE) return;
   if (!existsSync(TUNNEL_CONFIG)) {
     log('no ~/.cloudflared/config.yml — skipping tunnel');
     return;

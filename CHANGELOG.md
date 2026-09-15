@@ -19,6 +19,21 @@ Extension changes only take effect after **syncing `fast-ext/` → `C:\Users\yjt
 
 ---
 
+## 2026-09-15 — Open suggestion lists are reported (`suggestions` + hint) on fast_key_press / fast_fill; bench trail poll 3s → 0.5s
+- **What:** `openSuggestions(el)` (page.js): when the active/written control names an
+  open panel via `aria-controls`/`aria-owns` (Google Maps' `role=grid` of rows, ARIA
+  listboxes, menus) the result carries `suggestions:[…≤6]` + `hint: "a suggestion list
+  is open — the value is not committed until one entry is chosen: fast_click its text
+  (or ArrowDown then Enter)"`. `fast_key_press` adds it for the focused element,
+  `fast_fill` for the written field (per field in the `fields` form).
+  `bench/monitor.js` `trailPollMs` 3000 → 500.
+- **Why:** batch-build iteration 2 (57/59): mapsdir 5/6 — 4.3 pressed Enter in the
+  destination box, Maps opened its suggestion grid instead of routing, and the model
+  reported "route options" from the suggestions; multipage 5/6 was the 3s trail poller
+  missing a ~2s stop on the Travel page (tools were right; the run is just faster now).
+- **Files:** `fast-ext/src/actions/page.js`, `bench/monitor.js`.
+- **Status:** committed; hvm iteration 3 below.
+
 ## 2026-09-15 — Select hints skip autocompletes; ARIA select resolves options via aria-controls under a wall clock; page-action deadline
 - **What:** (1) `selectControlOf` (page.js) no longer treats a typeable input inside a
   `[role=combobox]` wrapper as a select control — Google Maps' search boxes carried

@@ -22,7 +22,7 @@ export function startHeartbeatLoop(socketsIterable) {
     let any = false;
     for (const ws of sockets) {
       any = true;
-      if (!ws.__alive) { try { ws.terminate(); } catch {} continue; }
+      if (!ws.__alive) { ws.__closeReason = 'heartbeat timeout (no pong/message in 30s)'; try { ws.terminate(); } catch {} continue; }
       ws.__alive = false;
       try { ws.ping(); } catch {}
     }

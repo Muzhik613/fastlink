@@ -1,9 +1,7 @@
 // Slots keyed by arbitrary `hello` label → N profiles concurrent. Route to
 // FASTLINK_ACTIVE (default 'primary') unless a session pins via fast_profile.
-// EXT_PORTS = fixed listener ports. 'primary' 9876 = shared port for all custom
-// labels (demuxed by label); 'secondary' 9877 = legacy. Port key = default
-// install for no/blank-hello builds. Custom labels learned from `hello` → `slots`.
-export const EXT_PORTS = { primary: 9876, secondary: 9877 };
+// Custom labels learned from `hello` → `slots`.
+import { EXT_PORTS } from './config.js';
 
 const LISTENER_INSTALLS = Object.keys(EXT_PORTS);
 const ACTIVE = (process.env.FASTLINK_ACTIVE || LISTENER_INSTALLS[0]).toLowerCase();
@@ -11,19 +9,29 @@ const ACTIVE = (process.env.FASTLINK_ACTIVE || LISTENER_INSTALLS[0]).toLowerCase
 // A slot's incumbent is "live" if it connected or pinged within this window.
 // > the extension's 20s app-ping cycle so one missed ping doesn't read as dead.
 const LIVENESS_MS = 30_000;
+// Per-slot ring of the last N connect/disconnect/slotBusy events (fast_status
+// `recent`), so lifetime `totalConnections` is never read as a burst.
+const RECENT_MAX = 20;
 
-const slots = new Map(); // installId -> { ws, lastConnectedAt, lastDisconnectedAt, lastPingAt, totalConnections }
+const slots = new Map(); // installId -> { ws, lastConnectedAt, lastDisconnectedAt, lastPingAt, totalConnections, recent[] }
 
 function ensureSlot(installId) {
   let s = slots.get(installId);
   if (!s) {
-    s = { ws: null, lastConnectedAt: null, lastDisconnectedAt: null, lastPingAt: null, totalConnections: 0 };
+    s = { ws: null, lastConnectedAt: null, lastDisconnectedAt: null, lastPingAt: null, totalConnections: 0, recent: [] };
     slots.set(installId, s);
   }
   return s;
 }
 
+// Newest first; {t: ISO, event: 'connect'|'disconnect'|'slotBusy', reason}.
+function noteEvent(s, event, reason) {
+  s.recent.unshift({ t: new Date().toISOString(), event, reason: reason || null });
+  if (s.recent.length > RECENT_MAX) s.recent.length = RECENT_MAX;
+}
+
 const ago = (t) => t ? `${Math.round((Date.now() - t) / 1000)}s ago` : 'never';
+const isOpen = (s) => !!(s?.ws && s.ws.readyState === 1);
 
 export const state = {
   getActiveInstall() { return ACTIVE; },
@@ -31,47 +39,40 @@ export const state = {
   // in `slots`). Listeners first. Gates routing (router.js) + status output.
   knownInstalls() { return [...new Set([...LISTENER_INSTALLS, ...slots.keys()])]; },
 
-  setExtensionSocket(installId, ws) {
+  setExtensionSocket(installId, ws, reason) {
     const s = ensureSlot(installId);
     s.ws = ws;
     s.lastConnectedAt = Date.now();
     s.totalConnections += 1;
+    noteEvent(s, 'connect', reason);
   },
-  clearExtensionSocket(installId, ws) {
+  clearExtensionSocket(installId, ws, reason) {
     const s = slots.get(installId);
     if (s && s.ws === ws) {
       s.ws = null;
       s.lastDisconnectedAt = Date.now();
+      noteEvent(s, 'disconnect', reason);
     }
+  },
+  // A newcomer was refused because a live incumbent holds the slot.
+  noteSlotBusy(installId, reason) {
+    noteEvent(ensureSlot(installId), 'slotBusy', reason);
   },
   notePing(installId) {
     const s = ensureSlot(installId);
     s.lastPingAt = Date.now();
   },
-  // Returns whichever install's socket tool calls should route to:
-  //   - If ACTIVE is connected, use it.
-  //   - Else if any other install is connected, use that one (so the secondary
-  //     install works when the primary is offline, and vice versa — without
-  //     anyone having to flip FASTLINK_ACTIVE).
-  //   - Else null.
-  getExtensionSocket() {
-    const active = slots.get(ACTIVE);
-    if (active?.ws && active.ws.readyState === 1) return active.ws;
-    for (const s of slots.values()) {
-      if (s.ws && s.ws.readyState === 1) return s.ws;
+  // ACTIVE if connected, else any connected slot, else null.
+  getRoutedInstall() {
+    if (isOpen(slots.get(ACTIVE))) return ACTIVE;
+    for (const [id, s] of slots.entries()) {
+      if (isOpen(s)) return id;
     }
     return null;
   },
-  // Which install is currently being routed to (may differ from ACTIVE if
-  // ACTIVE isn't connected). Used by snapshot() so fast_status reports the
-  // truth, not the configured preference.
-  getRoutedInstall() {
-    const active = slots.get(ACTIVE);
-    if (active?.ws && active.ws.readyState === 1) return ACTIVE;
-    for (const [id, s] of slots.entries()) {
-      if (s.ws && s.ws.readyState === 1) return id;
-    }
-    return null;
+  getExtensionSocket() {
+    const id = state.getRoutedInstall();
+    return id ? slots.get(id).ws : null;
   },
   getSocketForInstall(installId) {
     const s = slots.get(installId);
@@ -87,7 +88,7 @@ export const state = {
   // truly-dead half-open socket still ages out and gets replaced).
   isInstallLive(installId) {
     const s = slots.get(installId);
-    if (!s?.ws || s.ws.readyState !== 1) return false;
+    if (!isOpen(s)) return false;
     const last = Math.max(s.lastConnectedAt || 0, s.lastPingAt || 0);
     return Date.now() - last < LIVENESS_MS;
   },
@@ -95,29 +96,27 @@ export const state = {
   // installs' badges reflect the same client count.
   *allConnectedSockets() {
     for (const s of slots.values()) {
-      if (s.ws && s.ws.readyState === 1) yield s.ws;
+      if (isOpen(s)) yield s.ws;
     }
   },
   isExtensionConnected() {
-    const ws = state.getExtensionSocket();
-    return !!ws && ws.readyState === 1;
+    return !!state.getExtensionSocket();
   },
   snapshot() {
     const installs = {};
     for (const id of state.knownInstalls()) {
       const s = slots.get(id);
       installs[id] = {
-        connected: !!(s?.ws && s.ws.readyState === 1),
+        connected: isOpen(s),
         totalConnections: s?.totalConnections ?? 0,
         lastConnectedAt: s?.lastConnectedAt ? new Date(s.lastConnectedAt).toISOString() : null,
         lastConnectedAgo: ago(s?.lastConnectedAt),
         lastDisconnectedAgo: ago(s?.lastDisconnectedAt),
         lastPingAgo: ago(s?.lastPingAt),
+        recent: s?.recent ? [...s.recent] : [],
       };
     }
-    // Top-level fields reflect whichever install tool calls actually route to
-    // (the routed install — see getRoutedInstall). That may differ from the
-    // configured ACTIVE when ACTIVE is offline but another install is up.
+    // Top-level fields reflect whichever install tool calls actually route to.
     const routed = state.getRoutedInstall();
     const routedSnap = routed ? installs[routed] : null;
     return {
