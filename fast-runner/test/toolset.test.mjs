@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadToolset, buildTools, buildSystem, HIDDEN_TOOLS, SHORT_NAMES, shortName, canonicalName, toModelText } from '../runner.mjs';
+import { loadToolset, buildTools, buildSystem, HIDDEN_TOOLS, SHORT_NAMES, shortName, canonicalName, toModelText, MODEL_SCHEMA, fromModel } from '../runner.mjs';
 import { TOOLS } from '../../fast-dxt/server/tools.js';
 import { TOOLS as RELAY_TOOLS } from '../../fastlink-relay/tools.js';
 
@@ -48,7 +48,7 @@ test('toolsets choose tools only: allow (and a comment), no describe / rename ov
   }
   for (const name of ['default', 'phase2', 'phase2-eval', 'no-cdp']) {
     const { tools } = buildTools(TOOLS, loadToolset(name));
-    for (const t of tools) if (!NATIVE.includes(t.name)) assert.equal(t.description, toModelText(tool(canonicalName(t.name)).description), `${name} ${t.name}: server text, short names`);
+    for (const t of tools) if (!NATIVE.includes(t.name)) assert.equal(t.description, toModelText(MODEL_SCHEMA[canonicalName(t.name)]?.description || tool(canonicalName(t.name)).description), `${name} ${t.name}: server text (or the aim filter's), short names`);
   }
 });
 
@@ -97,6 +97,23 @@ test('short tool names: the model sees them in the list, descriptions, params an
   assert.equal(back.get('select'), 'fast_select_option');
   assert.ok(TOOLS.every(t => t.name.startsWith('fast_')), 'MCP server names unchanged');
   assert.equal(toModelText('use fast_select_option; fast_click_xy then fast_type; fast_evaluate stays'), 'use select; click_at then type; fast_evaluate stays');
+});
+
+test('aim only by id or text: the model-facing click takes id, text, frame; fill and select lose their extra knobs; the server keeps them', () => {
+  for (const name of ['default', 'phase2', 'no-cdp']) {
+    const { tools } = buildTools(TOOLS, loadToolset(name));
+    const m = (n) => tools.find(t => t.name === n);
+    assert.deepEqual(Object.keys(m('click').input_schema.properties).sort(), ['frame', 'id', 'text'], `${name}: click`);
+    for (const n of ['fill', 'select']) for (const k of ['index', 'section', 'near', 'role', 'tag', 'selector']) assert.ok(!(k in m(n).input_schema.properties), `${name}: ${n}.${k} hidden`);
+    assert.ok(m('fill').input_schema.properties.fields && m('select').input_schema.properties.selections);
+    const text = JSON.stringify([m('click'), m('fill'), m('select')]);
+    assert.doesNotMatch(text, /`role`|`tag`|`index`|`section`|\bindex\b|\bsection\b/, `${name}: no text names a hidden knob`);
+    assert.match(m('click').description, /`id`.*f7:42.*`text`/);
+  }
+  for (const k of ['role', 'tag', 'index']) assert.ok(tool('fast_click').inputSchema.properties[k], `server fast_click still takes ${k}`);
+  for (const k of ['index', 'section']) assert.ok(tool('fast_fill').inputSchema.properties[k] && tool('fast_select_option').inputSchema.properties[k], `server keeps ${k}`);
+  // a hidden knob the model still sends is passed on unchanged: the server's own refusal answers it
+  assert.deepEqual(fromModel('click', { role: 'button', tag: 'button', index: 0 }), { name: 'fast_click', args: { role: 'button', tag: 'button', index: 0 } });
 });
 
 test('"default" and unset and FASTRUN_TOOLSET resolve the same file', () => {

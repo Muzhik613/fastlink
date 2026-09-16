@@ -703,7 +703,32 @@ export function fromModel(name, args) {
   if (canon !== 'fast_batch' || !args || typeof args !== 'object') return { name: canon, args };
   return { name: canon, args: { ...args, ...(args.actions ? { actions: steps(args.actions) } : {}), ...(args.steps ? { steps: steps(args.steps) } : {}) } };
 }
-const schemaForModel = (schema) => JSON.parse(JSON.stringify(schema), (k, v) => (k === 'description' && typeof v === 'string' ? toModelText(v) : v));
+// ── Aim only by id or text ────────────────────────────────────────────────────
+// Owner-approved: Grok aims a click with `id` (from a read) or `text` (the visible label), plus
+// `frame`, and nothing else. The server keeps role/tag/index/section… for other callers; they are
+// removed only from the schema the model sees. Oracle e29bf73d lost ~7 s to {role:"button",
+// tag:"button", index:0} / index:1 clicks, refused before it switched to id. A hidden knob the
+// model still sends goes to the server unchanged, and the server's own short refusal comes back.
+// `description` / `params` replace server text only where it names a hidden knob.
+export const MODEL_SCHEMA = {
+  fast_click: { keep: ['id', 'text', 'frame'],
+    description: 'Click by `id` (a snapshot item\'s i, e.g. "42" or "f7:42") or by visible `text`. Returns what changed (url, dialog, focus) and a page preview. For a dropdown use fast_select_option.' },
+  fast_fill: { drop: ['index', 'section', 'near'], params: { fields: '{label: value} for several fields.' } },
+  fast_select_option: { drop: ['index', 'section'] },
+};
+function modelTool(t) {
+  const f = MODEL_SCHEMA[t.name];
+  const schema = JSON.parse(JSON.stringify(t.inputSchema || { type: 'object', properties: {} }));
+  if (f) {
+    for (const k of Object.keys(schema.properties || {})) {
+      if ((f.keep && !f.keep.includes(k)) || (f.drop && f.drop.includes(k))) delete schema.properties[k];
+      else if (f.params?.[k]) schema.properties[k].description = f.params[k];
+    }
+    if (Array.isArray(schema.required)) schema.required = schema.required.filter((k) => k in schema.properties);
+  }
+  const translated = JSON.parse(JSON.stringify(schema), (k, v) => (k === 'description' && typeof v === 'string' ? toModelText(v) : v));
+  return { name: shortName(t.name), description: toModelText(f?.description || t.description || ''), input_schema: translated };
+}
 
 const NATIVE_TOOLS = [
   {
@@ -760,7 +785,7 @@ export function buildTools(mcpTools, toolset) {
     if (!allowAll && !toolset.allow.includes(t.name)) continue;
     if (HIDDEN_TOOLS.has(t.name)) continue;
     back.set(shortName(t.name), t.name);
-    tools.push({ name: shortName(t.name), description: toModelText(t.description || ''), input_schema: schemaForModel(t.inputSchema || { type: 'object', properties: {} }) });
+    tools.push(modelTool(t));
   }
   const native = NATIVE_TOOLS.map((t) => ({ ...t, name: shortName(t.name), description: toModelText(t.description) }));
   return { tools: [...tools, ...native], back };
