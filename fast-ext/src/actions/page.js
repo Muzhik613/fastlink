@@ -1078,12 +1078,19 @@ const collectOverlayEls = () => {
 const servedLabel = (it) => cleanLabel(String(it.label || it.ariaLabel || it.text || '')).slice(0, 200);
 // An item's kind for re-resolving an id: its role, else its tag (+ input type). Pure.
 const itemKind = (it) => String(it.role || (it.tag === 'input' ? `input:${it.type || 'text'}` : it.tag) || '').toLowerCase();
-// Record the items a result returns (every snapshot / preview goes out through markTruncated).
-const noteServed = (items) => {
-  if (!Array.isArray(items)) return;
-  if (!INDEX.served) INDEX.served = new Map();
-  if (INDEX.served.size > 20000) INDEX.served.clear();
-  for (const it of items) if (it && typeof it.i === 'number') INDEX.served.set(it.i, { label: servedLabel(it), kind: itemKind(it) });
+// Record every id a result hands out — snapshot and preview items, dialog items, a wait's
+// found element, anything carrying a numeric `i` with a tag — at the ONE exit every page.js
+// result leaves through (window.__fastlink.run). Live Oracle 46acec38: an id from a wait
+// hit was refused as "not listed by any snapshot".
+const noteServedDeep = (v, depth = 0) => {
+  if (!v || typeof v !== 'object' || depth > 6) return;
+  if (Array.isArray(v)) { for (const x of v) noteServedDeep(x, depth + 1); return; }
+  if (typeof v.i === 'number' && v.tag) {
+    if (!INDEX.served) INDEX.served = new Map();
+    if (INDEX.served.size > 50000) INDEX.served.clear();
+    INDEX.served.set(v.i, { label: servedLabel(v), kind: itemKind(v), tag: String(v.tag).toLowerCase() });
+  }
+  for (const k of Object.keys(v)) { const x = v[k]; if (x && typeof x === 'object') noteServedDeep(x, depth + 1); }
 };
 
 // The dialog the user is in, or null. A declared one (<dialog open>, role=dialog /
@@ -1660,7 +1667,6 @@ const withFrameNotice = (out) => {
 // truncated:true, and the model spent a turn re-reading before acting).
 const markTruncated = (snap, hintFor, { preview = false } = {}) => {
   if (!snap || typeof snap !== 'object') return snap;
-  noteServed(snap.items);
   const d = snap.dropped || {};
   const off = snap.offscreenItems || 0;
   delete snap.dropped; delete snap.offscreenItems;
@@ -3780,13 +3786,31 @@ async function runPageAction(action, args) {
       const shown = shownRec ? shownRec.label : undefined;
       const el0 = Number.isFinite(want) ? elById(want) : null;
       snap = await serializeSnapshot(false, { matchAll: true });
-      const it = el0 && el0.isConnected ? snap.items.find((x) => x.i === want) : null;
+      let it = el0 && el0.isConnected ? snap.items.find((x) => x.i === want) : null;
+      // still in the page but not in this pass (a heavy page's serialize ran out of budget, or
+      // the element is mid-animation): read that one element directly instead of calling it gone
+      let hiddenNow = false;
+      if (!it && el0 && el0.isConnected) {
+        try {
+          indexElement(el0);
+          const e = INDEX.byEl.get(el0);
+          let r = el0.getBoundingClientRect();
+          if (e && e.kind === 'click' && !visible(el0, r)) { const pr = labelProxyRect(el0); if (pr) r = pr; else hiddenNow = true; }
+          if (e && e.kind === 'click' && !hiddenNow) {
+            const off = offsetFor(el0);
+            it = { i: e.id, tag: e.tag, text: e.text, x: Math.round(r.x + off.ox), y: Math.round(r.y + off.oy), w: Math.round(r.width), h: Math.round(r.height),
+              ...(e.role ? { role: e.role } : {}), ...(e.label ? { label: e.label } : {}), ...(e.ariaLabel ? { ariaLabel: e.ariaLabel } : {}), ...(e.type ? { type: e.type } : {}) };
+            snap.items.push(it);
+          }
+        } catch {}
+      }
       // read the element LIVE: the index entry can hold stale text (text-node edits are not
       // observed), and stale text would let a relabelled control pass as the one listed
       let now = null;
       if (it) { try { const fresh = makeClickEntry(el0); now = servedLabel({ label: fresh.label || (it.label && fresh.ariaLabel) || (it.label && fresh.placeholder) || (it.label && fresh.name) || null, ariaLabel: fresh.ariaLabel, text: fresh.text }); } catch { now = servedLabel(it); } }
       const why = !Number.isFinite(want) ? `id ${JSON.stringify(args.id)} is not an item id`
         : shown === undefined ? `id ${idP}${want} was not listed by any snapshot of this page`
+        : (!it && hiddenNow) ? `id ${idP}${want} ("${shown}") is on the page but not visible (hidden, collapsed or zero-size)`
         : !it ? `id ${idP}${want} ("${shown}") is no longer on the page (the element was re-rendered or removed)`
         : now !== shown ? `id ${idP}${want} was "${shown}" when listed and now reads "${now}"`
         : (hasText && !matchItems([it], args.text).length) ? `id ${idP}${want} ("${now}") does not carry the text ${JSON.stringify(args.text)}`
@@ -3798,8 +3822,15 @@ async function runPageAction(action, args) {
         // read and the click): act only on exactly ONE element now visible in this document
         // with the SAME label and the same kind (role, else tag). Zero or several: refused as
         // before. A relabelled node never matches, so this cannot act on "Create" for "Next".
-        const same = snap.items.filter((x) => !x.offscreen && servedLabel(x) === shown && itemKind(x) === shownRec.kind);
-        if (same.length === 1) { preMatched = same; args.__reResolved = true; }
+        // Several same-label matches that are ONE control (a card and the radio inside it, a
+        // <label> and the input it labels) count once; the member acted on must be the kind shown.
+        const cands = snap.items.filter((x) => !x.offscreen && servedLabel(x) === shown).map((x) => ({ x, el: elById(x.i) })).filter((c) => c.el);
+        const oneControl = (a, b) => { try { return a.el.contains(b.el) || b.el.contains(a.el) || (a.el.tagName === 'LABEL' && a.el.control === b.el) || (b.el.tagName === 'LABEL' && b.el.control === a.el); } catch { return false; } };
+        const groups = [];
+        for (const c of cands) { const g = groups.find((gr) => gr.some((m) => oneControl(m, c))); if (g) g.push(c); else groups.push([c]); }
+        let kinded = groups.length === 1 ? groups[0].filter((c) => itemKind(c.x) === shownRec.kind) : [];
+        if (kinded.length > 1) kinded = kinded.filter((c) => c.x.tag === shownRec.tag);   // a card div and its radio input share role radio
+        if (kinded.length === 1) { preMatched = [kinded[0].x]; args.__reResolved = true; }
       }
       if (preMatched) { /* acted below */ }
       else if (!hasText) return { error: `${why} — nothing was clicked; take a fresh fast_snapshot and pass the id it lists, or text:"<label>"`, idStale: true, ...(now ? { labelNow: now } : {}) };
@@ -4705,7 +4736,9 @@ if (typeof window !== 'undefined') {
         stateMs += nowMs() - t;
         window.__fastlink.lastChangedMs = Math.round(stateMs);   // cost probe for measurement, not in the result
       }
-      return shortResult(action, r, args || {});
+      const out = shortResult(action, r, args || {});
+      try { noteServedDeep(out); } catch {}
+      return out;
     } finally { NO_FRAME_NOTICE.on = false; }
   };
   window.__fastlink.cancelWaits = () => { const n = ACTIVE_WAITS.size; for (const c of [...ACTIVE_WAITS]) c(); return n; };

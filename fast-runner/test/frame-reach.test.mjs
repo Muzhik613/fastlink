@@ -600,3 +600,32 @@ test('a text click that misses while the document is mid-render gets one short r
   assert.equal(r.clicked, 'Ampere A1', JSON.stringify(r));
   assert.ok(Date.now() - t0 < 2600, `took ${Date.now() - t0}ms`);
 });
+
+test('live Oracle 46acec38: an id handed out by a wait hit is recorded (clickable by id); a same-label duplicate that is one control (card + its radio) still re-resolves', async () => {
+  const { pay } = setup({ payHtml: '<div id="panel"></div><button id="arm">Arm-based processor</button>' });
+  const d = pay.document;
+  const hits = [];
+  const render = () => {
+    d.getElementById('panel').innerHTML = ['Oracle Linux 9', 'Canonical Ubuntu'].map((l, k) => `<div role="radio" tabindex="0" id="card${k}"><input type="radio" id="r${k}" name="os"><label for="r${k}">${l}</label></div>`).join('');
+    for (const c of d.querySelectorAll('[role=radio]')) c.addEventListener('click', () => hits.push(c.textContent));
+  };
+  render();
+  // the id comes from a wait inside the frame, never from a snapshot
+  await call('fast_snapshot', {});                       // builds the frame's index
+  pay.__fastlinkIndex.served.clear();                      // …but forget every id it listed: the wait alone hands out the id
+  const w = await call('fast_wait', { frame: 'pay.provider', text: 'Arm-based processor', timeoutMs: 2000, noSnapshot: true });
+  assert.ok(w.found && typeof w.found.i === 'string', JSON.stringify(w));
+  let armClicks = 0; d.getElementById('arm').addEventListener('click', () => { armClicks++; });
+  const byWaitId = await call('fast_click', { id: w.found.i, noSnapshot: true });
+  assert.equal(byWaitId.idStale, undefined, JSON.stringify(byWaitId));
+  assert.equal(armClicks, 1);
+  // card id from a snapshot, then the panel is rebuilt: the label shows twice (card text + radio label), same control
+  const snap = await call('fast_snapshot', {});
+  const card = snap.frames[0].items.find((it) => it.tag === 'div' && /Canonical Ubuntu/.test(it.text || ''));
+  assert.ok(card, JSON.stringify(snap.frames[0].items));
+  render();
+  hits.length = 0;
+  const r = await call('fast_click', { id: card.i, noSnapshot: true });
+  assert.equal(r.reResolved, true, JSON.stringify(r));
+  assert.deepEqual(hits, ['Canonical Ubuntu']);
+});
