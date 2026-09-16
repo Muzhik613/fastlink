@@ -13,9 +13,6 @@ const DEFAULT_BUDGETS = { maxToolCalls: 60, maxWallMs: 600_000, maxConsecutiveEr
 const RESULT_CAP = 80_000; // chars per tool result fed back to Grok
 const MAX_NUDGES = 2;      // end_turn without report_done -> nudge, then fail
 const MAX_GATE_REFUSALS = 3; // report_done refused this many times -> accepted, flagged gateOverridden
-// End-of-run visual note (see visualNoteRound): ONE round per run, and never more
-// than this many report_done interruptions in total, gate refusals included.
-const REPORT_INTERRUPT_CEILING = 2;
 const TZ = 'America/Chicago';
 
 // Today's date is in the prompt so a model never guesses the year for "a month
@@ -360,8 +357,24 @@ export function claimMismatch(log, result) {
   const calls = successfulCalls(log || []);
   const loads = calls.filter(c => c.name === 'fast_tab' || c.name === 'fast_nav');
   const firstUrls = new Set(loads.length ? [normUrl(loads[0].args.url), normUrl(loads[0].url)].filter(Boolean) : []);
+  // Does the clause point at some target OTHER than what the first load fetched?
+  // Structural, not semantic: a URL none of the loads matches, or a QUOTED entity
+  // ("fastlink-relay") the loaded URL does not contain. Anything else — an
+  // unquoted description of the page that WAS loaded ("Opened the VM creation
+  // page"), or a mention of the call itself ("fast_tab succeeded") — names no
+  // other target, so the first load satisfies it.
+  const flat = (s) => normQuote(s).replace(/[^a-z0-9]+/g, '');
+  const loadedFlat = [...firstUrls].map(flat).join(' ');
+  const namesOtherTarget = (clause) => {
+    const urls = [...clause.matchAll(URL_IN)].map(u => normUrl(u[0].replace(/[.!?:]+$/, '')));
+    if (urls.length && !urls.some(u => firstUrls.has(u))) return true;
+    const quoted = [...clause.matchAll(QUOTED)].map(m => m.slice(1).find(x => x != null)).filter(Boolean);
+    return quoted.some(q => flat(q) && !loadedFlat.includes(flat(q)));
+  };
   const namesFirstLoad = (clause) => [...clause.matchAll(URL_IN)].some(u => firstUrls.has(normUrl(u[0].replace(/[.!?:]+$/, ''))))
-    || (loads[0]?.name === 'fast_tab' && /\btab\b/i.test(clause));
+    || (loads[0]?.name === 'fast_tab' && /\btab\b/i.test(clause))
+    || /\bfast_(tab|nav)\b/i.test(clause)
+    || !namesOtherTarget(clause);
   const out = [];
   for (const c of CLAIMS) {
     let verb = null;
@@ -447,6 +460,20 @@ export function reportDone(run, args, t) {
   return done(checks);
 }
 
+// What happens at a report_done, in order: the VISUAL NOTE gets its own reserved
+// round and goes FIRST, then the evidence gate. The note is the only check with
+// EYES — the gate can only re-argue what is already in the tool log — so it must
+// never be crowded out by refusals. Live proof (Azure, 6ff5592): the gate refused
+// twice on WORDING, the model rewrote an already-honest result three times, and by
+// the time the note's turn came the shared budget was gone; the one check that
+// could have looked at the empty Subscription / Resource group / Region fields
+// never ran. One note round + up to MAX_GATE_REFUSALS refusals, not N shared.
+export async function reportDecision(run, args, t, deps) {
+  const note = await visualNoteRound(run, deps);   // no-op unless a write went unread
+  if (note) return { note };
+  return reportDone(run, args, t);
+}
+
 // The gate fields a run row / snapshot carries, per mode.
 const gateFields = (run) => run.gate === 'off' ? { gate: 'off' } : {
   gate: run.gate,
@@ -513,10 +540,6 @@ export async function visualNoteRound(run, deps = {}) {
   if (run.gate === 'off' || run.visualNote) return null;   // one round per run
   const unverified = unverifiedWrites(run.toolLog || []);
   if (!unverified.length) return null;                     // everything read back: no note, no cost
-  if ((run.gateRefusals?.length || 0) + 1 > REPORT_INTERRUPT_CEILING) {
-    run.visualNote = { skipped: 'interruption budget already spent on gate refusals', unverified };
-    return null;
-  }
   const shot = deps.screenshot || (() => screenshotBase64(run.client));
   const describe = deps.describe || (async (a) => {
     const missing = ensureVisionEnv();   // must run BEFORE the import (config.js reads env at load)
@@ -752,17 +775,15 @@ async function loop(run) {
       if (run.cancelled) return;
       const args = u.input || {};
       if (u.name === 'report_done') {
-        const verdict = reportDone(run, args, Date.now() - t0);
+        const verdict = await reportDecision(run, args, Date.now() - t0);
+        if (verdict.note) {
+          onEvent?.({ type: 'visualNote', text: verdict.note });
+          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: verdict.note }] });
+          continue;
+        }
         if (verdict.refuse) {
           onEvent?.({ type: 'gate', problems: verdict.refuse });
           results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: `report_done refused: ${verdict.refuse.join('; ')}. Fix that, then call report_done again.` }] });
-          continue;
-        }
-        // one last look at the SCREEN when a write in this run was never read back
-        const note = await visualNoteRound(run);
-        if (note) {
-          onEvent?.({ type: 'visualNote', text: note });
-          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: note }] });
           continue;
         }
         return finish(run, 'done', verdict.finish);

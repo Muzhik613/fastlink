@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { recordResult, entryFacts, unverifiedWrites, visualNoteRound, closeVisualNote, visualNoteText, ensureVisionEnv } from '../runner.mjs';
+import { recordResult, entryFacts, unverifiedWrites, visualNoteRound, closeVisualNote, visualNoteText, ensureVisionEnv, reportDecision } from '../runner.mjs';
 import { claudeMcpEnv } from '../fastlink-client.mjs';
 
 // Vision keys are process-global: save and restore them around anything that touches them.
@@ -108,26 +108,47 @@ test('skipped when everything verified — and it costs nothing (no screenshot t
   assert.equal(await visualNoteRound(fixed, deps()), null);
 });
 
-test('at most ONE round per run, and never past the interruption ceiling', async () => {
+test('ONE round per run — but its own round: gate refusals can never crowd it out', async () => {
   const run = runOf(azureRows(CROSS));
   assert.ok(await visualNoteRound(run, deps()));
   const second = deps();
   assert.equal(await visualNoteRound(run, second), null, 'no second round');
   assert.equal(second.seen.shots, 0);
-  // two gate refusals already spent the ceiling: the note is skipped and says so
-  const refused = runOf(azureRows(CROSS), { gateRefusals: [{ turn: 1 }, { turn: 2 }] });
-  const d = deps();
-  assert.equal(await visualNoteRound(refused, d), null);
-  assert.equal(d.seen.shots, 0);
-  assert.match(refused.visualNote.skipped, /interruption budget/);
-  // one refusal still leaves room for the note (1 + 1 = the ceiling)
-  const once = runOf(azureRows(CROSS), { gateRefusals: [{ turn: 1 }] });
-  assert.ok(await visualNoteRound(once, deps()));
+  // Live failure (Azure, 6ff5592): the gate refused twice on WORDING and the note —
+  // the only check that can SEE the page — never ran. The budget is no longer shared:
+  // however many refusals have happened, the note still gets its reserved round.
+  for (const refusals of [[{ turn: 1 }], [{ turn: 1 }, { turn: 2 }], [{ turn: 1 }, { turn: 2 }, { turn: 3 }]]) {
+    const r = runOf(azureRows(CROSS), { gateRefusals: refusals });
+    assert.ok(await visualNoteRound(r, deps()), `${refusals.length} refusals`);
+    assert.equal(r.visualNote.skipped, undefined);
+  }
   // gate off measures the model alone: no note, no screenshot
   const off = runOf(azureRows(CROSS), { gate: 'off' });
   const offDeps = deps();
   assert.equal(await visualNoteRound(off, offDeps), null);
   assert.equal(offDeps.seen.shots, 0);
+});
+
+test('the note goes FIRST at report_done: eyes before the gate re-argues the log', async () => {
+  const bad = { result: 'Set the VM name', evidence: 'nothing that quotes a result' };
+  // a run with an unverified write: the note comes back, and the gate has not refused yet
+  const run = runOf(azureRows(CROSS));
+  const first = await reportDecision(run, bad, 1000, deps());
+  assert.ok(first.note, 'the note is the first interruption');
+  assert.equal(first.refuse, undefined);
+  assert.deepEqual(run.gateRefusals, [], 'no refusal was spent to get here');
+  // the SAME report after the note falls through to the gate as usual
+  const second = await reportDecision(run, bad, 2000, deps());
+  assert.equal(second.note, undefined);
+  assert.ok(second.refuse?.length, 'the gate still does its job afterwards');
+  assert.equal(run.gateRefusals.length, 1);
+  // with every write read back there is no note round at all: straight to the gate
+  const clean = runOf([['fast_tab', { url: AZ }, `{"id":1,"url":"${AZ}"}`], ['fast_snapshot', {}, snap(AZ, 'Basics')]]);
+  const d = deps();
+  const verdict = await reportDecision(clean, bad, 10, d);
+  assert.equal(verdict.note, undefined);
+  assert.equal(d.seen.shots, 0);
+  assert.ok(verdict.refuse?.length);
 });
 
 test('no vision key / no screenshot / nothing observed are each recorded, not silently dropped', async () => {

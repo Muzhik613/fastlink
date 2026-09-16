@@ -33,6 +33,28 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — the visual note gets its OWN round (before the gate), and the gate stops refusing honest wording
+- **What:** three changes to the report_done path. (1) `reportDecision` runs the visual note FIRST and
+  outside the gate's refusal budget — `REPORT_INTERRUPT_CEILING` is deleted; it is one note round PLUS up
+  to `MAX_GATE_REFUSALS`, not N shared. (2) `claimMismatch` credits the run's first `fast_tab`/`fast_nav`
+  for an open/navigate claim unless the clause names some OTHER target — a URL no load fetched, or a
+  QUOTED entity the loaded URL does not name; a clause naming the call itself ("fast_tab succeeded")
+  counts too. (3) `describeScreen` now asks for EVERY empty/placeholder box with its label (required
+  markers included) and for marks on tabs/step names, not just the values the model claimed.
+- **Why:** live on the owner's Chrome (6ff5592, Azure create-VM): the gate refused twice on WORDING —
+  all three of the model's `result` texts said the same true thing ("filled only the VM name, unverified,
+  cross-origin iframe") — and the shared budget was gone by the time the note's turn came, so the ONE
+  check that could have seen the empty Subscription / Resource group / Region fields and Azure's red dot
+  never ran. A cheap, pedantic check was crowding out the only one with eyes.
+- **Files:** `fast-runner/runner.mjs`, `fast-dxt/server/scout.js`, `fast-runner/README.md`,
+  `fast-runner/test/visual-note.test.mjs`, `fast-runner/test/gate.test.mjs`.
+- **Watch out:** (2) is a DELIBERATE loosening — an unquoted, URL-less "opened/navigated" claim is now
+  satisfied by the run's own first load, so the cfworkers-class catch now rests on the quoted entity
+  ('Worker "fastlink-relay" opened' with only the list page loaded is still refused) and on a named URL
+  that was never fetched. Both are fixtures. If someone tightens this again, re-read the three Azure
+  strings first: refusing them bought nothing and cost the note its round.
+- **Status:** committed; `fast-runner` suite green. The Azure case itself is the lead's to re-run.
+
 ## 2026-09-16 — visual note: the vision key comes from where the MCP server gets it (~/.claude.json), not from the runner's env
 - **What:** `ensureVisionEnv()` resolves `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `OPENROUTER_API_KEY` from
   `claudeMcpEnv('fastlink')` — now exported from `fast-runner/fastlink-client.mjs`, the one place that

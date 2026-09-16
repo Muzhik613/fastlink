@@ -149,7 +149,10 @@ test('check 4: an action the result claims but no call performed is refused once
   assert.deepEqual(p, ['your result says "opened" but no fast_click / fast_nav / fast_tab (beyond the first page load) call succeeded. If the task asked you to open, do it now; only if it did not, rewrite result to say what you actually observed']);
   assert.match(p[0], /If the task asked you to open, do it now/);   // the do-it branch leads (19:36:57Z: "or rewrite" invited the rewrite)
   assert.match(gateProblems(runOf(rows), { result: 'Submitted the search', evidence }).join(), /If the task asked you to submit, do it now/);
-  assert.match(gateProblems(runOf(rows), { result: 'We went to the Worker', evidence }).join(), /If the task asked you to go to, do it now/);
+  // the entity is QUOTED and is not the page that loaded, so this is still an
+  // overclaim (a bare "We went to the Worker" is credited to the first load since
+  // 2026-09-16 — see the Azure test below)
+  assert.match(gateProblems(runOf(rows), { result: 'We went to the "fastlink-relay" Worker', evidence }).join(), /If the task asked you to go to, do it now/);
   run.gateRefusals.push({ turn: 4, t: 15000, problems: p, claimMismatch: claimMismatch(run.toolLog, result) });
   assert.deepEqual(gateProblems(run, { result, evidence }), [], 'second report_done passes; the row carries claimMismatch');
   // a genuine click run with the same claim: no refusal
@@ -436,8 +439,32 @@ test('check 4: the first load satisfies a claim that names its URL or its tab, w
   const cf = runOf([['fast_tab', { url: CF }, `{"id":1,"url":"${CF}"}`], ['fast_snapshot', {}, snap(LIST, 'fastlink-relay')]]);
   assert.deepEqual(claimMismatch(cf.toolLog, 'Worker "fastlink-relay" opened; other Workers listed: gauth-father.').map(c => c.verb), ['opened']);
   assert.deepEqual(claimMismatch(cf.toolLog, `Opened ${CF}; the Worker "fastlink-relay" is listed.`), []);
-  // a fast_nav first load has no tab to name
+  // DELIBERATE LOOSENING (2026-09-16, Azure): an unquoted, URL-less open/navigate
+  // claim is satisfied by the run's own first load. Refusing these was costing gate
+  // rounds to make an already-honest sentence sound different. What still catches an
+  // overclaim: a URL no load fetched, or a quoted entity the loaded URL does not name.
   const nav = runOf([['fast_nav', { url: 'https://example.com/a' }, '{"url":"https://example.com/a"}']]);
-  assert.deepEqual(claimMismatch(nav.toolLog, 'Opened a new tab with the report').map(c => c.verb), ['opened']);
+  assert.deepEqual(claimMismatch(nav.toolLog, 'Opened a new tab with the report'), []);
+  assert.deepEqual(claimMismatch(nav.toolLog, 'Opened https://example.com/b').map(c => c.verb), ['opened']);
   assert.deepEqual(claimMismatch(nav.toolLog, 'Navigated to https://example.com/a.'), []);
+});
+
+test('check 4: an honest claim about the page the run DID load is not refused for wording (Azure, 6ff5592)', () => {
+  // Three result strings from one live run, all factually identical and all true; the
+  // gate refused twice on wording and the model rewrote itself three times, which is
+  // what spent the round the visual note needed.
+  const AZ = 'https://portal.azure.com/#create/Microsoft.VirtualMachine';
+  const run = runOf([
+    ['fast_tab', { url: AZ }, `{"id":1,"url":"${AZ}"}`],
+    ['fast_fill_vision', { fields: { 'Virtual machine name input': 'fastlink-bench-vm' } },
+      JSON.stringify({ filled: [{ field: 'Virtual machine name input', found: true, value: 'fastlink-bench-vm', verified: false, reason: 'unreadable: typed but not read back' }], missed: [], submitted: false })],
+    ['fast_snapshot', { full: true }, snap(AZ, 'Create a virtual machine', 'Basics')],
+  ]);
+  for (const result of [
+    'fast_tab succeeded; filled only the VM name (unverified, cross-origin iframe) and could go no further.',
+    'Opened the VM creation page and filled the VM name as fastlink-bench-vm; the value could not be read back (cross-origin iframe).',
+    'Navigated to the Azure create-VM form. Only the name field was filled, and it is unverified.',
+  ]) assert.deepEqual(claimMismatch(run.toolLog, result), [], result);
+  // still caught: a quoted target the loaded page is not
+  assert.deepEqual(claimMismatch(run.toolLog, 'Opened "Networking" and filled the subnet').map(c => c.verb), ['opened']);
 });
