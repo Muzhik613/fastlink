@@ -961,6 +961,8 @@ const disconnectObserver = (reason) => {
 // permanently deaf observer left settles and waits blind (live Oracle 4cbfe776: sinceMutMs
 // 81,240 while panels opened and closed).
 const STORM_RETRY_MS = 10000;
+// How long a click waits for the page to START reacting (see fast_click): a popup opener, any other button.
+const REACT_OPENER_MS = 800, REACT_CLICK_MS = 300;
 
 const setupObserver = () => {
   if (INDEX.observer || typeof MutationObserver === 'undefined') return;
@@ -4133,9 +4135,26 @@ async function runPageAction(action, args) {
     // radio's input is checked by it); a script-only target or a custom widget gets
     // the full pointer sequence a person's click produces.
     phase('resolveMs', nowMs() - t0);
+    // Will this click open something? A popup opener (aria-haspopup / aria-expanded / aria-controls
+    // / aria-owns on it or an ancestor) gets up to REACT_OPENER_MS for the page to START reacting;
+    // any other button or link up to REACT_CLICK_MS. Without it a panel that mounts a tick later is
+    // missed: the settle sees a quiet page and returns at once (live Oracle caff4e8f: the first
+    // "Change image" click came back changed "none" in 18ms, the picker opened, the model clicked
+    // again and closed it).
+    let reactCap = 0;
+    try {
+      if (el.closest('[aria-haspopup]:not([aria-haspopup="false"]),[aria-expanded],[aria-controls],[aria-owns]')) reactCap = REACT_OPENER_MS;
+      else if (checkedOf(el) === null && (el.tagName === 'BUTTON' || el.tagName === 'A' || /^(button|link|tab|menuitem)$/i.test(el.getAttribute('role') || '') || item.clickable)) reactCap = REACT_CLICK_MS;
+    } catch {}
     const tDispatch = nowMs();
     if (item.clickable || !NATIVE_CLICK.test(el.tagName)) pointerSeq(el); else el.click();
     phase('dispatchMs', nowMs() - tDispatch);
+    if (reactCap) {
+      const tR = nowMs();
+      if (observerLive()) { while (!(INDEX.lastMutMs && INDEX.lastMutMs >= tDispatch) && nowMs() - tR < reactCap) await wait(25); }
+      else await wait(Math.min(150, reactCap));
+      phase('reactWaitMs', nowMs() - tR);
+    }
     const out = await withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
     // What the click DID leads the result: where the page is now, whether the URL
     // moved, whether a dialog opened/closed, and what holds focus.
@@ -4690,6 +4709,7 @@ const formState = () => {
   // dialogs by ELEMENT, not name: a same-named panel opening inside another (Oracle's image
   // picker is a "Side Panel" inside the "Side Panel" create form) is its own open/close
   const dialogs = new Map();   // element → label
+  let view = { current: '', headings: [] };
   try {
     const els = document.querySelectorAll(DIALOG_SEL);
     for (let i = 0; i < els.length && i < 50; i++) {
@@ -4698,6 +4718,16 @@ const formState = () => {
     }
     const act = activeDialogRoot();
     if (act && !dialogs.has(act)) dialogs.set(act, dialogLabel(act) || 'dialog');
+    // the view: the current step / page / tab and the visible headings (a wizard's Next changes these
+    // without touching a field — live Oracle caff4e8f: three Next clicks said "none" while the wizard
+    // moved Security → Networking → Storage)
+    const shown = (el) => { let r; try { r = el.getBoundingClientRect(); } catch { return false; } return visible(el, r); };
+    const txt = (el) => cleanLabel(String(el.getAttribute('aria-label') || el.textContent || '')).slice(0, 60);
+    const cur = [];
+    for (const el of document.querySelectorAll('[aria-current="step"],[aria-current="page"],[aria-current="true"],[role="tab"][aria-selected="true"]')) { if (cur.length >= 4) break; if (shown(el)) cur.push(txt(el)); }
+    const heads = [];
+    for (const el of document.querySelectorAll('h1,h2,h3,h4,[role="heading"]')) { if (heads.length >= 12) break; if (shown(el)) { const t = txt(el); if (t) heads.push(t); } }
+    view = { current: cur.filter(Boolean).join(' / '), headings: heads };
     // name + nesting, read NOW (a closed panel is detached by the time the states are compared)
     for (const [el, label] of dialogs) {
       let nested = false;
@@ -4705,7 +4735,7 @@ const formState = () => {
       dialogs.set(el, `dialog "${label}"${nested ? ' (nested)' : ''}`);
     }
   } catch {}
-  return { fields, dialogs, partial };
+  return { fields, dialogs, view, partial };
 };
 // "Label: \"old\" → \"new\"", "dialog \"X\" opened/closed". A field the page re-rendered (a new
 // element) is matched by its label when that label is unique on both sides. Pure given states.
@@ -4726,8 +4756,22 @@ const diffFormState = (a, b) => {
     return counts;
   };
   const na = names(a), nb = names(b);
-  for (const [key, n] of nb) if (n > (na.get(key) || 0)) out.push(`${key} opened`);
-  for (const [key, n] of na) if (n > (nb.get(key) || 0)) out.push(`${key} closed`);
+  const dialogLines = [];
+  // a same-named panel opened beside another (a portal, not nested in it) says how many are open
+  const open = (key, n) => (n > 1 ? `${key} opened (${n} open)` : `${key} opened`);
+  const shut = (key, n) => (n > 0 ? `${key} closed (${n} still open)` : `${key} closed`);
+  for (const [key, n] of nb) if (n > (na.get(key) || 0)) dialogLines.push(open(key, n));
+  for (const [key, n] of na) if (n > (nb.get(key) || 0)) dialogLines.push(shut(key, nb.get(key) || 0));
+  // the view line, unless a dialog line already says what changed
+  if (a.view && b.view && !dialogLines.length) {
+    if (a.view.current !== b.view.current && (a.view.current || b.view.current)) out.push(`step: ${JSON.stringify(a.view.current)} → ${JSON.stringify(b.view.current)}`);
+    else {
+      const was = new Set(a.view.headings);
+      const fresh = b.view.headings.filter((h) => !was.has(h)).slice(0, 2);
+      if (fresh.length) out.push(`now showing ${fresh.map((h) => JSON.stringify(h)).join(', ')}`);
+    }
+  }
+  out.push(...dialogLines);
   return out;
 };
 // Put `changed` right after the result's first key.
