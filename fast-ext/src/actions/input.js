@@ -31,7 +31,7 @@ try {
 // chrome.storage.local `advancedControl` flag (default ON when unset — the
 // permission is granted, so the capability is available unless the user
 // explicitly turns it off in the popup/options). Every CDP path — coordinate
-// input (click_xy/type/key/wheel/drag_xy), fast_evaluate, and background-tab /
+// input (click_xy/type), fast_evaluate, and background-tab /
 // GPU-fallback capture — funnels through cdp(), so this single guard makes the
 // whole debugger surface degrade gracefully when the flag is OFF: a clear,
 // actionable error instead of acting. DOM actions (snapshot, selector
@@ -117,17 +117,6 @@ export async function clickXY({ x, y, button, clickCount }) {
     }
   } catch {}
   return out;
-}
-
-// Trusted mouse-wheel scroll at a point via CDP — real wheel events that
-// canvas/virtualized lists (which ignore scrollTop) actually honor.
-export async function wheelScroll({ x, y, deltaX, deltaY }) {
-  const got = await getInjectableTab();
-  if (got.error) return got;
-  await cdp(got.tab.id, 'Input.dispatchMouseEvent', {
-    type: 'mouseWheel', x: x || 0, y: y || 0, deltaX: deltaX || 0, deltaY: deltaY || 0,
-  });
-  return { wheeled: { deltaX: deltaX || 0, deltaY: deltaY || 0, at: { x: x || 0, y: y || 0 } } };
 }
 
 // Runs in EVERY frame of the tab (chrome.scripting allFrames, MAIN world) and
