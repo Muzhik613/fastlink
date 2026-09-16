@@ -2,32 +2,6 @@
 
 export const TOOLS = [
   {
-    name: 'fast_point',
-    description: 'VISION coordinate-grounding: locate on-screen target(s) NOT in the DOM (opaque/cross-origin iframes, canvas, custom widgets) by having a fast multimodal model (Gemini) read a screenshot. GEMINI does the visual reading and returns pixel coordinates FOR you, so you never take a screenshot and parse it yourself — fast and token-cheap, ideal for non-DOM/heavy pages. Returns CSS-pixel centers ready for fast_click_xy → then fast_type to fill. **NEVER hallucinates: a target not clearly visible returns {found:false} (with confidence), never a guessed coordinate — so you can TRUST a returned point without screenshot-verifying it.** If found:false, the element is genuinely off-screen/absent: reopen the menu, or call again with scroll:true. Pass `target` (one) or `targets` (array, one model call — for multi-field forms). Small/dense targets auto crop-zoom refine. Returns {points:[{target,found,xCss,yCss,confidence,refined}]}. Requires GEMINI_API_KEY.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        target: { type: 'string', description: 'A single element description, e.g. "the First Name input box".' },
-        targets: { type: 'array', items: { type: 'string' }, description: 'Multiple element descriptions, located in one model call. Use for multi-field forms.' },
-        refine: { type: 'boolean', description: 'Crop-zoom refine pass for small targets (default true). Set false to force a single coarse pass.' },
-        scroll: { type: 'boolean', description: 'OPT-IN auto-scroll: if a target is not visible, wheel-scroll down and re-point (up to 4 passes) to surface it. Default FALSE. Do NOT use when a dropdown/menu/popover is open — scrolling dismisses it; reopen the menu instead. Use for long static forms with fields below the fold.' },
-      },
-    },
-  },
-  {
-    name: 'fast_fill_vision',
-    description: 'VISION form-fill in ONE call: fills an entire form server-side, collapsing the per-field point→click→type loop (~15 round-trips) into a single tool call. A fast multimodal model (Gemini) does ALL the visual reading and locates every field (and the optional submit button) in ONE vision pass — you never screenshot the form and read it yourself — then each field is focused with a trusted real-mouse click and filled with trusted typing — so React/LWC/canvas/iframe inputs that ignore fast_fill all work. Use for visible on-screen forms, especially non-DOM ones where fast_fill_form can\'t reach. Pass `fields` as { "<field description>": "<value>" } (keys are plain-language descriptions of each input, e.g. "First Name input box"). Optional `submit`: a description of the submit/continue button to click after filling. Returns { filled:[{field,found,value,verified,via}], missed:[descriptions not located], submitted:bool, unverified?:[fields], note? }. verified:true means the value was read back and held (DOM-fallback fields); verified:false means it was typed via synthetic CDP typing but NOT read back (cross-origin iframe values can\'t be confirmed) — confirm visually if it matters. Fields vision can\'t reach are retried via a DOM fill (via:"dom-fallback"). A description in `missed` was not visible — scroll it into view or reopen the relevant section and call again for those. Requires GEMINI_API_KEY.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        fields: { type: 'object', description: 'Map of field description → value to type, e.g. { "First Name input": "Jacob", "Email input": "a@b.com" }. Each key is a plain-language description of the input the vision model should locate.' },
-        submit: { type: 'string', description: 'Optional description of the submit/continue button to click after all fields are filled, e.g. "the blue Sign up button". Omit (or null) to fill without submitting.' },
-        refine: { type: 'boolean', description: 'Crop-zoom refine pass for small/dense fields to sharpen coordinates (default true). Set false for a single coarse locate pass.' },
-      },
-      required: ['fields'],
-    },
-  },
-  {
     name: 'fast_status',
     description: 'Report whether FastLink can reach a browser from this connection, plus connection diagnostics — and, when SEVERAL browsers are paired, which ones are connected and which one this connection is currently driving. Call this first if other tools fail with "extension not connected", and before fast_profile to see the available browser names.',
     inputSchema: { type: 'object', properties: {}, required: [] },
@@ -203,7 +177,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_screenshot',
-    description: 'Capture a screenshot of the active Chrome tab — for VISUAL VERIFICATION only (confirm something looks right), NOT for reading or parsing page text/structure. To READ a page use fast_snapshot (structured DOM, instant); to LOCATE a visual/non-DOM element use fast_point (Gemini returns the coordinates). Do NOT screenshot a page and read it yourself — that is slow and token-heavy. Saves as PNG to the OS temp dir and returns the file path. Use Read on the path to view the image. Pass fresh:true if a recent screenshot looked stale/identical after a focus/navigation change — it reads the live window surface via CDP instead of the compositor frame chrome.tabs.captureVisibleTab may re-serve.',
+    description: 'Capture a screenshot of the active Chrome tab — for VISUAL VERIFICATION only (confirm something looks right), NOT for reading or parsing page text/structure. To READ a page use fast_snapshot (structured DOM, instant); to act on something NOT in the DOM (canvas, cross-origin iframe), read its position off this screenshot and use fast_click_xy / fast_type. Do NOT screenshot a page and read it yourself — that is slow and token-heavy. Saves as PNG to the OS temp dir and returns the file path. Use Read on the path to view the image. Pass fresh:true if a recent screenshot looked stale/identical after a focus/navigation change — it reads the live window surface via CDP instead of the compositor frame chrome.tabs.captureVisibleTab may re-serve.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -224,7 +198,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_scroll',
-    description: 'Scroll the active tab. Auto-detects the right scroll container (handles nested scrollers like claude.ai chat, not just window); container detection is time-bounded and falls back to a plain window scroll on huge ad/tracker-heavy DOMs, so this always returns within ~1s and never hangs. Pass "to" (top|bottom|"50%") or "pixels" (delta, positive=down). Optional selector to target a specific scroller. For canvas/WebGL/virtualized views that ignore programmatic scrollTop, use fast_wheel instead. Returns include a fresh `snapshot` of the post-scroll viewport (opt out with noSnapshot:true).',
+    description: 'Scroll the active tab. Auto-detects the right scroll container (handles nested scrollers like claude.ai chat, not just window); container detection is time-bounded and falls back to a plain window scroll on huge ad/tracker-heavy DOMs, so this always returns within ~1s and never hangs. Pass "to" (top|bottom|"50%") or "pixels" (delta, positive=down). Optional selector to target a specific scroller. Returns include a fresh `snapshot` of the post-scroll viewport (opt out with noSnapshot:true).',
     inputSchema: {
       type: 'object',
       properties: {

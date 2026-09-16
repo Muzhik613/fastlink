@@ -8,7 +8,7 @@ import { loadToolset, buildTools, buildSystem } from '../runner.mjs';
 import { TOOLS } from '../../fast-dxt/server/tools.js';
 
 // Tools that attach chrome.debugger (fast-ext/src/actions/input.js tier + its importers).
-const CDP = ['fast_click_xy', 'fast_type', 'fast_evaluate', 'fast_screenshot', 'fast_fill_vision'];
+const CDP = ['fast_click_xy', 'fast_type', 'fast_evaluate', 'fast_screenshot'];
 const NATIVE = ['ask_caller', 'report_done'];
 const names = (tools) => tools.map(t => t.name);
 
@@ -17,7 +17,7 @@ test('default toolset = every server tool + native, descriptions untouched, inst
   assert.equal(ts.name, 'default');
   const { tools, back } = buildTools(TOOLS, ts);
   assert.equal(tools.length, TOOLS.length + NATIVE.length);
-  assert.equal(TOOLS.length, 24);
+  assert.equal(TOOLS.length, 22);
   assert.ok(TOOLS.some(t => t.name === 'fast_ext_reload'), 'ops tool fast_ext_reload is on the server (default "*" exposes it)');
   for (const t of TOOLS) {
     const seen = tools.find(x => x.name === t.name);

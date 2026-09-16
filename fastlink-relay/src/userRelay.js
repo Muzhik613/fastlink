@@ -24,7 +24,6 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { handleMcpRequest } from './mcp.js';
-import { createScout } from './scout.js';
 import { readTrace, fingerprint, tokenKey } from './timing.js';
 import { getUserDevices, renameDevice, maskToken } from './db.js';
 
@@ -464,7 +463,7 @@ export class UserRelay extends DurableObject {
   //
   // `ws` is REQUIRED and names WHICH browser to drive. It is resolved ONCE per
   // MCP request by resolveTarget() and threaded down, so every sub-step of a
-  // multi-step tool (batch, vision tier, nav settle) lands on the SAME browser
+  // multi-step tool (batch, nav settle) lands on the SAME browser
   // even if another browser redials mid-call. There is deliberately no "pick a
   // socket here" fallback: that was the most-recent-wins bug.
   callExtension(action, args, timeoutMs = REQUEST_TIMEOUT_MS, ws = null) {
@@ -488,44 +487,6 @@ export class UserRelay extends DurableObject {
         resolve({ error: `Send to extension failed: ${e.message}` });
       }
     });
-  }
-
-  // --- Gemini scout/vision tier (lazy, per-user) ----------------------------
-
-  // The cache-holding scout factory (one per DO → page-map/visual-map caches are
-  // per-user). The API KEY is NOT baked in here — it's resolved per call and
-  // bound via getBoundScout(), so a user's own BYO key vs the operator key can
-  // differ per request without losing the cache. See src/scout.js.
-  getScout() {
-    if (!this._scout) {
-      this._scout = createScout({ model: this.env.FASTLINK_GEMINI_MODEL || 'gemini-2.5-flash-lite' });
-    }
-    return this._scout;
-  }
-
-  // BYO-KEY (SPEC §12): the user's own encrypted key wins, else the operator's
-  // shared GEMINI_API_KEY secret. Returns '' when neither exists (vision tier
-  // then self-disables cleanly).
-  async resolveGeminiKey() {
-    try {
-      if (this.env.DB && this.userId) {
-        const { getUserGeminiKey } = await import('./db.js');
-        if (typeof getUserGeminiKey === 'function') {
-          // Keys are AES-GCM encrypted at rest; db.js needs the env secret to
-          // decrypt (it stays free of module-level secrets).
-          const k = await getUserGeminiKey(this.env.DB, this.userId, this.env.KEY_ENC_SECRET);
-          if (k) return k;
-        }
-      }
-    } catch { /* fall through to operator key */ }
-    return this.env.GEMINI_API_KEY || this.env.GOOGLE_API_KEY || '';
-  }
-
-  // A scout surface bound to the resolved key, sharing the per-DO caches. This is
-  // what mcp.js/composite.js use for a single tools/call.
-  async getBoundScout() {
-    const key = await this.resolveGeminiKey();
-    return this.getScout().withKey(key);
   }
 
   // --- SAFETY hooks (SPEC.md §7) --------------------------------------------

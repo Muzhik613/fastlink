@@ -1225,7 +1225,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
   // iframed login pages (idmsa.apple.com) return footer-only snapshots and the
   // agent wastes rounds screenshot-reading them. If the DOM yields almost nothing
   // (not merely capped) yet the page hosts a large cross-origin iframe, the real
-  // UI is inside that iframe — steer the agent to the vision tier up front.
+  // UI is inside that iframe — steer the agent to screenshot + fast_click_xy up front.
   let hint;
   if (items.length + content.length < 8 && !INDEX.capped) {
     try {
@@ -1235,7 +1235,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
         if (!blocked) continue;
         const r = f.getBoundingClientRect();
         if (r.width > 200 && r.height > 150) {
-          hint = 'page is nearly empty to DOM tools but holds a large cross-origin iframe — the real UI is likely inside it; use the vision tier (multi-target fast_point → fast_fill_vision / fast_click_xy) instead of screenshot-and-read';
+          hint = 'page is nearly empty to DOM tools but holds a large cross-origin iframe — the real UI is likely inside it; take fast_screenshot and act on it with fast_click_xy / fast_type';
           break;
         }
       }
@@ -2088,7 +2088,7 @@ async function runPageAction(action, args) {
       report.hiddenMatches = hidden;
       report.hint = `${hidden.length} matching field(s) exist but are hidden (display:none / zero size) — a toggle, tab, or expander must reveal them first (fast_click the control that opens the search/form), then fill again.`;
     } else if (!report.candidates.length) {
-      report.hint = 'no visible fillable field on this view at all — the form may sit in a cross-origin iframe (vision tier) or still be loading.';
+      report.hint = 'no visible fillable field on this view at all — the form may sit in a cross-origin iframe (fast_screenshot + fast_click_xy / fast_type) or still be loading.';
     }
     return report;
   };
@@ -3357,7 +3357,7 @@ async function runPageAction(action, args) {
       }
       const available = found ? found.els.slice(0, 10).map(el => (el.textContent || '').trim()).filter(Boolean) : [];
       const base = { tried: optionText, field: describeField(field), opened, elapsedMs: Math.round(nowMs() - t0), timing, panelIds: ariaPanelIds(field), available };
-      if (!opened) return { error: `could not open the dropdown "${fieldRaw}" — no options appeared after ${tried.join(' / ')} on its trigger (${trigger.tagName.toLowerCase()}${trigger.getAttribute('role') ? ` role=${trigger.getAttribute('role')}` : ''}); nothing was changed`, triedOpen: tried, ...base, hint: 'fast_click the control and read the auto-snapshot for what opened; if the options are drawn on canvas / in a cross-origin frame use the vision tier (fast_point)' };
+      if (!opened) return { error: `could not open the dropdown "${fieldRaw}" — no options appeared after ${tried.join(' / ')} on its trigger (${trigger.tagName.toLowerCase()}${trigger.getAttribute('role') ? ` role=${trigger.getAttribute('role')}` : ''}); nothing was changed`, triedOpen: tried, ...base, hint: 'fast_click the control and read the auto-snapshot for what opened; if the options are drawn on canvas / in a cross-origin frame, take fast_screenshot and use fast_click_xy' };
       return { error: 'no matching option in the open list', ...base, ...(starved ? { starved: true, hint: 'the page was re-rendering so heavily that timers starved; retry once the view settles (fast_wait for text of the finished state), or fast_click the option text directly' } : {}) };
     };
 
@@ -3713,8 +3713,7 @@ async function runPageAction(action, args) {
       // so instead we hard-bound the work with an in-loop time budget and bail
       // to a plain document/window scroll the moment we exceed it. fast_scroll
       // must ALWAYS return within a couple seconds; a slightly-less-precise
-      // container is better than a hang (and callers can still pass `selector`
-      // or use fast_wheel for canvas/virtualized cases).
+      // container is better than a hang (and callers can still pass `selector`).
       const deadline = Date.now() + 400;
       try {
         // 1) Cheapest + most reliable: walk UP from the viewport-center element.

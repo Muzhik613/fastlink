@@ -2,9 +2,8 @@ import { handleTabAction, getTargetTab, getTargetTabId } from './tab.js';
 import { takeScreenshot }  from './screenshot.js';
 import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
-import { clickXY, typeText, wheelScroll } from './input.js';
+import { clickXY, typeText } from './input.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
-import { visionCapture } from './vision.js';
 import { isInjectableUrl } from '../util.js';
 
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_reload', 'fast_list', 'fast_close', 'fast_switch']);
@@ -117,15 +116,10 @@ async function withOrigin(envelope) {
 async function runOne(action, args) {
   if (TAB_ACTIONS.has(action))      return handleTabAction(action, args);
   if (action === 'fast_screenshot') return takeScreenshot(args);
-  // INTERNAL only (no tool schema): the server's vision tier captures through this.
-  if (action === 'fast_vision_capture') return visionCapture(args);
   if (action === 'fast_text')       return getText(args);
   if (action === 'fast_evaluate')   return evaluate(args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
-  // INTERNAL only (no tool schema): the vision tier's scroll:true passes call
-  // fast_wheel through callExtension to reach GCP's nested scrollers.
-  if (action === 'fast_wheel')      return wheelScroll(args);
   if (action === 'fast_wait' && (args?.networkIdle || args?.domready)) {
     // text/selector + networkIdle: the text is the real signal (SPAs long-poll,
     // so pure idle can time out forever); resolve on it and REPORT the network

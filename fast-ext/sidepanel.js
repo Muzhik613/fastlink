@@ -16,7 +16,7 @@ const RELAY_GATE_KEY = 'fastlink.relayActive';   // mirror background.js — tra
 const STUCK_BASE_MS = 30000;
 const STUCK_LONG_MS = 50000;
 const STUCK_LONG_ACTIONS = new Set([
-  'fast_fill_vision', 'fast_fill', 'fast_point',
+  'fast_fill',
 ]);
 const stuckThreshold = (action) => (STUCK_LONG_ACTIONS.has(action) ? STUCK_LONG_MS : STUCK_BASE_MS);
 
@@ -101,12 +101,10 @@ function summarize() {
 
 const VERB = {
   fast_snapshot: 'Reading page', fast_text: 'Reading text',
-  fast_vision_capture: 'Looking at page',
   fast_screenshot: 'Capturing screenshot', fast_click: 'Clicking', fast_click_xy: 'Clicking',
-  fast_fill: 'Typing', fast_type: 'Typing', fast_fill_vision: 'Typing',
+  fast_fill: 'Typing', fast_type: 'Typing',
   fast_select_option: 'Selecting',
   fast_nav: 'Navigating', fast_reload: 'Reloading', fast_scroll: 'Scrolling',
-  fast_wheel: 'Scrolling',
   fast_wait: 'Waiting', fast_key_press: 'Pressing key', fast_tab: 'Switching tab',
   fast_switch: 'Switching tab', fast_list: 'Listing tabs', fast_close: 'Closing tab',
   fast_evaluate: 'Running script',

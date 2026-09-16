@@ -10,14 +10,6 @@
   },
   "tools": [
     {
-      "name": "fast_point",
-      "description": "VISION coordinate-grounding: locate on-screen target(s) NOT in the DOM (opaque/cross-origin iframes, canvas, custom widgets) by having a fast multimodal mode..."
-    },
-    {
-      "name": "fast_fill_vision",
-      "description": "VISION form-fill in ONE call: fills an entire form server-side, collapsing the per-field point→click→type loop (~15 round-trips) into a single tool call."
-    },
-    {
       "name": "fast_status",
       "description": "Report whether the Chrome extension is connected to this MCP server, and connection diagnostics."
     },
