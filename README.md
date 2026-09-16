@@ -34,14 +34,12 @@ extension, then verify with `fast_status`.
 
 | Directory | Status |
 |---|---|
-| `fastlink-cloud-mcp/` | Old Claude-Cloud MCP clone + unrelated scripts. *gitignored.* |
-| `fast-ext-dad/` | A 2nd-profile copy of the extension (just sets its broker slot to `secondary`). *gitignored.* |
-| `fastlink-proxy/` | Cloud-side auth adapter, superseded by `fastlink-relay/`. |
+| `fastlink-cloud-mcp/` | Old Claude-Cloud MCP clone + unrelated scripts. *Untracked/gitignored — on disk only.* |
+| `fast-ext-dad/` | A DRIFTED copy of the extension that Chrome Profile 5 loads unpacked from this path. Not a mirror of `fast-ext/` (19 files differ; it still carries tools `fast-ext/` has deleted). *Untracked/gitignored — deleting it breaks that profile and git cannot restore it.* |
 
-> **Repo-tidiness recommendation (not performed):** `fastlink-cloud-mcp/` and `fast-ext-dad/` are
-> already gitignored; `fastlink-proxy/` is not. To make the repo read clean, consider moving all
-> three into a single `legacy/` folder (or gitignoring `fastlink-proxy/` too). This is a
-> suggestion only — no files were moved.
+> `fastlink-proxy/` (the cloud-side auth adapter superseded by `fastlink-relay/`) was deleted on
+> 2026-09-16. The two directories above are untracked, so they stay until the owner migrates
+> Profile 5 onto `fast-ext/` with the `secondary` slot label.
 
 ---
 

@@ -280,7 +280,7 @@ config.
   macOS / Windows-native.
 - `scripts/ship-ext.sh` — the one source-to-Chrome path (WSL dev box): syncs committed
   `fast-ext/` to the Windows copy, reloads the pinned profile, verifies the build.
-- `fastlink-cloud-mcp/`, `fast-ext-dad/`, `fastlink-proxy/` — **legacy**, not part of a fresh
-  install (see the README component map).
+- `fastlink-cloud-mcp/`, `fast-ext-dad/` — **legacy**, untracked, not part of a fresh install
+  (see the README component map).
 </content>
 </invoke>
