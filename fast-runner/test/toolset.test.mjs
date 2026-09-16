@@ -18,7 +18,10 @@ test('default toolset = every server tool + native, descriptions untouched, inst
   const { tools, back } = buildTools(TOOLS, ts);
   assert.equal(TOOLS.length, 22);
   assert.equal(tools.length, TOOLS.length - HIDDEN_TOOLS.size + NATIVE.length);
-  assert.ok(TOOLS.some(t => t.name === 'fast_ext_reload'), 'ops tool fast_ext_reload is on the server (default "*" exposes it)');
+  // fast_ext_reload is on the server for scripts/ship-ext.sh, but even "*" hides it: a model reloading the
+  // extension mid-run tears down its own content scripts and can drop the broker link under its own run.
+  assert.ok(TOOLS.some(t => t.name === 'fast_ext_reload'), 'ops tool fast_ext_reload is on the server');
+  assert.ok(!names(tools).includes('fast_ext_reload') && !back.has('fast_ext_reload'), 'default "*" does not offer the operator reload');
   for (const t of TOOLS.filter(t => !HIDDEN_TOOLS.has(t.name))) {
     const seen = tools.find(x => x.name === t.name);
     assert.equal(seen.description, t.description);
@@ -30,16 +33,18 @@ test('default toolset = every server tool + native, descriptions untouched, inst
   assert.match(buildSystem(ts, ''), /Today is \w+ \d{4}-\d{2}-\d{2} \(America\/Chicago\)/, 'system prompt carries today\'s date + timezone');
 });
 
-test('fast_frame_read is on the server but never model-facing: absent under default, phase2, every shipped toolset and an explicit allow', () => {
-  assert.ok(TOOLS.some(t => t.name === 'fast_frame_read'), 'the scorer tool exists on the server');
-  assert.ok(HIDDEN_TOOLS.has('fast_frame_read'));
+test('hidden tools (scorer fast_frame_read, operator fast_ext_reload) are on the server but never model-facing: absent under every shipped toolset and an explicit allow', () => {
+  assert.deepEqual([...HIDDEN_TOOLS].sort(), ['fast_ext_reload', 'fast_frame_read']);
+  for (const h of HIDDEN_TOOLS) assert.ok(TOOLS.some(t => t.name === h), `${h} exists on the server`);
   assert.ok(!HIDDEN_TOOLS.has('fast_evaluate'), 'phase2-eval offers fast_evaluate on purpose');
   for (const name of ['default', 'phase2', 'phase2-eval', 'no-cdp']) {
     const { tools, back } = buildTools(TOOLS, loadToolset(name));
-    assert.ok(!names(tools).includes('fast_frame_read'), name);
-    assert.equal(back.has('fast_frame_read'), false, `${name}: a call to it maps to nothing`);
+    for (const h of HIDDEN_TOOLS) {
+      assert.ok(!names(tools).includes(h), `${name}: ${h}`);
+      assert.equal(back.has(h), false, `${name}: a call to ${h} maps to nothing`);
+    }
   }
-  const { tools } = buildTools(TOOLS, { name: 'x', allow: ['fast_snapshot', 'fast_frame_read'], rename: {}, describe: {} });
+  const { tools } = buildTools(TOOLS, { name: 'x', allow: ['fast_snapshot', ...HIDDEN_TOOLS], rename: {}, describe: {} });
   assert.deepEqual(names(tools), ['fast_snapshot', ...NATIVE]);
 });
 

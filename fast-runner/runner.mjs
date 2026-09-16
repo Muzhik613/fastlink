@@ -657,10 +657,13 @@ export function loadToolset(spec = process.env.FASTRUN_TOOLSET || 'default') {
 // Server tools that are NEVER model-facing, whatever a toolset says ("*" or an explicit allow).
 // Applied here, after the toolset's own allow-filter, and nowhere else. fast_frame_read is the
 // bench scorer's read of fields inside cross-origin frames (f7f3925); the scorer calls it through
-// its own handler (bench/fastlink.js), never through a runner toolset. Not fast_evaluate: that is
+// its own handler (bench/fastlink.js), never through a runner toolset. fast_ext_reload is an operator
+// tool: a model reloading the extension mid-run tears down its own content scripts and can drop the
+// broker link under its own run; scripts/ship-ext.sh calls it through fastlink-client.mjs callTool,
+// not a toolset. Not fast_evaluate: that is
 // also a scorer instrument, but toolset.phase2-eval.json passes it to the model on purpose (the
 // owner's A/B, bench/hvm-queue-feedback.sh), and phase2/no-cdp already leave it out.
-export const HIDDEN_TOOLS = new Set(['fast_frame_read']);
+export const HIDDEN_TOOLS = new Set(['fast_frame_read', 'fast_ext_reload']);
 
 // allow-filter, rename (Grok-facing name -> real name on call), describe overrides (keyed by REAL
 // name; ask_caller/report_done accept one too, so a toolset can tighten the report without
