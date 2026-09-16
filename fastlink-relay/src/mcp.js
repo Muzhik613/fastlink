@@ -26,7 +26,7 @@ const INSTRUCTIONS = [
   '',
   'FastLink drives the user\'s real Chrome tab. Use it efficiently:',
   '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content.',
-  '- LOCATE/click something NOT in the DOM (canvas, opaque/cross-origin iframe, image, custom-rendered UI) by taking fast_screenshot, reading the element\'s position off the image, then acting with fast_click_xy (and fast_type to enter text). Never use a screenshot to read ordinary page content — fast_snapshot does that.',
+  '- CROSS-ORIGIN FRAMES (embedded checkout/card forms, portal blades) are ordinary DOM targets: fast_snapshot lists their items under `frames`, and fast_click / fast_fill / fast_select_option act inside them directly. If a frame is still loading, snapshot again once it has rendered. Never use a screenshot to read ordinary page content — fast_snapshot does that.',
   '- CHAIN a known multi-step sequence in ONE call with fast_batch (e.g. navigate → fill → click → wait) to cut round-trips.',
   '- Fill multi-field forms with ONE fast_fill {fields:{label:value}} (or one fast_batch), never field-by-field.',
   '- Action results (fast_click / fast_fill / fast_wait) already include a snapshot — chain off THAT; do not issue a separate fast_snapshot right after.',
@@ -34,7 +34,7 @@ const INSTRUCTIONS = [
   '',
   'WHICH TOOL WHEN (rule of thumb: snapshot to read → DOM tools to act → vision only when the element is not in the DOM or the page is too heavy → batch when the path is known):',
   '- DEFAULT TO DOM TOOLS for normal HTML pages (the vast majority). Read with fast_snapshot; act with fast_click / fast_fill / fast_select_option. They are the fastest and most precise — TRY DOM FIRST.',
-  '- USE the screenshot → fast_click_xy / fast_type path ONLY when DOM can\'t see or reach the target: canvas/WebGL, cross-origin iframes, image-only or custom-rendered UIs, or when DOM tools return nothing / freeze on a very heavy page. It is a FALLBACK, not the default.',
+  '- USE the screenshot → fast_click_xy / fast_type path ONLY as a last resort, when DOM tools cannot reach the target at all: canvas/WebGL, image-only UIs, or a frame a snapshot\'s frameNotice names as unreadable. Coordinates you estimate from an image are often off, so prefer any DOM route first.',
   '- USE fast_batch when you already KNOW the full step sequence (navigate → fill → click → wait) to cut round-trips. DON\'T batch when you must SEE a step\'s result before deciding the next (exploratory/branching flows) — run those one at a time.',
 ].join('\n');
 
