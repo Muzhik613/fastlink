@@ -1221,26 +1221,8 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       if (clickTexts.has(content[i].text)) content.splice(i, 1);
     }
   }
-  // Near-empty-page hint. Field feedback P2/P3/I1 (FEEDBACK_2026-06-24.md):
-  // iframed login pages (idmsa.apple.com) return footer-only snapshots and the
-  // agent wastes rounds screenshot-reading them. If the DOM yields almost nothing
-  // (not merely capped) yet the page hosts a large cross-origin iframe, the real
-  // UI is inside that iframe — steer the agent to screenshot + fast_click_xy up front.
+  // (Cross-origin frames on screen are named by withFrameNotice on every snapshot result.)
   let hint;
-  if (items.length + content.length < 8 && !INDEX.capped) {
-    try {
-      for (const f of document.querySelectorAll('iframe')) {
-        let blocked = false;
-        try { blocked = !f.contentDocument; } catch { blocked = true; }
-        if (!blocked) continue;
-        const r = f.getBoundingClientRect();
-        if (r.width > 200 && r.height > 150) {
-          hint = 'page is nearly empty to DOM tools but holds a large cross-origin iframe — the real UI is likely inside it; take fast_screenshot and act on it with fast_click_xy / fast_type';
-          break;
-        }
-      }
-    } catch { /* hint is best-effort */ }
-  }
   // Batching nudge, as data: 2+ empty fields on one view → one fast_fill{fields}
   // (or one fast_batch), never field-by-field turns.
   if (fillable >= 2) hint = `${fillable} empty fillable fields visible; fill them in one fast_fill {fields:{label:value}} or one fast_batch` + (hint ? ' | ' + hint : '');
@@ -1486,18 +1468,75 @@ const capSnapshot = (snap, itemCap, contentCap) => {
 // offscreen,textTrimmed}, hint } — a model reading top-down cannot miss that
 // the view is partial, and the hint names the exact call that returns the rest.
 // Returns a NEW object (key order matters), or `snap` untouched when complete.
+// Cross-origin frames the top document cannot read but the user SEES: iframes
+// whose document is closed to the page (contentDocument null / throws), on
+// screen, at least FRAME_NOTICE_MIN in size. DOM tools (snapshot, click, fill,
+// wait) are blind inside them, so every page read says so up front — live: the
+// Azure portal's whole body is a cross-origin blade, fast_snapshot came back
+// header-only and the model burned 56s on waits for text plainly on screen,
+// then reported "page never rendered". Reads only the <iframe> elements' own
+// src and box from the top document: no injection. Bounded for pages with tens
+// of thousands of iframes: a lazy element collection, a scan cap and a clock,
+// zero-size frames skipped before anything else is read. Pure given (doc, win).
+const FRAME_NOTICE_MIN = { w: 100, h: 50 };
+const FRAME_NOTICE_LIST = 4;
+const FRAME_SCAN_MAX = 3000, FRAME_SCAN_MS = 25;
+const opaqueFrames = (doc = document, win = window) => {
+  const out = [];
+  let scanned = 0, partial = false;
+  try {
+    const vw = win.innerWidth || 0, vh = win.innerHeight || 0;
+    const t0 = Date.now();
+    for (const tag of ['iframe', 'frame']) {
+      const els = doc.getElementsByTagName(tag);
+      for (let i = 0; i < els.length; i++) {
+        if (++scanned > FRAME_SCAN_MAX || ((scanned & 63) === 0 && Date.now() - t0 > FRAME_SCAN_MS)) { partial = true; break; }
+        const el = els[i];
+        const r = el.getBoundingClientRect();
+        if (r.width < FRAME_NOTICE_MIN.w || r.height < FRAME_NOTICE_MIN.h) continue;
+        if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) continue;
+        let open = false;
+        try { open = !!el.contentDocument; } catch {}
+        if (open) continue;
+        try { const cs = win.getComputedStyle(el); if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue; } catch {}
+        let origin = '';
+        try { origin = new URL(el.getAttribute('src') || '', doc.baseURI).origin; } catch {}
+        out.push({ origin: origin && origin !== 'null' ? origin : '(unknown origin)', x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
+      }
+      if (partial) break;
+    }
+  } catch {}
+  out.sort((a, b) => b.w * b.h - a.w * a.h);
+  return { frames: out, partial };
+};
+// The one sentence every page read leads with when such frames are on screen. Pure.
+const frameNotice = ({ frames }) => {
+  if (!frames || !frames.length) return '';
+  const shown = frames.slice(0, FRAME_NOTICE_LIST).map((f) => `${f.origin} at x:${f.x}, y:${f.y}, ${f.w}x${f.h}`);
+  const more = frames.length > shown.length ? ` and ${frames.length - shown.length} more` : '';
+  return `${frames.length} visible cross-origin frame(s) not readable by DOM tools: ${shown.join('; ')}${more}. Their content is visible in fast_screenshot; act there with fast_click_xy + fast_type.`;
+};
+// Lead a snapshot result with the notice (a fresh scan). Returns `out` unchanged when none.
+const withFrameNotice = (out) => {
+  if (!out || typeof out !== 'object') return out;
+  const scan = opaqueFrames();
+  const notice = frameNotice(scan);
+  if (!notice) return out;
+  return frontload(out, { frameNotice: notice, opaqueFrames: scan.frames.slice(0, FRAME_NOTICE_LIST) });
+};
+
 const markTruncated = (snap, hintFor) => {
   if (!snap || typeof snap !== 'object') return snap;
   const d = snap.dropped || {};
   const off = snap.offscreenItems || 0;
   delete snap.dropped; delete snap.offscreenItems;
-  if (!(d.items || d.content || d.textTrimmed || off)) return snap;
+  if (!(d.items || d.content || d.textTrimmed || off)) return withFrameNotice(snap);
   const dropped = { ...d };
   if (off) dropped.offscreen = off;
   const parts = [hintFor(dropped)];
   if (snap.hint) parts.push(snap.hint);
   delete snap.hint;   // serializeSnapshot emits hint:undefined — spreading it would erase ours
-  return { truncated: true, dropped, hint: parts.join(' | '), ...snap };
+  return withFrameNotice({ truncated: true, dropped, hint: parts.join(' | '), ...snap });
 };
 const offscreenHint = (d) => d.offscreen
   ? `${d.offscreen} interactive element(s) are outside the viewport (below/above the fold) and NOT listed — call fast_snapshot without viewport:true, or fast_scroll, before concluding a control is absent`
@@ -2590,16 +2629,13 @@ async function runPageAction(action, args) {
       else if (isOff) offScreen++;
       else visibleInteractive++;
     }
-    let crossOrigin = 0;
-    for (const f of document.querySelectorAll('iframe')) {
-      try { if (!f.contentDocument) crossOrigin++; } catch { crossOrigin++; }
-    }
+    const frameLine = frameNotice(opaqueFrames());
     const totalHits = interactiveHits + nonInteractiveHits;
     const more = (examined >= DIAG_MAX_EXAMINE || layoutCandidates.length >= DIAG_LAYOUT_CAP) ? '+' : '';
     if (totalHits === 0) {
       if (stopped) out.push(`Text "${queryText}" not found in the first ${examined} elements (page too large to scan fully). Try more specific/visible text, fast_scroll, or narrow with role/tag.`);
       else out.push(`Text "${queryText}" not found in document, open shadow DOM, or same-origin iframes.`);
-      if (crossOrigin > 0) out.push(`Page has ${crossOrigin} cross-origin iframe(s) — content there is not inspectable; the element may live inside.`);
+      if (frameLine) out.push(`The element may be inside one of them: ${frameLine}`);
     } else {
       if (visibleInteractive > 0) out.push(`${visibleInteractive}${more} interactive match(es) appear visible but were skipped — the snapshot should already include them; try increasing window size or scroll first.`);
       if (hidden) {
@@ -2732,7 +2768,10 @@ async function runPageAction(action, args) {
       const resolveEmpty = () => {
         const el = emptyHit.el;
         const found = { text: emptyHit.text, tag: el.tagName ? el.tagName.toLowerCase() : undefined, contentMatch: true };
-        return resolve(withSnap({ found, emptyContainer: true, waitedMs: (args.timeoutMs || 5000), hint: `"${args.text || selector}" matched only an element with no visible box/content (stale or hidden container) — the view has not rendered; wait for text that only the finished view shows, or read again` }));
+        const frameLine = frameNotice(opaqueFrames());
+        return resolve(withSnap({ found, emptyContainer: true, waitedMs: (args.timeoutMs || 5000), hint: frameLine
+          ? `"${args.text || selector}" matched only an element with no visible box/content in the top document — ${frameLine}`
+          : `"${args.text || selector}" matched only an element with no visible box/content (stale or hidden container) — the view has not rendered; wait for text that only the finished view shows, or read again` }));
       };
       // A content/body match: resolve found.contentMatch without requiring an
       // interactive element. Attach coords when we can locate a containing
@@ -2791,7 +2830,11 @@ async function runPageAction(action, args) {
         polls++;
         if (selector) {
           if (pollSelector() !== null) return;
-          if (Date.now() > deadline) return emptyHit ? resolveEmpty() : resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}`, ...pageActivity(), ...(acWaitHint() || {}) });
+          if (Date.now() > deadline) {
+            if (emptyHit) return resolveEmpty();
+            const frameLine = frameNotice(opaqueFrames());
+            return resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}${frameLine ? ` in the top document — ${frameLine}` : ''}`, ...pageActivity(), ...(acWaitHint() || {}) });
+          }
           return setTimeout(poll, 150);
         }
         // Storm-tripped page (Maps, GCP): the observer is OFF, so nothing new is
@@ -2876,7 +2919,8 @@ async function runPageAction(action, args) {
               if (txt) headings.push(txt);
             }
           } catch {}
-          return resolve({ error: `Timed out waiting for "${args.text}"`, ...pageActivity(), headings, ...(acWaitHint() || {}) });
+          const frameLine = frameNotice(opaqueFrames());
+          return resolve({ error: `Timed out waiting for "${args.text}"${frameLine ? ` in the top document — ${frameLine}` : ''}`, ...pageActivity(), headings, ...(acWaitHint() || {}) });
         }
         setTimeout(poll, 150);
       };

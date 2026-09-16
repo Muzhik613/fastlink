@@ -194,9 +194,11 @@ const BRIDGE_DEADLINE_MS = 20000;
 const BRIDGE_DEADLINE_MAX_MS = 28000;   // under the broker/relay 30s call limit
 async function runBridge(tabId, action, args) {
   const t0 = Date.now();
-  // fast_wait legitimately runs to its own timeoutMs; give it that plus slack.
+  // fast_wait answers at its own timeoutMs; the bridge backstop sits just past it
+  // (room for the post-match snapshot), never at a 20s floor — a floor turned a
+  // hung 10s wait into a silent 20s one (live Azure: 10000 → 19.8s, 15000 → 19.9s).
   const deadlineMs = action === 'fast_wait'
-    ? Math.min(BRIDGE_DEADLINE_MAX_MS, Math.max(BRIDGE_DEADLINE_MS, (Number(args?.timeoutMs) || 5000) + 3000))
+    ? Math.min(BRIDGE_DEADLINE_MAX_MS, (Number(args?.timeoutMs) || 5000) + 2500)
     : BRIDGE_DEADLINE_MS;
   try {
     const exec = chrome.scripting.executeScript({
