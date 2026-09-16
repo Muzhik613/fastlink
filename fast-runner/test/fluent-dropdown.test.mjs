@@ -69,9 +69,7 @@ test('a value that is not an option says so, lists the options, closes the list,
   const t0 = Date.now();
   const r = await run(w, 'fast_select_option', { field: 'Resource group', option: 'fastlink-bench-rg', noSnapshot: true });
   const ms = Date.now() - t0;
-  assert.match(r.error, /^"fastlink-bench-rg" is not an option of "Resource group" — the open list offers 1 option\(s\); nothing was selected/, JSON.stringify(r));
-  assert.deepEqual([...r.available], ['(New) fastlink-bench-vm_group']);
-  assert.match(r.hint, /create/i);
+  assert.equal(r.error, '"fastlink-bench-rg" is not an option of "Resource group" — the open list offers 1 option(s) (nothing done); options: "(New) fastlink-bench-vm_group"; a value that does not exist yet must be created first (the field\'s own "Create new" control)', JSON.stringify(r));
   assert.ok(ms < 2000, `took ${ms}ms`);
   assert.equal(w.document.getElementById('Dropdown72').getAttribute('aria-expanded'), 'false', 'the list was left open');
 });

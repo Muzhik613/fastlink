@@ -48,7 +48,7 @@ test('a miss on the label the previous click just replaced names the new label',
   await run(w, 'fast_click', { text: 'Salary: Activate to sort', noSnapshot: true });
   const miss = await run(w, 'fast_click', { text: 'Salary: Activate to sort', noSnapshot: true });
   assert.match(miss.error, /^No element matching "Salary: Activate to sort"/);
-  assert.match(miss.hint, /^that was the label of the element you just clicked; it now reads "Salary: Activate to invert sorting"/);
+  assert.match(miss.error, /; that was the label of the element you just clicked; it now reads "Salary: Activate to invert sorting"/);
   assert.equal(miss.labelNow, 'Salary: Activate to invert sorting');
 });
 
@@ -57,7 +57,7 @@ test('an unrelated miss carries no such hint', async () => {
   await run(w, 'fast_click', { text: 'Salary: Activate to sort', noSnapshot: true });
   const miss = await run(w, 'fast_click', { text: 'Export to CSV', noSnapshot: true });
   assert.ok(miss.error);
-  assert.doesNotMatch(String(miss.hint || ''), /you just clicked/);
+  assert.doesNotMatch(String(miss.error || ''), /you just clicked/);
 });
 
 test('top document: index with no text is refused (not an item id); an id from a snapshot clicks; no text/id names both forms', async () => {

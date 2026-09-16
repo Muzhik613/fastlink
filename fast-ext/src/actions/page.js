@@ -4424,6 +4424,117 @@ async function runPageAction(action, args) {
  }
 }
 
+// ── Short, actionable misses ─────────────────────────────────────────────────
+// Owner direction: let the model fail and recover fast. A miss from fast_click /
+// fast_fill / fast_select_option leaves as ONE line saying what went wrong and what
+// exists instead ("field \"Location\" not found; dropdowns here: \"Subscription\",
+// \"Resource group\", \"Region\""), not a page of candidates, diagnostics and timings.
+// Ambiguity refusals keep their candidates (index / row / section ARE the fix). A fill
+// that landed in a field whose label is not the one asked for says `matched`.
+const MISS_KEEP = new Set(['error', 'code', 'idStale', 'labelNow', 'disabled', 'dialogStillOpen', 'frameNotice', 'opaqueFrames', 'inFrame', 'framesAppeared']);
+const quoteList = (names, n) => {
+  const uniq = [...new Set(names.map((x) => cleanLabel(String(x || '')).slice(0, 50)).filter(Boolean))];
+  return uniq.slice(0, n).map((x) => JSON.stringify(x)).join(', ') + (uniq.length > n ? ` (+${uniq.length - n} more)` : '');
+};
+// Names most like the query first: shared words, containment, then a shared prefix. Pure.
+const closestNames = (query, names, n = 3) => {
+  const q = cleanLabel(String(query || '')).toLowerCase();
+  const qt = new Set(q.split(/[^\p{L}\p{N}]+/u).filter(Boolean));
+  const scored = [...new Set(names.map((x) => cleanLabel(String(x || ''))).filter(Boolean))].map((name) => {
+    const l = name.toLowerCase();
+    let score = 0;
+    for (const t of l.split(/[^\p{L}\p{N}]+/u)) if (t && qt.has(t)) score += 2;
+    if (q && (l.includes(q) || q.includes(l))) score += 3;
+    let k = 0; while (k < q.length && k < l.length && q[k] === l[k]) k++;
+    return { name, score: score + Math.min(k, 6) / 10 };
+  }).filter((x) => x.score >= 1).sort((a, b) => b.score - a.score);
+  return scored.slice(0, n).map((x) => x.name);
+};
+const clickNames = () => {
+  const out = [];
+  let k = 0;
+  for (const [, e] of INDEX.byEl) { if (++k > 4000) break; if (e.kind === 'click' && e.text && e.text.length <= 60) out.push(e.text); }
+  return out;
+};
+const nameOfCand = (c) => (c && (c.label || c.ariaLabel || c.placeholder || c.name || c.text)) || '';
+const shortMiss = (action, r, query) => {
+  if (!r || typeof r !== 'object' || !r.error || r.dryRun) return r;
+  if (r.code || r.idStale || r.disabled) return r;   // already one line that names the fix
+  const ambiguous = Array.isArray(r.candidates) && r.candidates.some((c) => c && (typeof c.index === 'number' || c.row != null));
+  if (ambiguous) { const { waitedMs, timing, settling, ...rest } = r; return rest; }
+  let line = String(r.error)
+    .replace(/\s*(?:—\s*)?nothing was (?:clicked|filled|changed|selected|done)\.?/gi, '')
+    .replace(/\.?\s*Nothing was (?:clicked|filled|changed|selected)\.?/g, '')
+    .replace(/\s*Retry with one of the names in `candidates`\.?/g, '')
+    .replace(/ — no visible dropdown\/combobox\/select carries that label, aria-label, placeholder, name, id, or titled section\.?/, '')
+    .replace(/\s+/g, ' ').trim().replace(/[.;,]$/, '');
+  line += ' (nothing done)';
+  const fixes = [];
+  if (r.labelNow && r.hint) fixes.push(String(r.hint).split(' | ')[0]);   // "that was the label of the element you just clicked; it now reads …"
+  else if (r.selectField || /fast_select_option/.test(String(r.hint || ''))) {
+    fixes.push(`it is a dropdown: fast_select_option {field:${JSON.stringify(nameOfCand(r.selectField) || query)}}`);
+  } else if (Array.isArray(r.hiddenMatches) && r.hiddenMatches.length) {
+    fixes.push(`${r.hiddenMatches.length} matching field(s) are hidden — open what shows them first`);
+  } else if (Array.isArray(r.offscreenMatches) && r.offscreenMatches.length) {
+    const sec = r.offscreenMatches.map((m) => m.section).find(Boolean);
+    fixes.push(`it is offscreen${sec ? ` under "${sec}"` : ''} — pass section or index`);
+  }
+  if (Array.isArray(r.available) && r.available.length) {
+    fixes.push(`options: ${quoteList(r.available, 6)}`);
+    if (/is not an option/.test(String(r.error))) fixes.push('a value that does not exist yet must be created first (the field\'s own "Create new" control)');
+  } else if (!fixes.length) {
+    const pool = action === 'fast_click' ? clickNames() : (Array.isArray(r.candidates) ? r.candidates.map(nameOfCand) : []);
+    const near = closestNames(query, pool, 3);
+    const shown = near.length ? near : (action === 'fast_click' ? [] : pool);
+    if (shown.length) fixes.push(`${action === 'fast_click' ? 'closest' : action === 'fast_select_option' ? 'dropdowns here' : 'fields here'}: ${quoteList(shown, 4)}`);
+  }
+  if (Array.isArray(r.scrollers) && r.scrollers.length) fixes.push(`it may be below the fold of ${r.scrollers[0].selector} — fast_scroll it`);
+  if (r.settling) fixes.push('the page was still changing — fast_wait for its text, then retry');
+  const out = { error: [line, ...fixes].join('; ') };
+  for (const k of Object.keys(r)) if (k !== 'error' && MISS_KEEP.has(k)) out[k] = r[k];
+  return out;
+};
+const matchedNote = (asked, filled) => {
+  const got = filled && (filled.label || filled.ariaLabel || filled.placeholder || filled.name);
+  return got && cleanLabel(String(got)).toLowerCase() !== cleanLabel(String(asked || '')).toLowerCase() ? cleanLabel(String(got)).slice(0, 80) : null;
+};
+const shortResult = (action, r, args = {}) => {
+  if (!r || typeof r !== 'object' || r.dryRun) return r;
+  if (action === 'fast_click') return shortMiss(action, r, args.text ?? args.id);
+  if (action === 'fast_fill') {
+    if (r.fields && typeof r.fields === 'object' && !Array.isArray(r.fields)) {
+      const fields = {};
+      const lines = [];
+      for (const [k, v] of Object.entries(r.fields)) {
+        if (v && v.error) { fields[k] = shortMiss(action, v, k); lines.push(`${JSON.stringify(k)}: ${fields[k].error}`); continue; }
+        const m = v && matchedNote(k, v.filled);
+        fields[k] = m ? { ...v, matched: m } : v;
+        if (v && v.verified === false && v.reason) lines.push(`${JSON.stringify(k)}: ${v.reason}`);
+      }
+      const { hint, ...rest } = r;
+      const ok = Object.values(fields).filter((v) => v && v.verified === true).length;
+      const out = { ...rest, fields };
+      if (lines.length) { out.summary = `${ok}/${r.total ?? Object.keys(fields).length} verified — ${lines.join(' | ')}`; if (r.uncommitted && hint) out.hint = hint; }
+      return out;
+    }
+    if (r.error) return shortMiss(action, r, args.match);
+    const m = matchedNote(args.match, r.filled);
+    return m ? frontload(r, { matched: m }) : r;
+  }
+  if (action === 'fast_select_option') {
+    if (r.results && typeof r.results === 'object') {
+      const results = {};
+      const lines = [];
+      for (const [k, v] of Object.entries(r.results)) { results[k] = v && v.error ? shortMiss(action, v, k) : v; if (v && v.error) lines.push(`${JSON.stringify(k)}: ${results[k].error}`); else if (v && v.verified === false && v.reason) lines.push(`${JSON.stringify(k)}: ${v.reason}`); }
+      const out = { ...r, results };
+      if (lines.length) out.summary = `${r.picked ?? 0}/${r.total ?? Object.keys(results).length} selected — ${lines.join(' | ')}`;
+      return out;
+    }
+    return shortMiss(action, r, args.field);
+  }
+  return r;
+};
+
 // A click whose id had gone stale and fell back to text says so.
 const withIdStale = (r, args) => (r && typeof r === 'object' && args && args.__idStale && !r.idStale ? frontload(r, { idStale: true }) : r);
 
@@ -4445,7 +4556,7 @@ if (typeof window !== 'undefined') {
   window.__fastlink = window.__fastlink || {};
   window.__fastlink.run = async (action, args) => {
     NO_FRAME_NOTICE.on = !!(args && args.noFrameNotice);
-    try { return withIdStale(await runPageAction(action, args), args); } finally { NO_FRAME_NOTICE.on = false; }
+    try { return shortResult(action, withIdStale(await runPageAction(action, args), args), args || {}); } finally { NO_FRAME_NOTICE.on = false; }
   };
   window.__fastlink.cancelWaits = () => { const n = ACTIVE_WAITS.size; for (const c of [...ACTIVE_WAITS]) c(); return n; };
 }
