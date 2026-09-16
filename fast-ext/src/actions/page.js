@@ -1103,7 +1103,15 @@ const dialogLabel = (d) => {
     if (by.length) return cleanLabel(by.map((e) => e.textContent).join(' ')).slice(0, 80);
     const h = d.querySelector('h1,h2,h3,h4,[role="heading"]');
     if (h) return cleanLabel(h.textContent).slice(0, 80);
-    return cleanLabel(d.textContent).slice(0, 60);
+    // its first own text that is not a control or a control's label
+    const tw = document.createTreeWalker(d, NodeFilter.SHOW_TEXT);
+    for (let t = tw.nextNode(), k = 0; t && k < 200; t = tw.nextNode(), k++) {
+      const p = t.parentElement;
+      if (p && p.closest('button,label,input,select,textarea,option,[role="button"],[role="option"],script,style')) continue;
+      const txt = cleanLabel(t.nodeValue);
+      if (txt) return txt.slice(0, 60);
+    }
+    return '';
   } catch { return ''; }
 };
 
@@ -3730,6 +3738,9 @@ async function runPageAction(action, args) {
       // competing for the same text (radio named by its <label>; checkbox beside
       // "I agree to the <a>Policy</a>").
       matches = dropRedundantDescendantLinks(matches);
+      // An open dialog is what the user is looking at: when it holds a match, the page
+      // behind it does not compete (its "OK" is not the dialog's OK).
+      if (matches.length > 1 && matches.some((m) => m.inDialog)) matches = matches.filter((m) => m.inDialog);
       // An explicit role attribute beats an implicit match of the same role.
       if (wantRole && matches.length > 1) { const own = matches.filter(attrRole); if (own.length) matches = own; }
       // dryRun (the background's frame reach): is there anything to click here? one
@@ -3967,11 +3978,35 @@ async function runPageAction(action, args) {
     // no longer exists.
     const labelRead = () => { try { return el.isConnected ? makeClickEntry(el).text : null; } catch { return null; } };
     const labelBefore = labelRead();
+    // A disabled control ignores the click, so a click on one must not report success
+    // (live Azure batch: "OK" pressed while the dialog was still validating the name —
+    // "4/4 steps ok", resource group never created). Give the page AUTO_WAIT_MS to enable
+    // it (a validation still running), then refuse.
+    const isDisabled = (e) => { try { return e.disabled === true || e.getAttribute('aria-disabled') === 'true' || !!(e.closest && e.closest('fieldset[disabled]')); } catch { return false; } };
+    if (isDisabled(el)) {
+      const tD = nowMs();
+      while (el.isConnected && isDisabled(el) && nowMs() - tD < AUTO_WAIT_MS) await wait(100);
+      if (!el.isConnected || isDisabled(el)) {
+        return { error: `${JSON.stringify(cleanLabel(item.text || item.label || args.text || '').slice(0, 60))} is disabled — nothing was clicked`, disabled: true, target: { i: item.i, tag: item.tag, text: item.text },
+          hint: 'the page has not enabled it: a required field is empty or invalid, or a check is still running — read the form\'s messages (fast_snapshot) and fix that first' };
+      }
+    }
+    const inDialogBefore = !!(dialogBefore && dialogBefore.contains(el));
     // Native controls keep el.click() (their activation behaviour: a label-proxied
     // radio's input is checked by it); a script-only target or a custom widget gets
     // the full pointer sequence a person's click produces.
+    const clickAt = nowMs();
     if (item.clickable || !NATIVE_CLICK.test(el.tagName)) pointerSeq(el); else el.click();
     const out = await withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
+    // With no snapshot (a batch step with a follower) nothing waited for what the click
+    // started: let the DOM go quiet (≤600ms) so the dialog/panel it opened has mounted
+    // before this result reports it and the next step resolves against it.
+    if (args.noSnapshot === true || args.noSnapshot === 'true' || args.noSnapshot === 1) {
+      // first give the page up to 150ms to START changing (a portal mounts a tick later), then let it settle
+      const tq = nowMs();
+      while (!(INDEX.lastMutMs && INDEX.lastMutMs >= clickAt) && nowMs() - tq < 150) await wait(20);
+      if (INDEX.lastMutMs && INDEX.lastMutMs >= clickAt) await settleDom(600);
+    }
     // What the click DID leads the result: where the page is now, whether the URL
     // moved, whether a dialog opened/closed, and what holds focus.
     const head = { clicked: item, url: location.href, urlChanged: location.href !== urlBefore };
@@ -3992,7 +4027,21 @@ async function runPageAction(action, args) {
     }
     if (sel) { head.hint = sel.hint; head.selectField = sel.selectField; }
     if (scrolledIntoView) head.scrolledIntoView = true;
-    const dialogNow = activeDialogRoot();
+    let dialogNow = activeDialogRoot();
+    // A confirm button of an open dialog (OK / Save / Create / Apply / Done / …) that leaves
+    // the dialog open did not take: the page refused it (a validation message, a busy
+    // check). Closing can be async, so the dialog gets AUTO_WAIT_MS to go away.
+    const CONFIRM = /^(ok|okay|save|apply|create|done|confirm|submit|add|yes|continue|update|select)\b/i;
+    const confirmText = cleanLabel(item.text || item.label || '');
+    if (inDialogBefore && CONFIRM.test(confirmText)) {
+      const tC = nowMs();
+      while (dialogNow && dialogNow === dialogBefore && dialogNow.isConnected && nowMs() - tC < AUTO_WAIT_MS) { await wait(100); dialogNow = activeDialogRoot(); }
+      if (dialogNow && dialogNow === dialogBefore && dialogNow.isConnected) {
+        head.verified = false;
+        head.dialogStillOpen = dialogLabel(dialogNow) || true;
+        head.reason = `the dialog${typeof head.dialogStillOpen === 'string' ? ` "${head.dialogStillOpen}"` : ''} is still open after clicking "${confirmText}" — the page did not accept it (a validation message, or a check still running); read the dialog before going on, do not report its change as made`;
+      }
+    }
     if (dialogNow && dialogNow !== dialogBefore) head.dialogOpened = dialogLabel(dialogNow) || true;
     else if (dialogBefore && !dialogNow) head.dialogClosed = true;
     const focused = describeEl(document.activeElement);
@@ -4114,6 +4163,12 @@ async function runPageAction(action, args) {
       for (const sp of specs) {
         if (sp.value == null) { misses.set(sp, { error: "no value provided — use '' to clear the field", skipped: true }); continue; }
         let pool = snap.items.filter(it => isFillable(it) && !usedI.has(it.i));
+        // A field in an open dialog wins over the page behind it: "Name" in a just-opened
+        // Create dialog, not "Virtual machine name" under it.
+        if (pool.some(it => it.inDialog)) {
+          const inD = pool.filter(it => it.inDialog);
+          if (inD.some(it => fieldMatchesExact(it, sp.m) || fieldMatchesText(it, sp.m))) pool = inD;
+        }
         if (sp.section) {
           const scoped = applySectionScope(sp.section);
           if (scoped.error) { misses.set(sp, scoped); continue; }

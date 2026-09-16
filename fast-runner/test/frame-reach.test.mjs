@@ -377,3 +377,57 @@ test('live Azure a6396ba9: an undeclared dialog (a fixed portal layer holding fo
   assert.match(ok.i, /^f7:/);
   assert.match(snap.dialog.items[1].i, /^f7:/, 'dialog ids are namespaced like the items');
 });
+
+// A Create-new dialog that mounts a tick after the click, whose OK stays disabled while the
+// name is validated (async), and that applies the new group only when OK is pressed enabled.
+function createNewDialog(win, { validateMs = 300, refuse = false } = {}) {
+  const d = win.document;
+  const state = { applied: null };
+  d.getElementById('create').addEventListener('click', () => setTimeout(() => {
+    const layer = d.createElement('div');
+    layer.style.position = 'fixed';
+    layer.innerHTML = '<p>A resource group is a container</p><label for="nm">Name</label><input id="nm"><button id="ok" disabled>OK</button><button>Cancel</button>';
+    d.body.appendChild(layer);
+    const nm = d.getElementById('nm'), ok = d.getElementById('ok');
+    nm.focus();
+    nm.addEventListener('input', () => { ok.disabled = true; setTimeout(() => { ok.disabled = !nm.value; }, validateMs); });
+    ok.addEventListener('click', () => { if (ok.disabled || refuse) return; state.applied = nm.value; layer.remove(); d.getElementById('rg').textContent = `(New) ${nm.value}`; });
+  }, 40));
+  return state;
+}
+const RG_FORM = '<label for="vmn">Virtual machine name</label><input id="vmn"><label for="rg">Resource group</label><div role="combobox" id="rg" aria-label="Resource group" tabindex="0">(New) vm_group</div><button id="create">Create new</button><button>OK</button>';
+
+test('live Azure a25a6ef7: batch [fill VM name, click Create new, fill Name, click OK] — the dialog mounts first, Name is the dialog field, OK waits to be enabled, the group is applied', async () => {
+  const { pay } = setup({ payHtml: RG_FORM });
+  const st = createNewDialog(pay);
+  const F = 'pay.provider';
+  const r1 = await call('fast_fill', { frame: F, match: 'Virtual machine name', value: 'bench-vm', noSnapshot: true });
+  const r2 = await call('fast_click', { frame: F, text: 'Create new', noSnapshot: true });
+  assert.ok(r2.dialogOpened, JSON.stringify(r2).slice(0, 300));
+  const r3 = await call('fast_fill', { frame: F, match: 'Name', value: 'bench-rg', noSnapshot: true });
+  assert.equal(pay.document.getElementById('nm').value, 'bench-rg', JSON.stringify(r3).slice(0, 300));
+  assert.equal(pay.document.getElementById('vmn').value, 'bench-vm', 'the VM name field behind the dialog was not touched');
+  const r4 = await call('fast_click', { frame: F, text: 'OK', noSnapshot: true });
+  assert.equal(st.applied, 'bench-rg', JSON.stringify(r4).slice(0, 400));
+  assert.equal(r4.dialogClosed, true);
+  assert.equal(r4.verified, undefined);
+  assert.equal(r1.verified, true);
+});
+
+test('a dialog OK that stays disabled is refused; one the page does not accept is verified:false (dialogStillOpen)', async () => {
+  const { pay } = setup({ payHtml: RG_FORM });
+  createNewDialog(pay, { validateMs: 5000 });
+  await call('fast_click', { frame: 'pay.provider', text: 'Create new', noSnapshot: true });
+  await call('fast_fill', { frame: 'pay.provider', match: 'Name', value: 'bench-rg', noSnapshot: true });
+  const r = await call('fast_click', { frame: 'pay.provider', text: 'OK', noSnapshot: true });
+  assert.match(r.error, /^"OK" is disabled — nothing was clicked/, JSON.stringify(r).slice(0, 300));
+
+  const { pay: pay2 } = setup({ payHtml: RG_FORM });
+  createNewDialog(pay2, { validateMs: 10, refuse: true });
+  await call('fast_click', { frame: 'pay.provider', text: 'Create new', noSnapshot: true });
+  await call('fast_fill', { frame: 'pay.provider', match: 'Name', value: 'bench-rg', noSnapshot: true });
+  const r2 = await call('fast_click', { frame: 'pay.provider', text: 'OK', noSnapshot: true });
+  assert.equal(r2.verified, false, JSON.stringify(r2).slice(0, 400));
+  assert.ok(r2.dialogStillOpen);
+  assert.match(r2.reason, /still open after clicking "OK"/);
+});
