@@ -3840,35 +3840,6 @@ async function runPageAction(action, args) {
     return withSnap({ scrolled: true, scrollTop: isDoc ? window.scrollY : target.scrollTop, max, kind: found.kind, target: desc });
   }
 
-  if (action === 'fast_network_replay') {
-    const url = args.url;
-    if (!url) return { error: 'url required' };
-    const method = (args.method || 'GET').toUpperCase();
-    const maxBytes = typeof args.maxBodyBytes === 'number' && args.maxBodyBytes > 0 ? args.maxBodyBytes : 16384;
-    const startedAt = Date.now();
-    try {
-      const init = { method, credentials: 'include' };
-      if (args.headers && typeof args.headers === 'object') init.headers = args.headers;
-      if (args.body != null && method !== 'GET' && method !== 'HEAD') init.body = typeof args.body === 'string' ? args.body : JSON.stringify(args.body);
-      const resp = await fetch(url, init);
-      const respHeaders = {};
-      try { for (const [k, v] of resp.headers.entries()) respHeaders[k] = v; } catch {}
-      let body = null;
-      try { body = await resp.text(); } catch {}
-      const truncated = body != null && body.length > maxBytes;
-      return {
-        url, method, status: resp.status, ok: resp.ok,
-        durationMs: Date.now() - startedAt,
-        headers: respHeaders,
-        body: body == null ? null : (truncated ? body.slice(0, maxBytes) : body),
-        bodyTruncated: truncated,
-        bodyFullLength: body?.length || 0,
-      };
-    } catch (e) {
-      return { error: String(e?.message || e), url, method, durationMs: Date.now() - startedAt };
-    }
-  }
-
   if (action === 'fast_fill') {
     // ONE tool for one field ({match, value, index, section, append}) or a whole
     // form ({fields:{label: value | {value, index, section, name, exact, append}}}).

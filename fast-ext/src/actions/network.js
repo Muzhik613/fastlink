@@ -42,9 +42,7 @@ export async function readNetwork(args = {}) {
     used.add(`${item.url}#${best.i}`);
     const c = best.c;
     const base = { ...item, bodyKind: c.kind };
-    // Surface why the body is missing so callers can decide whether to fall
-    // back to fast_network_replay (worth trying for streamed/binary) vs.
-    // skip (read-failed) vs. leave alone (too-large will replay too).
+    // Surface why the body is missing (read-failed vs too-large vs skipped).
     if (c.body == null) return {
       ...base,
       body: null,

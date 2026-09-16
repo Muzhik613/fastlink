@@ -428,21 +428,6 @@ export const TOOLS = [
     },
   },
   {
-    name: 'fast_network_replay',
-    description: 'Re-fire a request from the active tab\'s page context, so the page\'s cookies/auth are sent automatically (no manual header copy). Useful for inspecting an API response you saw in fast_network but couldn\'t see the body of, or for poking at an endpoint with different params. Pass url + optional method/headers/body.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: { type: 'string', description: 'Full URL to fetch (typically copied from a fast_network result).' },
-        method: { type: 'string', description: 'HTTP method (default GET).' },
-        headers: { type: 'object', description: 'Optional headers map to add to the request.' },
-        body: { description: 'Optional request body (string, or object — objects are JSON.stringified).' },
-        maxBodyBytes: { type: 'number', description: 'Truncate the returned body to this many chars (default 16384).' },
-      },
-      required: ['url'],
-    },
-  },
-  {
     name: 'fast_click_xy',
     description: 'Trusted click at a pixel via the CDP Input domain (a REAL mouse event, isTrusted:true) — unlike fast_click\'s injected JS, LWC/React widgets honor it and it can focus an iframe input with no DOM reach-in. Coordinates are TOP-LEVEL VIEWPORT CSS pixels: if the target lives inside an iframe, add the iframe\'s page offset to its in-iframe getBoundingClientRect before passing (a same-origin frame\'s offset is its own frameElement.getBoundingClientRect on the parent page). x and y are validated as numbers — a missing/non-numeric coordinate returns an error instead of silently clicking (0,0). Playbook for stubborn React/iframe fields: read the field\'s rect via fast_evaluate (getBoundingClientRect, use its center x/y), fast_click_xy there to focus it (trusted), then fast_type to enter text. **Every click reports WHERE FOCUS LANDED**: `focused` {tag, type, label, editable} (+ the field\'s live `value` when it is editable), and a `hint` when nothing editable holds focus — which is exactly when the fast_type after it would be refused (the first click after an overlay/consent banner closes often lands before the page is listening). Read `focused` before typing instead of discovering it from the refusal.',
     inputSchema: {

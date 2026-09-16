@@ -22,7 +22,7 @@
   // Categorize why a body would or wouldn't be captured. Returning a reason
   // (rather than a bool) lets fast_network surface "body unavailable because
   // it was streamed" instead of a silent null, so callers know whether to
-  // fall back to fast_network_replay.
+  // fall back to fast_network.
   const RE_STREAM = /event-stream/i;
   const RE_MEDIA  = /^(video|audio|image)\//i;
   const RE_OCTET  = /octet-stream/i;

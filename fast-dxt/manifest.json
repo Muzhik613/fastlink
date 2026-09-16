@@ -142,10 +142,6 @@
       "description": "Drag from one element to another (or to coordinates)."
     },
     {
-      "name": "fast_network_replay",
-      "description": "Re-fire a request from the active tab's page context, so the page's cookies/auth are sent automatically (no manual header copy)."
-    },
-    {
       "name": "fast_click_xy",
       "description": "Trusted click at a pixel via the CDP Input domain (a REAL mouse event, isTrusted:true) — unlike fast_click's injected JS, LWC/React widgets honor it and it c..."
     },

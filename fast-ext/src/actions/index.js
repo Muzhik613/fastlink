@@ -15,7 +15,7 @@ const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_reload', 'fast_list'
 const PAGE_ACTIONS = new Set([
   'fast_snapshot', 'fast_click', 'fast_fill', 'fast_wait',
   'fast_select_option', 'fast_hover', 'fast_drag', 'fast_scroll',
-  'fast_key_press', 'fast_network_replay',
+  'fast_key_press',
 ]);
 
 // Actions that can SUBMIT a form / follow a link / otherwise trigger a top-level
