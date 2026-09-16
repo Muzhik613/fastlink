@@ -715,6 +715,12 @@ export const MODEL_SCHEMA = {
     description: 'Click by `id` (a snapshot item\'s i, e.g. "42" or "f7:42") or by visible `text`. Returns what changed (url, dialog, focus) and a page preview. For a dropdown use fast_select_option.' },
   fast_fill: { drop: ['index', 'section', 'near'], params: { fields: '{label: value} for several fields.' } },
   fast_select_option: { drop: ['index', 'section'] },
+  // A wait always names what it waits for. Live dd2cf71c / 5f8343a0 sent {timeoutMs} alone (refused,
+  // a wasted round trip each) and opened with {networkIdle:true} (8.3 s timed out on Azure, whose
+  // long-polls never go idle). The model sees text (required), frame and timeoutMs; the server keeps
+  // selector / networkIdle / idleMs for other callers.
+  fast_wait: { keep: ['text', 'frame', 'timeoutMs'], required: ['text'],
+    description: 'Wait until `text` (required) appears on the page, frames included. Returns the match and a page preview, or the visible headings on timeout.' },
 };
 function modelTool(t) {
   const f = MODEL_SCHEMA[t.name];
@@ -725,6 +731,7 @@ function modelTool(t) {
       else if (f.params?.[k]) schema.properties[k].description = f.params[k];
     }
     if (Array.isArray(schema.required)) schema.required = schema.required.filter((k) => k in schema.properties);
+    if (f.required) schema.required = [...new Set([...(schema.required || []), ...f.required])];
   }
   const translated = JSON.parse(JSON.stringify(schema), (k, v) => (k === 'description' && typeof v === 'string' ? toModelText(v) : v));
   return { name: shortName(t.name), description: toModelText(f?.description || t.description || ''), input_schema: translated };

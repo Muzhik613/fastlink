@@ -116,6 +116,21 @@ test('aim only by id or text: the model-facing click takes id, text, frame; fill
   assert.deepEqual(fromModel('click', { role: 'button', tag: 'button', index: 0 }), { name: 'fast_click', args: { role: 'button', tag: 'button', index: 0 } });
 });
 
+test('the model-facing wait cannot be empty: text is required and the other knobs are hidden (dd2cf71c, 5f8343a0)', () => {
+  for (const name of ['default', 'phase2', 'no-cdp']) {
+    const w = buildTools(TOOLS, loadToolset(name)).tools.find(t => t.name === 'wait');
+    assert.deepEqual(Object.keys(w.input_schema.properties).sort(), ['frame', 'text', 'timeoutMs'], `${name}: wait params`);
+    assert.deepEqual(w.input_schema.required, ['text'], `${name}: text required`);
+    assert.match(w.description, /`text` \(required\)/);
+    assert.doesNotMatch(w.description, /selector|networkIdle/);
+    // the two empty waits the model actually sent both miss a required property
+    for (const sent of [{ timeoutMs: 10000 }, { timeoutMs: 2000 }, { timeoutMs: 8000, networkIdle: true }]) {
+      assert.ok(w.input_schema.required.some(k => !(k in sent)), `${JSON.stringify(sent)} violates the schema`);
+    }
+  }
+  for (const k of ['selector', 'networkIdle', 'idleMs', 'noSnapshot']) assert.ok(tool('fast_wait').inputSchema.properties[k], `server keeps ${k}`);
+});
+
 test('"default" and unset and FASTRUN_TOOLSET resolve the same file', () => {
   const a = loadToolset('default'), b = loadToolset(undefined);
   process.env.FASTRUN_TOOLSET = 'phase2';
