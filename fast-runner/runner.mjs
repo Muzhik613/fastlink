@@ -48,7 +48,7 @@ Rules:
 // are logged per run.
 const STATE_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_select_option', 'fast_key_press',
-  'fast_type', 'fast_nav', 'fast_tab', 'fast_reload', 'fast_scroll',
+  'fast_type', 'fast_nav', 'fast_tab', 'fast_scroll',
   'fast_switch', 'fast_close', 'fast_batch', 'fast_fill_vision',
 ]);
 const READ_TOOLS = new Set(['fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_evaluate', 'fast_list']);
@@ -711,10 +711,12 @@ function finish(run, status, fields = {}) {
   run.done = true;
   Object.assign(run, fields, { status, endedAt: Date.now() });
   closeVisualChecks(run);   // what the model did with each visual check
-  run.client?.close().catch(() => {});
   // Every terminal path (done/budget/error/cancelled/loop crash) comes through here, so this is where
-  // the recording is stopped and verified; the row and the caller wait for it, so both carry `video`.
-  return (run.finished = stopRecording(run.id, run.video).then(video => { run.video = video; writeRow(run, status); notify(run); }));
+  // the MCP client is closed (the local fast-dxt/server child exits with it) and the recording is
+  // stopped and verified. The row, the caller and cancelAll wait for BOTH, so a process that exits
+  // right after never leaves a server behind, and the row carries `video`.
+  const closed = run.client?.close().catch(() => {});
+  return (run.finished = Promise.all([stopRecording(run.id, run.video), closed]).then(([video]) => { run.video = video; writeRow(run, status); notify(run); }));
 }
 
 function writeRow(run, status) {
@@ -855,8 +857,7 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
     client = await connect({ transport, browser });
     ({ tools, back } = buildTools(await client.listTools(), toolset));
   } catch (e) {
-    client?.close().catch(() => {});
-    await stopRecording(id, await recording);
+    await Promise.all([client?.close().catch(() => {}), stopRecording(id, await recording)]);
     throw e;
   }
   const video = await recording;
