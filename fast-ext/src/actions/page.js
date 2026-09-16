@@ -1501,7 +1501,12 @@ const opaqueFrames = (doc = document, win = window) => {
         try { const cs = win.getComputedStyle(el); if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue; } catch {}
         let origin = '';
         try { origin = new URL(el.getAttribute('src') || '', doc.baseURI).origin; } catch {}
-        out.push({ origin: origin && origin !== 'null' ? origin : '(unknown origin)', x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
+        // src + cx/cy (the frame's content-box origin in this viewport) are for the
+        // background's frame reach (frames.js); notices show only origin and box
+        let src = '';
+        try { src = new URL(el.getAttribute('src') || '', doc.baseURI).href; } catch {}
+        out.push({ origin: origin && origin !== 'null' ? origin : '(unknown origin)', x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height),
+          src, cx: r.left + (el.clientLeft || 0), cy: r.top + (el.clientTop || 0) });
       }
       if (partial) break;
     }
@@ -1517,12 +1522,13 @@ const frameNotice = ({ frames }) => {
   return `${frames.length} visible cross-origin frame(s) not readable by DOM tools: ${shown.join('; ')}${more}. Their content is visible in fast_screenshot; act there with fast_click_xy + fast_type.`;
 };
 // Lead a snapshot result with the notice (a fresh scan). Returns `out` unchanged when none.
+const noticeBoxes = (frames) => frames.slice(0, FRAME_NOTICE_LIST).map(({ origin, x, y, w, h }) => ({ origin, x, y, w, h }));
 const withFrameNotice = (out) => {
   if (!out || typeof out !== 'object') return out;
   const scan = opaqueFrames();
   const notice = frameNotice(scan);
   if (!notice) return out;
-  return frontload(out, { frameNotice: notice, opaqueFrames: scan.frames.slice(0, FRAME_NOTICE_LIST) });
+  return frontload(out, { frameNotice: notice, opaqueFrames: noticeBoxes(scan.frames) });
 };
 
 const markTruncated = (snap, hintFor) => {
@@ -2648,6 +2654,20 @@ async function runPageAction(action, args) {
     return out;
   };
 
+  // Internal (the background's frame reach, not a tool): the visible cross-origin
+  // frames of this document with src and content-box origin; with `unread` (a
+  // list of srcs) also the notice naming only those.
+  if (action === 'fast_frames') {
+    const scan = opaqueFrames();
+    const out = { frames: scan.frames, partial: scan.partial };
+    if (Array.isArray(args.unread)) {
+      const left = scan.frames.filter((f) => args.unread.includes(f.src));
+      const notice = frameNotice({ frames: left });
+      if (notice) { out.frameNotice = notice; out.opaqueFrames = noticeBoxes(left); }
+    }
+    return out;
+  }
+
   if (action === 'fast_snapshot') {
     const snap = await serializeSnapshot(!!args.viewport, { overlay: !!args.overlay });
     // full:true → the complete, uncapped set. Otherwise rank + cap (interactive /
@@ -3484,6 +3504,21 @@ async function runPageAction(action, args) {
     const selections = (args.selections && typeof args.selections === 'object' && !Array.isArray(args.selections))
       ? args.selections : null;
     const topPick = { index: args.index, section: args.section ?? args.near };
+    // dryRun (the background's frame reach): does THIS document hold each named
+    // dropdown? found / ambiguous (several visible, no index) / missing. Nothing
+    // is opened or picked, and there is no auto-wait.
+    if (args.dryRun) {
+      const keys = selections ? Object.keys(selections) : [];
+      if (args.field != null && !keys.includes(String(args.field))) keys.push(String(args.field));
+      const fields = {};
+      for (const k of keys) {
+        const spec = selections && selections[k] && typeof selections[k] === 'object' ? selections[k] : {};
+        const idx = typeof (spec.index ?? args.index) === 'number';
+        const vis = findFields(k, stripPermalink(String(k).toLowerCase())).filter((c) => c.visible);
+        fields[k] = !vis.length ? 'missing' : (vis.length > 1 && !idx ? 'ambiguous' : 'found');
+      }
+      return { dryRun: true, fields };
+    }
     if (selections) {
       const combined = { ...selections };
       if (args.field != null && args.option != null && !(args.field in combined)) {
@@ -3547,7 +3582,22 @@ async function runPageAction(action, args) {
     let pointerHit = null, pointerTried = false;
     const NATIVE_CLICK = /^(A|BUTTON|INPUT|SELECT|TEXTAREA|LABEL|SUMMARY|OPTION|AREA)$/;
     const OPTIONISH = '[role="option"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="treeitem"]';
+    // id-first: `id` is a snapshot item's `i`. It is used only while that element
+    // is still in the page and (when text is also given) still carries the text;
+    // otherwise the call falls back to text (idStale:true) or refuses without text.
+    let preMatched = null;
+    if (args.id != null && args.id !== '') {
+      const want = Number(args.id);
+      const el0 = Number.isFinite(want) ? elById(want) : null;
+      snap = await serializeSnapshot(false, { matchAll: true });
+      const it = el0 && el0.isConnected ? snap.items.find((x) => x.i === want) : null;
+      const textOk = !it || !args.text || matchItems([it], args.text).length > 0;
+      if (it && textOk) preMatched = [it];
+      else if (!args.text) return { error: `id ${args.id} is no longer on the page (the element was re-rendered or removed) — nothing was clicked; take a fresh fast_snapshot, or pass text`, idStale: true };
+      else args.__idStale = true;
+    }
     for (;;) {
+      if (preMatched) { matches = preMatched; break; }
       snap = await serializeSnapshot(false, { matchAll: true });
       // Filter by role/tag BEFORE ranking. Previously the wrong-TYPE top text match
       // won the slot and the post-rank filter then emptied the list (e.g. a plain
@@ -3567,6 +3617,13 @@ async function runPageAction(action, args) {
       matches = dropRedundantDescendantLinks(matches);
       // An explicit role attribute beats an implicit match of the same role.
       if (wantRole && matches.length > 1) { const own = matches.filter(attrRole); if (own.length) matches = own; }
+      // dryRun (the background's frame reach): is there anything to click here? one
+      // look, no auto-wait, nothing clicked
+      if (args.dryRun) {
+        const other = !matches.length && (suggestionByText(args.text) || (pointerOk && textTargetByText(args.text)));
+        return { dryRun: true, found: matches.length > 0 || !!other, count: matches.length || (other ? 1 : 0),
+          ...(matches.length ? { best: { ...matchBrief(matches[0]), ...(typeof matches[0].x === 'number' ? { x: matches[0].x, y: matches[0].y, w: matches[0].w, h: matches[0].h } : {}) } } : {}) };
+      }
       if (matches.length) break;
       // Not an index entry: an entry of the OPEN suggestion list (autocomplete
       // rows on Google Maps) — commit it with a real mousedown/click sequence.
@@ -3652,6 +3709,7 @@ async function runPageAction(action, args) {
       }
       await wait(150);
     }
+    if (args.dryRun) return { dryRun: true, found: true, count: matches.length, best: { ...matchBrief(matches[0]), ...(typeof matches[0].x === 'number' ? { x: matches[0].x, y: matches[0].y, w: matches[0].w, h: matches[0].h } : {}) } };
     // index disambiguation: when an explicit index is given, address matches in
     // STABLE DOM order (document position), not rank order — rank order reshuffles
     // when sibling sections re-render, so index:1 would otherwise point at a
@@ -4005,6 +4063,11 @@ async function runPageAction(action, args) {
     for (;;) {
       snap = await serializeSnapshot(false, { matchAll: true });
       res = resolveAll();
+      // dryRun (the background's frame reach): which fields THIS document holds —
+      // found / ambiguous / missing — on one look, nothing written.
+      if (args.dryRun) {
+        return { dryRun: true, fields: Object.fromEntries(specs.map((sp) => [sp.match, res.found.has(sp) ? 'found' : ((res.misses.get(sp) || {}).candidates ? 'ambiguous' : 'missing')])) };
+      }
       let realMiss = false;
       for (const [sp, m] of res.misses) {
         if (m.skipped || m.candidates) continue;   // an ambiguous match is final, not "still mounting"
@@ -4170,13 +4233,14 @@ async function runPageAction(action, args) {
 // in one of them (live Azure: four fast_click "Create" variants errored against a
 // menu inside the reactblade frame, and the run aborted).
 const NOTICE_ON_MISS = new Set(['fast_click', 'fast_fill', 'fast_select_option']);
-const withActionFrameNotice = (action, r) => {
-  if (!NOTICE_ON_MISS.has(action) || !r || typeof r !== 'object' || r.frameNotice) return r;
+const withActionFrameNotice = (action, r, args) => {
+  if (r && typeof r === 'object' && args && args.__idStale && !r.idStale) r = frontload(r, { idStale: true });
+  if (!NOTICE_ON_MISS.has(action) || !r || typeof r !== 'object' || r.frameNotice || r.dryRun || (args && args.noFrameNotice)) return r;
   const missed = r.error || (typeof r.missed === 'number' && r.missed > 0) || (typeof r.failed === 'number' && r.failed > 0);
   if (!missed) return r;
   const scan = opaqueFrames();
   const notice = frameNotice(scan);
-  return notice ? frontload(r, { frameNotice: notice, opaqueFrames: scan.frames.slice(0, FRAME_NOTICE_LIST) }) : r;
+  return notice ? frontload(r, { frameNotice: notice, opaqueFrames: noticeBoxes(scan.frames) }) : r;
 };
 
 // The fast_wait polls still running in this document, each as its cancel function.
@@ -4191,6 +4255,6 @@ const ACTIVE_WAITS = new Set();
 // re-render storms. Cost on tabs you never automate: zero.
 if (typeof window !== 'undefined') {
   window.__fastlink = window.__fastlink || {};
-  window.__fastlink.run = (action, args) => Promise.resolve(runPageAction(action, args)).then((r) => withActionFrameNotice(action, r));
+  window.__fastlink.run = (action, args) => Promise.resolve(runPageAction(action, args)).then((r) => withActionFrameNotice(action, r, args));
   window.__fastlink.cancelWaits = () => { const n = ACTIVE_WAITS.size; for (const c of [...ACTIVE_WAITS]) c(); return n; };
 }

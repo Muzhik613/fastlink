@@ -4,7 +4,7 @@ import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
 import { clickXY, typeText } from './input.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
-import { frameRead, waitTextAnyFrame } from './frames.js';
+import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers } from './frames.js';
 import { isInjectableUrl } from '../util.js';
 
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_list', 'fast_close', 'fast_switch']);
@@ -73,7 +73,8 @@ export async function dispatchAction(action, args) {
   const evtId = ++__evtSeq;
   notifyOverlay({ phase: 'start', id: evtId, action, args });
   try {
-    const r = await runOne(action, args);
+    // card numbers are masked to their last 4 digits in every result (frames.js)
+    const r = maskCardNumbers(await runOne(action, args));
     // Pass error payloads through whole — diagnostics/available/etc. must survive to the LLM.
     if (r && typeof r === 'object' && 'error' in r && r.error !== undefined) {
       notifyOverlay({ phase: 'end', id: evtId, ok: false, error: r.error });
@@ -121,7 +122,12 @@ async function runOne(action, args) {
   if (action === 'fast_evaluate')   return evaluate(args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
-  if (action === 'fast_frame_read') return frameRead(args);   // hidden: the scorer's read-back, no toolset offers it
+  if (action === 'fast_frame_read') return frameRead(args);
+  // DOM tools reach visible cross-origin frames (frames.js): the same page.js runs
+  // inside them, results come back in top-page space
+  if (action === 'fast_snapshot') return snapshotWithFrames(await frameCtx(), args || {});
+  if (FRAME_AWARE.has(action)) return actWithFrames(await frameCtx(), action, args || {});
+  if (action === 'fast_wait' && args?.frame) return inNamedFrame(await frameCtx(), 'fast_wait', args);   // hidden: the scorer's read-back, no toolset offers it
   if (action === 'fast_wait' && args?.text && !args?.selector) {
     // A text wait searches the top document (page.js) AND every rendered
     // sub-frame, cross-origin included (frames.js). With networkIdle/domready
@@ -144,6 +150,13 @@ async function runOne(action, args) {
   }
   if (PAGE_ACTIONS.has(action))     return injectPageAction(action, args);
   return { error: `Unknown action: ${action}` };
+}
+
+const FRAME_AWARE = new Set(['fast_click', 'fast_fill', 'fast_select_option']);
+// The page.js bridge addressed by frame (0 = the top document) on the target tab.
+async function frameCtx() {
+  const target = await getTargetTab();
+  return { tabId: target?.id, run: (frameId, action, a) => injectPageAction(action, a, frameId) };
 }
 
 // Stop page.js's still-running fast_wait polls in the target tab (a sub-frame
@@ -192,7 +205,7 @@ const MAIN_WORLD_FILES = ['src/actions/page.js'];
 // it. A deadline, not a retry — the caller gets a structured "page busy".
 const BRIDGE_DEADLINE_MS = 20000;
 const BRIDGE_DEADLINE_MAX_MS = 28000;   // under the broker/relay 30s call limit
-async function runBridge(tabId, action, args) {
+async function runBridge(tabId, action, args, frameId = 0) {
   const t0 = Date.now();
   // fast_wait answers at its own timeoutMs; the bridge backstop sits just past it
   // (room for the post-match snapshot), never at a 20s floor — a floor turned a
@@ -202,7 +215,7 @@ async function runBridge(tabId, action, args) {
     : BRIDGE_DEADLINE_MS;
   try {
     const exec = chrome.scripting.executeScript({
-      target: { tabId }, world: 'MAIN', func: pageBridge, args: [action, JSON.stringify(args || {})],
+      target: { tabId, frameIds: [frameId] }, world: 'MAIN', func: pageBridge, args: [action, JSON.stringify(args || {})],
     });
     const raced = await Promise.race([exec, new Promise((r) => setTimeout(() => r({ __deadline: true }), deadlineMs))]);
     if (raced && raced.__deadline) {
@@ -223,16 +236,17 @@ async function runBridge(tabId, action, args) {
 // Re-inject the manifest's MAIN-world content script (page.js) by file — the
 // same fallback navigateTab uses. Returns true if the inject call succeeded;
 // the caller re-runs the bridge to confirm window.__fastlink.run is now live.
-async function reinjectPageScript(tabId) {
+async function reinjectPageScript(tabId, frameId = 0) {
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: MAIN_WORLD_FILES });
+    // the same MAIN world the manifest runs page.js in, in the top document or a frame
+    await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: 'MAIN', files: MAIN_WORLD_FILES });
     return true;
   } catch {
     return false;
   }
 }
 
-async function injectPageAction(action, args) {
+async function injectPageAction(action, args, frameId = 0) {
   // Resolve the tab to act on through the single source of truth (pinned target
   // if set & alive, else the active tab) and inject by explicit id, so
   // snapshots/clicks/fills land on the tab Claude is driving even when the
@@ -241,7 +255,7 @@ async function injectPageAction(action, args) {
   if (!target?.id) return { error: 'No tab to act on (no pinned target and no active tab).' };
   if (!isInjectableUrl(target.url)) return { error: `Restricted URL: ${target.url}` };
 
-  let result = await runBridge(target.id, action, args);
+  let result = await runBridge(target.id, action, args, frameId);
 
   // HEALTH-CHECK / AUTO-REINJECT. After an extension reload the MAIN-world
   // page.js is gone from already-open tabs (window.__fastlink undefined) while
@@ -250,8 +264,8 @@ async function injectPageAction(action, args) {
   // snapshot, indexing:true, no error). The bridge reports that as
   // {__fastlinkMissing}; re-inject page.js and retry ONCE so the tab self-heals.
   if (result && result.__fastlinkMissing) {
-    const ok = await reinjectPageScript(target.id);
-    if (ok) result = await runBridge(target.id, action, args);
+    const ok = await reinjectPageScript(target.id, frameId);
+    if (ok) result = await runBridge(target.id, action, args, frameId);
     // Still not attached (restricted URL, crashed renderer, inject blocked) →
     // return a DISTINCT, machine-readable error instead of a silent empty
     // result, so Claude/the relay can tell the user to reload the tab.

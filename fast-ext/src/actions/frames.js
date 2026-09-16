@@ -204,13 +204,8 @@ export async function frameTree(tabId) {
 // claims is a hidden / zero-size / not-http frame and is not returned. Pure.
 export function matchChildFrames(children, srcs) {
   const free = [...(children || [])];
-  const origin = (u) => { try { return new URL(u).origin; } catch { return ''; } };
   const out = [];
-  for (const src of srcs || []) {
-    let i = free.findIndex((c) => c.url === src);
-    if (i < 0) i = free.findIndex((c) => origin(c.url) && origin(c.url) === origin(src));
-    if (i >= 0) out.push(free.splice(i, 1)[0]);
-  }
+  for (const src of srcs || []) { const c = claimChild(free, src); if (c) out.push(c); }
   return out;
 }
 
@@ -364,4 +359,286 @@ export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_
     frames: { searched: [...answered], unsearched },
     ...(unsearched.length ? { framesHint: `not found in the top document or any searched frame; frames from ${unsearched.join(', ')} could not be searched, so the text may be there` } : {}),
   };
+}
+
+// ── DOM tools inside cross-origin frames ─────────────────────────────────────
+// The top document cannot see into a cross-origin frame; the extension can. So
+// the REAL page.js (the same MAIN-world script the manifest runs in the top
+// document) is run inside each visible cross-origin frame, and what it returns
+// is translated into top-page space: every {x, y} gains the frame's content-box
+// origin, every snapshot id `i` becomes "f<frameId>:<i>". One core for every
+// tool; `ctx.run(frameId, action, args)` is index.js's page.js bridge
+// (frameId 0 = the top document).
+//
+// Which frames: those page.js's own scan reports (fast_frames: on screen,
+// >=100x50, not hidden, cross-origin — the frames the frame notice names),
+// mapped to extension frame ids through webNavigation (only asked when such a
+// frame exists), nested to REACH.depth, at most REACH.maxFrames.
+export const REACH = { maxFrames: 4, depth: 2, dryMs: 1500, snapMs: 2500 };
+
+const withTimeout = (p, ms) => Promise.race([Promise.resolve(p).catch(() => null), sleep(ms).then(() => null)]);
+const claimChild = (free, src) => {
+  let i = free.findIndex((c) => c.url === src);
+  if (i < 0) i = free.findIndex((c) => originOf(c.url) && originOf(c.url) === originOf(src));
+  return i >= 0 ? free.splice(i, 1)[0] : null;
+};
+
+// [{ frameId, origin, url, src, box:{x,y,w,h}, ox, oy }] in top-page space, plus
+// `unmapped`: frames page.js saw that no extension frame id answers for.
+export async function frameTargets(ctx, { topScan } = {}) {
+  const targets = [], unmapped = [];
+  let tree = null;
+  let level = [{ frameId: 0, ox: 0, oy: 0, scan: topScan }];
+  for (let d = 0; d < REACH.depth && level.length && targets.length < REACH.maxFrames; d++) {
+    const next = [];
+    for (const p of level) {
+      const scan = p.scan || await withTimeout(ctx.run(p.frameId, 'fast_frames', {}), REACH.dryMs);
+      const seen = scan && Array.isArray(scan.frames) ? scan.frames : [];
+      if (!seen.length) continue;
+      if (!tree) tree = await frameTree(ctx.tabId);
+      const free = [...(tree.get(p.frameId) || [])];
+      for (const f of seen) {
+        if (targets.length >= REACH.maxFrames) break;
+        const child = claimChild(free, f.src);
+        if (!child) { unmapped.push({ parent: p.frameId, src: f.src }); continue; }
+        const t = {
+          frameId: child.id, origin: f.origin, url: child.url, src: f.src, parent: p.frameId,
+          box: { x: Math.round(f.x + p.ox), y: Math.round(f.y + p.oy), w: f.w, h: f.h },
+          ox: p.ox + f.cx, oy: p.oy + f.cy,
+        };
+        targets.push(t);
+        next.push({ frameId: t.frameId, ox: t.ox, oy: t.oy });
+      }
+    }
+    level = next;
+  }
+  return { targets, unmapped };
+}
+
+// A frame's result in top-page space: x/y shifted, snapshot ids namespaced. Pure.
+export function toTopSpace(result, t) {
+  const walk = (v) => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (!v || typeof v !== 'object') return v;
+    const o = {};
+    for (const [k, x] of Object.entries(v)) o[k] = walk(x);
+    if (typeof o.x === 'number' && typeof o.y === 'number') { o.x = Math.round(o.x + t.ox); o.y = Math.round(o.y + t.oy); }
+    if (typeof o.i === 'number') o.i = `f${t.frameId}:${o.i}`;
+    return o;
+  };
+  return walk(result);
+}
+const frameTag = (t) => ({ frame: t.origin, url: t.url, frameId: t.frameId });
+const inFrame = (t, r) => {
+  if (!r || typeof r !== 'object') return r;
+  const { frameNotice, opaqueFrames, ...rest } = r;
+  return { inFrame: frameTag(t), ...toTopSpace(rest, t) };
+};
+
+// fast_snapshot: the top document's snapshot, plus `frames:[{frame, url,
+// frameId, box, …that frame's snapshot in top-page space}]` for each visible
+// cross-origin frame read within REACH.snapMs. The frame notice then names only
+// the frames that could not be read. `args.frame` (URL substring) reads just that frame.
+export async function snapshotWithFrames(ctx, args) {
+  if (args && args.frame) return inNamedFrame(ctx, 'fast_snapshot', args);
+  const top = await ctx.run(0, 'fast_snapshot', args);
+  if (!top || top.error || !top.frameNotice) return top;
+  const { targets } = await frameTargets(ctx);
+  if (!targets.length) return top;
+  const t0 = Date.now();
+  const snaps = await Promise.all(targets.map((t) => withTimeout(ctx.run(t.frameId, 'fast_snapshot', { ...args, noFrameNotice: true }), REACH.snapMs - (Date.now() - t0))));
+  const frames = [];
+  const readTop = new Set();
+  targets.forEach((t, k) => {
+    const s = snaps[k];
+    if (!s || s.error) return;
+    const { frameNotice, opaqueFrames, ...rest } = s;
+    frames.push({ frame: t.origin, url: t.url, frameId: t.frameId, box: t.box, ...toTopSpace(rest, t) });
+    if (t.parent === 0) readTop.add(t.src);
+  });
+  if (!frames.length) return top;
+  const { frameNotice, opaqueFrames, ...rest } = top;
+  const unreadSrcs = [];
+  const scan = await withTimeout(ctx.run(0, 'fast_frames', {}), REACH.dryMs);
+  for (const f of (scan && scan.frames) || []) if (!readTop.has(f.src)) unreadSrcs.push(f.src);
+  let notice = {};
+  if (unreadSrcs.length) {
+    const n = await withTimeout(ctx.run(0, 'fast_frames', { unread: unreadSrcs }), REACH.dryMs);
+    if (n && n.frameNotice) notice = { frameNotice: n.frameNotice, opaqueFrames: n.opaqueFrames };
+  }
+  const framesNote = `${frames.length} cross-origin frame(s) read into \`frames\` (${[...new Set(frames.map((f) => f.frame))].join(', ')}): their items carry top-page x,y and ids "f<frameId>:<i>"; fast_click / fast_fill / fast_select_option act inside them (by text, id, or frame:"<part of the frame URL>")`;
+  return { framesNote, ...notice, ...rest, frames };
+}
+
+// Run `action` in the one visible cross-origin frame whose URL contains args.frame.
+export async function inNamedFrame(ctx, action, args) {
+  const want = String(args.frame);
+  const { targets } = await frameTargets(ctx);
+  const hits = targets.filter((t) => t.url.includes(want) || t.origin.includes(want));
+  if (hits.length !== 1) {
+    return {
+      error: hits.length ? `${hits.length} visible cross-origin frames match frame:${JSON.stringify(want)} — nothing was done` : `no visible cross-origin frame URL contains ${JSON.stringify(want)} — nothing was done`,
+      frames: (hits.length ? hits : targets).map((t) => ({ ...frameTag(t), box: t.box })),
+      hint: hits.length ? 'pass a longer part of the frame URL (see frames)' : (targets.length ? 'use one of these frame URLs' : 'the page shows no readable cross-origin frame; drop frame'),
+    };
+  }
+  const { frame, ...rest } = args;
+  return inFrame(hits[0], await ctx.run(hits[0].frameId, action, { ...rest, noFrameNotice: true }));
+}
+
+// fast_click / fast_fill / fast_select_option, frame-aware. With no visible
+// cross-origin frame this is exactly the top-document call. With some, the top
+// document and every frame are asked IN PARALLEL whether they hold the target
+// (dryRun: one look, no auto-wait, nothing done), so a target that lives in a
+// frame never pays the top document's auto-wait:
+//   top has it, no frame does   → the normal top call
+//   no document has it          → the normal top call (it auto-waits; the page may still be mounting)
+//   exactly one frame, not top  → acted inside that frame, result in top-page space + inFrame
+//   several documents have it   → refused, candidates from each; pass frame:"…" or an id
+// {fields} / {selections} are planned per field the same way, and the results merged.
+const MULTI = { fast_fill: 'fields', fast_select_option: 'selections' };
+export async function actWithFrames(ctx, action, args = {}) {
+  const idm = typeof args.id === 'string' && /^f(\d+):(\d+)$/.exec(args.id);
+  if (idm) {
+    const { targets } = await frameTargets(ctx);
+    const t = targets.find((x) => x.frameId === Number(idm[1]));
+    if (!t) return { error: `id ${args.id} points into frame ${idm[1]}, which is no longer a visible cross-origin frame — nothing was done; take a fresh fast_snapshot`, idStale: true };
+    return inFrame(t, await ctx.run(t.frameId, action, { ...args, id: Number(idm[2]), noFrameNotice: true }));
+  }
+  if (args.frame) return inNamedFrame(ctx, action, args);
+  if (args.id != null && args.id !== '') return ctx.run(0, action, args);   // a top-document id
+  const topScan = await withTimeout(ctx.run(0, 'fast_frames', {}), REACH.dryMs);
+  if (!topScan || !Array.isArray(topScan.frames) || !topScan.frames.length) return ctx.run(0, action, args);
+  const { targets } = await frameTargets(ctx, { topScan });
+  if (!targets.length) return ctx.run(0, action, args);
+
+  const multiKey = MULTI[action];
+  let entries = null;   // [[key, spec]] for the per-field forms
+  if (multiKey === 'fields' && args.fields && typeof args.fields === 'object' && !Array.isArray(args.fields)) entries = Object.entries(args.fields);
+  if (multiKey === 'selections' && args.selections && typeof args.selections === 'object' && !Array.isArray(args.selections)) {
+    entries = Object.entries(args.selections);
+    if (args.field != null && args.option != null && !(String(args.field) in args.selections)) entries.push([String(args.field), { option: args.option, index: args.index, section: args.section ?? args.near }]);
+  }
+  const keyOf = () => (action === 'fast_click' ? null : String(action === 'fast_fill' ? args.match : args.field));
+  const dry = await Promise.all([0, ...targets.map((t) => t.frameId)].map((id) => withTimeout(ctx.run(id, action, { ...args, dryRun: true, noFrameNotice: true }), REACH.dryMs)));
+  const statusIn = (d, key) => {
+    if (!d || d.error) return 'missing';
+    if (action === 'fast_click') return d.found ? 'found' : 'missing';
+    return (d.fields && d.fields[key]) || 'missing';
+  };
+  const where = (key) => {
+    const top = statusIn(dry[0], key);
+    const hits = targets.map((t, k) => ({ t, s: statusIn(dry[k + 1], key), d: dry[k + 1] })).filter((h) => h.s !== 'missing');
+    if (!hits.length) return { in: 'top' };
+    if (top === 'missing' && hits.length === 1) return { in: hits[0].t };
+    const label = key == null ? JSON.stringify(args.text ?? args.id) : JSON.stringify(key);
+    return {
+      refuse: {
+        error: `${label} matches in ${top === 'missing' ? '' : 'the top document and in '}${hits.length} cross-origin frame(s) — nothing was done`,
+        candidates: [
+          ...(top === 'missing' ? [] : [{ frame: 'top', ...(dry[0] && dry[0].best ? dry[0].best : {}) }]),
+          ...hits.map((h) => ({ ...frameTag(h.t), box: h.t.box, ...(h.d && h.d.best ? toTopSpace(h.d.best, h.t) : {}) })),
+        ],
+        hint: 'pass frame:"<part of the frame URL>" to act inside one frame, or the item id from fast_snapshot',
+      },
+    };
+  };
+
+  if (!entries) {
+    const w = where(keyOf());
+    if (w.refuse) return w.refuse;
+    if (w.in === 'top') return ctx.run(0, action, args);
+    return inFrame(w.in, await ctx.run(w.in.frameId, action, { ...args, noFrameNotice: true }));
+  }
+
+  // per field: group by document, run each group, merge in the caller's order
+  const groups = new Map();   // 'top' | frameId → { t, keys }
+  const refused = new Map();
+  for (const [key] of entries) {
+    const w = where(key);
+    if (w.refuse) { refused.set(key, w.refuse); continue; }
+    const gk = w.in === 'top' ? 'top' : w.in.frameId;
+    if (!groups.has(gk)) groups.set(gk, { t: w.in === 'top' ? null : w.in, keys: [] });
+    groups.get(gk).keys.push(key);
+  }
+  if (!refused.size && groups.size === 1 && groups.has('top')) return ctx.run(0, action, args);
+  const specOf = new Map(entries);
+  const parts = [];
+  for (const [gk, g] of groups) {
+    const sub = { ...args, [multiKey]: Object.fromEntries(g.keys.map((k) => [k, specOf.get(k)])), noFrameNotice: gk !== 'top' };
+    if (multiKey === 'selections') { delete sub.field; delete sub.option; }
+    const r = await ctx.run(gk === 'top' ? 0 : gk, action, sub);
+    parts.push({ g, r: g.t ? inFrame(g.t, r) : r });
+  }
+  return mergeParts(action, entries.map(([k]) => k), parts, refused);
+}
+
+// One result for a per-field call that ran in several documents. The head is the
+// AND / sum of the parts' own heads (each part rolled up its own fields); a
+// refused field counts as missed/failed. Pure.
+export function mergeParts(action, keys, parts, refused) {
+  const bag = action === 'fast_fill' ? 'fields' : 'results';
+  const byKey = {};
+  for (const { g, r } of parts) {
+    const own = (r && r[bag]) || {};
+    for (const k of g.keys) {
+      const v = own[k] || (r && r.error ? { error: r.error } : { error: 'not done' });
+      byKey[k] = g.t ? { ...v, frame: g.t.origin } : v;
+    }
+  }
+  for (const [k, ref] of refused) byKey[k] = ref;
+  const out = {};
+  const heads = parts.map((p) => p.r || {});
+  const n = (v) => (typeof v === 'number' ? v : 0);
+  const partOk = (h) => !h.error && h.verified === true;
+  out.verified = !refused.size && heads.every(partOk);
+  if (action === 'fast_fill') {
+    out.filled = heads.reduce((a, h) => a + n(h.filled), 0);
+    out.missed = heads.reduce((a, h) => a + n(h.missed), 0) + refused.size;
+  } else {
+    out.picked = heads.reduce((a, h) => a + n(h.picked), 0);
+    out.failed = heads.reduce((a, h) => a + n(h.failed), 0) + refused.size;
+  }
+  out.total = keys.length;
+  const summaries = heads.map((h) => h.summary || (h.error && !h[bag] ? h.error : null)).filter(Boolean);
+  if (refused.size) summaries.push(`refused (matches in several documents): ${[...refused.keys()].join(', ')}`);
+  if (summaries.length) out.summary = summaries.join(' | ');
+  for (const k of ['uncommitted', 'reverted']) { const all = heads.flatMap((h) => h[k] || []); if (all.length) out[k] = all; }
+  const hints = heads.map((h) => h.hint).filter(Boolean);
+  if (hints.length) out.hint = hints.join(' | ');
+  out[bag] = Object.fromEntries(keys.map((k) => [k, byKey[k]]));
+  const snapPart = parts.find((p) => p.r && p.r.snapshot);
+  if (snapPart) out.snapshot = snapPart.r.snapshot;
+  return out;
+}
+
+// Card numbers never leave the extension whole: a 13-19 digit run (spaces or
+// dashes allowed) that passes the Luhn check is masked to its last 4 digits, in
+// every string of every result (values, read-backs, reasons). Pure.
+const CARD_RE = /(?<![\d])(?:\d[ -]?){12,18}\d(?![\d])/g;
+const luhn = (digits) => {
+  let sum = 0, dbl = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48;
+    if (dbl) { d *= 2; if (d > 9) d -= 9; }
+    sum += d; dbl = !dbl;
+  }
+  return sum % 10 === 0;
+};
+export function maskCardNumbers(v, depth = 0) {
+  if (typeof v === 'string') {
+    return v.replace(CARD_RE, (m) => {
+      const digits = m.replace(/[ -]/g, '');
+      return digits.length >= 13 && digits.length <= 19 && luhn(digits) ? `•••• ${digits.slice(-4)}` : m;
+    });
+  }
+  if (!v || typeof v !== 'object' || depth > 40) return v;
+  if (Array.isArray(v)) return v.map((x) => maskCardNumbers(x, depth + 1));
+  if (typeof v.dataUrl === 'string') {   // an image payload: only its metadata is text
+    const { dataUrl, ...rest } = v;
+    return { dataUrl, ...maskCardNumbers(rest, depth + 1) };
+  }
+  const o = {};
+  for (const [k, x] of Object.entries(v)) o[k] = maskCardNumbers(x, depth + 1);
+  return o;
 }
