@@ -634,21 +634,27 @@ export async function pointByImage({ targets, base64 }) {
 // are strings the agent says it entered; the note reports what the boxes holding
 // them actually read, when it can see them.
 // Returns { observations:[string], skipped? } — never throws for the caller.
-export async function describeScreen({ base64, values } = {}) {
+// `deps.call` replaces the model call, so the prompt/parse path unit-tests with a
+// synthetic answer and no network.
+export async function describeScreen({ base64, values } = {}, deps = {}) {
   if (!SCOUT_ENABLED) return { observations: [], skipped: 'no vision' };
   if (!base64 || typeof base64 !== 'string') return { observations: [], skipped: 'no image' };
   const img = base64.replace(/^data:image\/\w+;base64,/, '');
   const wanted = (Array.isArray(values) ? values : []).map((v) => String(v)).filter(Boolean).slice(0, 8);
   const prompt = [
     'Describe what this browser screenshot SHOWS. Report only what is visibly on the screen.',
-    'Cover, when visible: (a) EVERY box that looks empty or still shows greyed placeholder text,',
-    'naming the label printed beside it — include the ones marked as required (an asterisk, the word',
-    '"required"), and list them even if they seem unrelated to each other; (b) any red/orange marks,',
-    'dots, outlines, warning icons or validation messages, and what they sit next to — including a mark',
-    'on a tab or step name at the top of the page; (c) whether the content continues below the',
-    'visible area (a scrollbar, a cut-off section, a partially visible row).',
-    wanted.length ? `(d) for each of these values, say what the box that should hold it reads right now, or that you cannot see it: ${wanted.map((v) => JSON.stringify(v)).join(', ')}.` : '',
-    'RULES: each observation is one short sentence about what is on the screen.',
+    'Cover, when visible: (a) EVERY box that looks empty or still shows greyed placeholder text',
+    '(a blank box, a greyed "Select..."/"Choose..." word sitting in it), naming the label printed',
+    'beside it — include the ones marked as required (an asterisk, the word "required"), and list',
+    'them even if they seem unrelated to each other; (b) any red/orange marks, dots, outlines,',
+    'warning icons, a message under a box or a banner across the top, and what each sits next to —',
+    'including a mark on a tab or step name at the top of the page; (c) whether the content continues',
+    'below the visible area (a scrollbar, a cut-off section, a partially visible row).',
+    wanted.length ? `(d) for each of these values, say what the box that should hold it reads right now, or that you cannot see it: ${wanted.map((v) => JSON.stringify(v)).join(', ')} — report these FIRST, before (a), (b) and (c).` : '',
+    `RULES: at most ${MAX_OBSERVATIONS} observations, each ONE short sentence about what is on the`,
+    'screen; if more boxes look empty than fit, name the ones nearest the top of the page and say how',
+    'many others look empty. Write each as a flat statement of what is visible ("the Subscription box',
+    'reads empty", "the Basics tab shows a red mark", "the form continues below the visible area").',
     'Do NOT name control types (do not call anything a dropdown, a text field, a checkbox).',
     'Do NOT explain causes, do NOT suggest what to do, do NOT name any tool or action,',
     'Do NOT say whether anything is right, wrong, complete or incomplete. No advice, no verdicts.',
@@ -656,16 +662,34 @@ export async function describeScreen({ base64, values } = {}) {
     'Reply strict JSON: {"observations":[string, ...]}.',
   ].filter(Boolean).join(' ');
   try {
-    const out = await callModelParts({
+    const out = await (deps.call || callModelParts)({
       parts: [{ text: prompt }, { inlineData: { mimeType: 'image/png', data: img } }],
       maxTokens: 600,
     });
-    const observations = (Array.isArray(out && out.observations) ? out.observations : [])
-      .map((s) => String(s || '').trim()).filter(Boolean).slice(0, 12);
-    return { observations };
+    return { observations: plainObservations(out && out.observations) };
   } catch (e) {
     return { observations: [], skipped: `vision failed: ${String(e && e.message || e).slice(0, 200)}` };
   }
+}
+
+// The note is handed straight to the model driving the browser, so it stays short
+// and stays in the observation register. MAX_OBSERVATIONS is both what the prompt
+// asks for and what the parse enforces.
+const MAX_OBSERVATIONS = 8;
+// MECHANICAL register filter — NOT judgement. A line where the vision tier slipped
+// out of plain observation (named one of our tools, gave an instruction, pronounced
+// a verdict) is DROPPED rather than reworded. Nothing here interprets what the
+// screen means, and nothing is ever added: it can only remove.
+const OFF_REGISTER = [
+  /fast_[a-z_]+/i,                                                                                  // names one of our tools
+  /^(click|select|choose|enter|fill|type|press|scroll|navigate|go to|you should|you need|you must)\b/i, // an instruction
+  /\b(should be|must be|needs to be|is incomplete|is invalid|is wrong|has failed|failed to)\b/i,    // a verdict
+];
+function plainObservations(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim())
+    .filter((s) => s && !OFF_REGISTER.some((re) => re.test(s)))
+    .slice(0, MAX_OBSERVATIONS);
 }
 
 export async function planByImage({ intent, base64 }) {

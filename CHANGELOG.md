@@ -33,6 +33,33 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — the visual note gets an observation BUDGET, keeps the claimed values at the front, and stays in register
+- **What:** four changes to `describeScreen` (`fast-dxt/server/scout.js`), on top of 076e0a6's "describe every
+  empty box". (1) A **budget**: at most 8 observations, asked for in the prompt (with "name the ones nearest
+  the top and say how many others look empty") and enforced in the parse — it was 12, unasked-for and
+  unbounded in the prompt. (2) The claimed values (d) are now reported **FIRST, before (a)/(b)/(c)**, so the
+  one field the run actually wrote can never be crowded off a wide-open form by boxes it never touched.
+  (3) The (a)/(b) wording names what it is looking at: a greyed `"Select..."/"Choose..."` word sitting in a
+  blank box, and a message under a box or a banner across the top alongside the dots/outlines/tab marks.
+  (4) A **mechanical register filter** drops any single observation that names one of our tools
+  (`fast_*`), opens with an instruction ("Click the Region box…", "You should…") or pronounces a verdict
+  ("is incomplete", "must be"). It can only REMOVE a line — it never rewords, never adds, never interprets.
+  `describeScreen` takes an injectable `deps.call`, so the prompt/parse path unit-tests with no key,
+  no image and no network.
+- **Why:** the note's whole value is that it is handed straight to the model, so it has to be short and it
+  has to stay an observation. The prompt forbade advice and verdicts but nothing enforced it, and a
+  12-line answer on a form like Azure's Basics tab is mostly boxes the run never claimed. Nothing had ever
+  exercised the real prompt/parse either — every existing test injects `deps.describe` past it.
+- **Files:** `fast-dxt/server/scout.js`, `fast-dxt/test/describe-screen.test.mjs` (new).
+- **Watch out:** the filter is deliberately dumb and can only remove; if it ever starts rewording a line,
+  that is the gate rebuilding the model's judgement again. The 8-line budget is a real trade: on the
+  rendered Azure-shaped fixture the claimed value, four empty/placeholder boxes, the red outline, the red
+  banner and the below-the-fold line filled the list, and the red dot on the Basics tab fell off the end.
+  Raising the cap buys coverage and costs the model's context.
+- **Status:** committed; `fast-dxt` describe-screen 5/5, `fast-runner` 79/79. Live on hvm-rendered
+  screenshots (selenium web-form, demoqa practice form, an Azure-shaped fixture) — observations in the
+  session report. The Azure page itself is the lead's to re-run.
+
 ## 2026-09-16 — the visual note gets its OWN round (before the gate), and the gate stops refusing honest wording
 - **What:** three changes to the report_done path. (1) `reportDecision` runs the visual note FIRST and
   outside the gate's refusal budget — `REPORT_INTERRUPT_CEILING` is deleted; it is one note round PLUS up
