@@ -33,6 +33,23 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — only a typeahead's own popup is a "suggestion": a selectable grid row is not one
+- **What:** `suggestionByText` (the path `fast_click` takes when the text is not an indexed control) now
+  requires the FOCUSED element to be an autocomplete (`isAutocomplete`: a typeable control that is an ARIA
+  combobox / declares aria-autocomplete / names a popup). Anything else focused — a `[role=tab]`, a
+  disclosure button — no longer turns the rows of the panel it names into suggestions.
+- **Why:** holdout-2 by-hand pass: `fast_click "19002"` on a Syncfusion EJ2 grid row was refused as
+  "suggestion … is on screen but the control did not accept a synthetic pick". Live on the rig: after
+  "Search Train", focus sat on the `[role=tab]` "Train List", whose `aria-controls` panel is the whole step
+  — including the train grid's `[role=row]`s, which `panelOptions` counts as option rows. The refusal named
+  a coordinate click as the only way out, for a row an ordinary click selects.
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** real typeaheads are unaffected (Google Maps, National Rail: their focused control IS the
+  combobox input). If a site ever focuses a non-input element that legitimately owns a suggestion list, it
+  now falls through to the ordinary click path — which, since the same day's text-target fix, reaches the
+  row anyway.
+- **Status:** committed; proven live on Syncfusion EJ2 (holdout-2) and on a grid outside the holdout set.
+
 ## 2026-09-16 — a committed pick on a custom listbox reads back as committed (no more false `verified:false`)
 - **What:** two rules in the shown-value read-back (`fast-ext/src/actions/page.js`). (1) `shownValueOf`'s
   walk skips a descendant only when it is an OPEN popup (`aria-expanded="true"`), not merely because it
