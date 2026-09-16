@@ -52,6 +52,25 @@ test('the screen is asked about the whole form, not only the values the model cl
   assert.equal(seen.image.inlineData.data, 'QkFTRTY0');
 });
 
+test('the checker is told the GOAL and nothing else about the run', async () => {
+  const { seen, call } = capture({ observations: [] });
+  const intent = "Create a VM named fastlink-bench-vm; use fast_type for the name and fast_fill for the rest.";
+  await describeScreen({ base64: PNG, values: [], intent }, { call });
+  const p = seen.prompt;
+  // the task text is there — without it a blank box on a thirty-field form means nothing
+  assert.match(p, /Create a VM named fastlink-bench-vm/);
+  assert.match(p, /Read the screen in light of that goal/);
+  // ...but our tool vocabulary never reaches it, even when the task text uses it
+  assert.doesNotMatch(p, /fast_[a-z_]+/);
+  // and nothing else about the run travels with it
+  assert.match(p, /you cannot see what they did, how they did it or what they say happened/);
+  // no intent: no goal sentence at all, and the rest of the prompt is unchanged
+  const bare = capture({ observations: [] });
+  await describeScreen({ base64: PNG, values: [] }, { call: bare.call });
+  assert.doesNotMatch(bare.seen.prompt, /asked to accomplish/);
+  assert.match(bare.seen.prompt, /EVERY box that looks empty/);
+});
+
 test('the prompt asks for a SHORT list and forbids the register the note must never use', async () => {
   const { seen, call } = capture({ observations: [] });
   await describeScreen({ base64: PNG, values: [] }, { call });

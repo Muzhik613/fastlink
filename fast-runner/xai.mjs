@@ -35,8 +35,12 @@ export async function ensureProxy() {
 
 // One non-streaming turn. Returns the Messages response body ({content, stop_reason, usage})
 // plus `_timing` = {latencyMs (whole call incl. retries), attempts, requestChars} for the run log.
-export async function createMessage({ system, messages, tools, maxTokens = 4096, signal }) {
-  const body = { model: MODEL, max_tokens: maxTokens, system, messages, tools };
+// `model` overrides the run's driver model for ONE call — the visual note's checker
+// is a different model on purpose, and the proxy passes any `grok*` id straight
+// through (mapModel only rewrites claude-* ids), so grok-4.6 reaches api.x.ai as
+// grok-4.6 even when the run itself is driving on grok-4.3.
+export async function createMessage({ system, messages, tools, maxTokens = 4096, signal, model = MODEL }) {
+  const body = { model, max_tokens: maxTokens, system, messages, tools };
   const payload = JSON.stringify(body);
   const t0 = Date.now();
   let lastErr;

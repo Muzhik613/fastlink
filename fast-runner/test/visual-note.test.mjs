@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { recordResult, entryFacts, unverifiedWrites, visualNoteRound, closeVisualNote, visualNoteText, ensureVisionEnv, reportDecision } from '../runner.mjs';
+import { recordResult, entryFacts, unverifiedWrites, visualNoteRound, closeVisualNote, visualNoteText, ensureVisionEnv, reportDecision, describeWithGrok, NOTE_MODEL } from '../runner.mjs';
 import { claudeMcpEnv } from '../fastlink-client.mjs';
 
 // Vision keys are process-global: save and restore them around anything that touches them.
@@ -30,8 +30,10 @@ function withEnv(fn) {
 const AZ = 'https://portal.azure.com/#create/Microsoft.VirtualMachine';
 const snap = (url, ...texts) => JSON.stringify({ url, content: texts.map(text => ({ text })) });
 
+// The task text travels to the checker (and nothing else about the run does).
+const TASK = 'Create a virtual machine named fastlink-bench-vm in the Azure portal.';
 function runOf(rows, extra = {}) {
-  const run = { gate: 'on', toolLog: [], corpus: [], urlTrail: [], gateRefusals: [], turns: [], messages: [], visualNote: null, ...extra };
+  const run = { gate: 'on', task: TASK, toolLog: [], corpus: [], urlTrail: [], gateRefusals: [], turns: [], messages: [], visualNote: null, ...extra };
   rows.forEach(([name, args, text = '{}', isError = false], i) => {
     const ok = recordResult(run, text, isError);
     run.toolLog.push({ t: i * 1000, name, args, ok, preview: text.slice(0, 100), ...entryFacts(name, args, text, ok) });
@@ -75,7 +77,7 @@ test('note produced when an unverified write exists: one screenshot, the claimed
   const d = deps();
   const note = await visualNoteRound(run, d);
   assert.equal(d.seen.shots, 1, 'exactly one screenshot');
-  assert.deepEqual(d.seen.described, { base64: 'QkFTRTY0', values: ['fastlink-bench-vm'] });
+  assert.deepEqual(d.seen.described, { base64: 'QkFTRTY0', values: ['fastlink-bench-vm'], intent: TASK });
   for (const o of OBS) assert.ok(note.includes(`- ${o}`), o);
   assert.match(note, /could not be read back/);
   assert.match(note, /Anything you want to fix, or is that expected\?/);
@@ -163,7 +165,7 @@ test('no vision key / no screenshot / nothing observed are each recorded, not si
 
   const threw = runOf(azureRows(CROSS));
   assert.equal(await visualNoteRound(threw, { screenshot: async () => 'QkFTRTY0', describe: async () => { throw new Error('gemini 503'); } }), null);
-  assert.match(threw.visualNote.skipped, /vision failed: gemini 503/);
+  assert.match(threw.visualNote.skipped, /checker failed: gemini 503/);
 
   const quiet = runOf(azureRows(CROSS));
   assert.equal(await visualNoteRound(quiet, { screenshot: async () => 'QkFTRTY0', describe: async () => ({ observations: [] }) }), null);
@@ -215,8 +217,8 @@ test('with no key anywhere the UNINJECTED describe path skips, naming the key, a
   await withEnv(async () => {
     process.env.HOME = empty;   // no .claude.json at all
     const run = runOf(azureRows(CROSS));
-    // deps.describe NOT injected: the real key resolution runs
-    assert.equal(await visualNoteRound(run, { screenshot: async () => 'QkFTRTY0' }), null);
+    // deps.describe NOT injected, checker switched to the gemini path: the real key resolution runs
+    assert.equal(await visualNoteRound(run, { model: 'gemini', screenshot: async () => 'QkFTRTY0' }), null);
     assert.match(run.visualNote.skipped, /^no vision: GEMINI_API_KEY is set neither in this process nor in ~\/\.claude\.json mcpServers\.fastlink\.env$/);
     assert.equal(run.visualNote.unverified.length, 1, 'what could not be read back is still recorded');
   });
@@ -248,5 +250,138 @@ test('both outcomes are recorded: the model acts on the note, or explains why it
   const skipped = runOf(azureRows(CROSS));
   await visualNoteRound(skipped, { screenshot: async () => null });
   closeVisualNote(skipped, 'x');
-  assert.deepEqual(Object.keys(skipped.visualNote), ['skipped', 'unverified']);
+  assert.deepEqual(Object.keys(skipped.visualNote), ['checker', 'skipped', 'unverified']);
+});
+
+// ── the checker: a BRAND-NEW conversation, given the goal and the screen ─────
+// Not the model driving the run and not a continuation of it: a fresh instance
+// cannot be anchored by the reasoning that produced the mistake, and describing is
+// all it can do. It gets the task text (so it knows which blanks matter) and the
+// image — never the plan, the history, the claimed results or our tool names.
+const answer = (observations, extra = {}) => async () => ({
+  content: [{ type: 'text', text: JSON.stringify({ observations }) }], _timing: { latencyMs: 1234 }, ...extra,
+});
+
+test('the checker call: one fresh user turn, the image, the goal — no history, no tools, no fast_* vocabulary', async () => {
+  const sent = [];
+  const create = async (req) => { sent.push(req); return (await answer(OBS)())
+    ; };
+  const run = runOf(azureRows(CROSS));
+  const note = await visualNoteRound(run, { screenshot: async () => 'QkFTRTY0', create });
+  assert.equal(sent.length, 1, 'one call, one round');
+  const req = sent[0];
+  assert.equal(req.model, 'grok-4.6', 'default checker');
+  assert.equal(NOTE_MODEL, 'grok-4.6');
+  assert.equal(req.system, undefined, 'no system prompt: it is not an operator');
+  assert.equal(req.tools, undefined, 'it cannot act, only describe');
+  assert.equal(req.messages.length, 1, 'a FRESH conversation: no run history');
+  assert.equal(req.messages[0].role, 'user');
+  const img = req.messages[0].content.find(c => c.type === 'image');
+  assert.equal(img.source.data, 'QkFTRTY0');
+  assert.equal(img.source.media_type, 'image/png');
+  const text = req.messages[0].content.find(c => c.type === 'text').text;
+  assert.match(text, /Create a virtual machine named fastlink-bench-vm in the Azure portal/, 'the goal travels');
+  assert.match(text, /"fastlink-bench-vm"/, 'and the value whose write went unread');
+  assert.doesNotMatch(text, /fast_[a-z_]+/, 'our tool vocabulary never does');
+  assert.doesNotMatch(text, /report_done|verified:false|cross-origin/, 'nor the run log');
+  // recorded for the audit: who looked, and what it cost
+  assert.equal(run.visualNote.checker, 'grok-4.6');
+  assert.equal(run.visualNote.checkerMs, 1234);
+  for (const o of OBS) assert.ok(note.includes(`- ${o}`), o);
+});
+
+test('the checker model is configurable — a 4.3 A/B, and the gemini path still exists', async () => {
+  const sent = [];
+  const run = runOf(azureRows(CROSS));
+  await visualNoteRound(run, {
+    model: 'grok-4.3', screenshot: async () => 'QkFTRTY0',
+    create: async (req) => { sent.push(req.model); return (await answer(OBS)()); },
+  });
+  assert.deepEqual(sent, ['grok-4.3']);
+  assert.equal(run.visualNote.checker, 'grok-4.3');
+  // "gemini" routes to the old vision tier instead of the proxy — no checker call at all
+  const gem = runOf(azureRows(CROSS));
+  let called = 0;
+  await visualNoteRound(gem, {
+    model: 'gemini', screenshot: async () => 'QkFTRTY0',
+    create: async () => { called++; return (await answer(OBS)()); },
+    describe: async () => ({ observations: OBS }),
+  });
+  assert.equal(called, 0);
+  assert.equal(gem.visualNote.checker, 'gemini');
+});
+
+test('the checker answer is parsed out of whatever it replies with, capped at 8, and kept in register', async () => {
+  const wordy = [
+    'The Subscription box reads empty.', 'The Resource group box shows Select....',
+    'The Region box reads empty.', 'The Image box reads empty.', 'The Size box reads empty.',
+    'Click the Region box and pick East US.',            // an instruction: dropped
+    'The form is incomplete and must be finished.',      // a verdict: dropped
+    'The Basics tab shows a red mark.', 'A red line under the name box reads "This field is required".',
+    'The form continues below the visible area.', 'The Tags tab is at the far right.',
+  ];
+  const out = await describeWithGrok({ base64: 'QkFTRTY0', values: [], intent: 'x' }, {
+    // a model that wraps its JSON in prose, as they do
+    create: async () => ({ content: [{ type: 'text', text: `Here is what I see:\n${JSON.stringify({ observations: wordy })}` }], _timing: { latencyMs: 9 } }),
+  });
+  assert.equal(out.observations.length, 8);
+  const text = out.observations.join('\n');
+  for (const banned of [/fast_[a-z_]+/, /^Click /m, /\bmust be\b/, /\bincomplete\b/, /\bdropdown\b/i]) {
+    assert.doesNotMatch(text, banned, String(banned));
+  }
+  // a checker that errors is recorded, never thrown
+  const failed = await describeWithGrok({ base64: 'QkFTRTY0' }, { create: async () => { throw new Error('xai 503'); } });
+  assert.deepEqual(failed.observations, []);
+  assert.match(failed.skipped, /^checker failed: xai 503/);
+});
+
+// ── the detector: an unread write is found WHEREVER the tool reports it ──────
+// Live miss (Azure, 04ca273): Grok used fast_do, the unread write sat in
+// `executed[]`, `unverifiedWrites` came back empty and the note never ran — the
+// THIRD distinct reason it had not fired on a real page. The rule is structural
+// now, so a shape change fails a test instead of silently disabling the note.
+const FAST_DO = {
+  plan: [{ action: 'type', target: 'Virtual machine name text input', value: 'fastlink-bench-vm' }],
+  executed: [{ action: 'type', target: 'Virtual machine name text input', value: 'fastlink-bench-vm', x: 492, y: 582, verified: false, reason: 'unreadable: typed but not read back' }],
+  skipped: [], stoppedBefore: [], note: 'stopped before Create',
+};
+const NESTED_BATCH = {
+  args: { actions: [{ name: 'fast_click', args: { match: 'Virtual machine name' } }, { name: 'fast_type', args: { text: 'fastlink-bench-vm' } }] },
+  result: { summary: '2/2 steps ok', ok: 2, steps: 2, results: [
+    { step: 0, name: 'fast_click', ok: true, result: { clickedAt: { x: 492, y: 582 } } },
+    { step: 1, name: 'fast_type', ok: true, result: { typed: 17, verified: false, reason: 'cross-origin: value not readable', typedInto: { tag: 'iframe', value: '' } } },
+  ] },
+};
+
+test('fast_do reports its unread write one level down — and it is still found', () => {
+  const run = runOf([['fast_do', { intent: 'type the VM name' }, JSON.stringify(FAST_DO)]]);
+  assert.deepEqual(unverifiedWrites(run.toolLog), [{
+    name: 'fast_do', target: 'Virtual machine name text input', t: 0,
+    unverified: true, reason: 'unreadable: typed but not read back',
+  }]);
+});
+
+test('a nested fast_batch step carries its own unread write, named by the step target', () => {
+  const run = runOf([['fast_batch', NESTED_BATCH.args, JSON.stringify(NESTED_BATCH.result)]]);
+  assert.deepEqual(unverifiedWrites(run.toolLog), [{
+    name: 'fast_type', target: 'fastlink-bench-vm', t: 0,
+    unverified: true, reason: 'cross-origin: value not readable',
+  }]);
+});
+
+test('ANY verified:false anywhere in a result produces a note, whatever shape it arrives in', async () => {
+  const shapes = {
+    'top-level fast_type': ['fast_type', { text: 'fastlink-bench-vm', clear: true, force: true }, CROSS],
+    'fast_do executed[]': ['fast_do', { intent: 'type the VM name' }, FAST_DO],
+    'nested fast_batch step': ['fast_batch', NESTED_BATCH.args, NESTED_BATCH.result],
+    'fast_fill {fields}': ['fast_fill', { fields: { Region: 'East US' } }, { verified: false, fields: { Region: { verified: false, reason: 'unreadable: the field is no longer in the page after the write' } } }],
+    'fast_fill_vision filled[]': ['fast_fill_vision', { fields: { Region: 'East US' } }, { filled: [{ field: 'Region', verified: false, reason: 'unreadable: value not readable' }] }],
+    'fast_select_option results{}': ['fast_select_option', { field: 'Region', value: 'East US' }, { verified: true, results: { Region: { verified: false, picked: 'East US', reason: 'the pick did not take' } } }],
+  };
+  for (const [label, [name, args, payload]] of Object.entries(shapes)) {
+    const run = runOf([[name, args, JSON.stringify(payload)]]);
+    assert.ok(unverifiedWrites(run.toolLog).length, `${label}: detected`);
+    assert.ok(await visualNoteRound(run, deps()), `${label}: note produced`);
+    assert.equal(run.visualNote.skipped, undefined, label);
+  }
 });

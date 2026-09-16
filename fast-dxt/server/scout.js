@@ -636,13 +636,36 @@ export async function pointByImage({ targets, base64 }) {
 // Returns { observations:[string], skipped? } — never throws for the caller.
 // `deps.call` replaces the model call, so the prompt/parse path unit-tests with a
 // synthetic answer and no network.
-export async function describeScreen({ base64, values } = {}, deps = {}) {
+export async function describeScreen({ base64, values, intent } = {}, deps = {}) {
   if (!SCOUT_ENABLED) return { observations: [], skipped: 'no vision' };
   if (!base64 || typeof base64 !== 'string') return { observations: [], skipped: 'no image' };
   const img = base64.replace(/^data:image\/\w+;base64,/, '');
+  const prompt = observationPrompt({ values, intent });
+  try {
+    const out = await (deps.call || callModelParts)({
+      parts: [{ text: prompt }, { inlineData: { mimeType: 'image/png', data: img } }],
+      maxTokens: 600,
+    });
+    return { observations: plainObservations(out && out.observations) };
+  } catch (e) {
+    return { observations: [], skipped: `vision failed: ${String(e && e.message || e).slice(0, 200)}` };
+  }
+}
+
+// The ONE observation prompt, whichever model is shown the screenshot (the runner's
+// checker is a fresh Grok conversation; this Gemini path stays behind that switch).
+// `intent` is the task text the run was given — what the screen is being read in
+// light of, so "two of the boxes the task names read empty" is possible instead of
+// "some boxes look empty". Everything else about the run is withheld: no plan, no
+// history, no claimed results, and no tool vocabulary — any fast_* token in the
+// task text is stripped, so the checker can never learn a tool name from us.
+export function observationPrompt({ values, intent } = {}) {
   const wanted = (Array.isArray(values) ? values : []).map((v) => String(v)).filter(Boolean).slice(0, 8);
-  const prompt = [
+  const goal = String(intent == null ? '' : intent).replace(/\bfast_[a-z_]+\b/gi, ' ').replace(/\s+/g, ' ').trim().slice(0, 400);
+  return [
+    goal ? `Someone was asked to accomplish this on a web page: ${JSON.stringify(goal)}. That is the only thing you know about them — you cannot see what they did, how they did it or what they say happened.` : '',
     'Describe what this browser screenshot SHOWS. Report only what is visibly on the screen.',
+    goal ? 'Read the screen in light of that goal: the boxes it names are the ones worth naming first.' : '',
     'Cover, when visible: (a) EVERY box that looks empty or still shows greyed placeholder text',
     '(a blank box, a greyed "Select..."/"Choose..." word sitting in it), naming the label printed',
     'beside it — include the ones marked as required (an asterisk, the word "required"), and list',
@@ -661,15 +684,6 @@ export async function describeScreen({ base64, values } = {}, deps = {}) {
     'If the screen looks fine and nothing stands out, return an empty list.',
     'Reply strict JSON: {"observations":[string, ...]}.',
   ].filter(Boolean).join(' ');
-  try {
-    const out = await (deps.call || callModelParts)({
-      parts: [{ text: prompt }, { inlineData: { mimeType: 'image/png', data: img } }],
-      maxTokens: 600,
-    });
-    return { observations: plainObservations(out && out.observations) };
-  } catch (e) {
-    return { observations: [], skipped: `vision failed: ${String(e && e.message || e).slice(0, 200)}` };
-  }
 }
 
 // The note is handed straight to the model driving the browser, so it stays short
@@ -685,7 +699,7 @@ const OFF_REGISTER = [
   /^(click|select|choose|enter|fill|type|press|scroll|navigate|go to|you should|you need|you must)\b/i, // an instruction
   /\b(should be|must be|needs to be|is incomplete|is invalid|is wrong|has failed|failed to)\b/i,    // a verdict
 ];
-function plainObservations(list) {
+export function plainObservations(list) {
   return (Array.isArray(list) ? list : [])
     .map((s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim())
     .filter((s) => s && !OFF_REGISTER.some((re) => re.test(s)))
@@ -818,7 +832,7 @@ export async function pickMarks({ targets, base64, numbers }) {
   return { picks };
 }
 
-function safeJson(s) {
+export function safeJson(s) {
   try { return JSON.parse(s); } catch {}
   const m = s.match(/\{[\s\S]*\}/); // models sometimes wrap JSON in prose/fences
   if (m) { try { return JSON.parse(m[0]); } catch {} }

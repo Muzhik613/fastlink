@@ -157,32 +157,90 @@ const stepTarget = (s) => String(s?.args?.text ?? s?.args?.field ?? s?.args?.mat
 // the READ-BACK that is missing, and that is what the end-of-run visual note asks
 // the screen about. A FORCED fast_type (force/allowIframe) that did not come back
 // verified:true is the same thing — the guard it bypassed was the read-back.
+// An unread write is found by WALKING the result, not by matching a shape per
+// tool. Live miss (Azure, 04ca273): `fast_do` reported it inside `executed[]`
+// — {action:"type", target:"Virtual machine name text input", verified:false,
+// reason:"unreadable: typed but not read back"} — one level below anything the
+// old per-tool matching looked at, so `unverifiedWrites` came back empty and the
+// note never ran. That was the THIRD distinct reason the note had not fired on a
+// real page, and these shapes have changed twice in a day, so the rule is now
+// structural: any node anywhere that says its value was not read back counts.
+const unreadNode = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+  && (v.verified === false || v.unverified === true
+      || (typeof v.reason === 'string' && /^(unreadable|cross-origin)\b/i.test(v.reason)));
+// The label such a node is about: whatever it calls its target, else the key it
+// was filed under (a {fields} map), else the call's own target.
+const firstString = (...vals) => {
+  for (const v of vals) {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'number') return String(v);
+    if (v && typeof v === 'object' && !Array.isArray(v)) {   // a {label,section,…} descriptor
+      const s = firstString(v.label, v.field, v.name, v.text);
+      if (s) return s;
+    }
+  }
+  return '';
+};
+// a key like `result` names the slot, not the write, so it is never a target
+const GENERIC_KEYS = new Set(['result', 'results', 'value', 'data', 'response', 'out']);
+const unreadTarget = (v, key, fallback) => firstString(v.field, v.target, v.label, v.match, v.name)
+  || (typeof key === 'string' && !GENERIC_KEYS.has(key) ? key : '')
+  || String(fallback ?? '');
+// A BAG is a child holding per-field / per-step / per-action outcomes: an array
+// of objects, or a map whose values are objects. A node holding one is a wrapper
+// and the write is reported at the entry inside it. A plain `{tag,label}`
+// descriptor (`filled:{label:"Birthdate"}`) is NOT a bag — its holder IS the
+// report, which is how a pick that read back false is still caught under a
+// wrapper claiming verified:true. Structural on purpose: a bag we have not seen
+// before still behaves like one.
+const isBag = (v) => (Array.isArray(v) ? v : Object.values(v || {})).some((x) => x && typeof x === 'object');
+// A parent that says verified:false over children that say the same is ONE write,
+// reported at the deepest place that names it (h_repeat: a wrapper saying
+// verified:true over a selections pick saying false — the pick is the truth).
+function walkUnread(node, tool, key, fallback, out, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 6) return false;
+  let deeper = false;
+  if (Array.isArray(node)) {
+    for (const v of node) deeper = walkUnread(v, tool, undefined, fallback, out, depth + 1) || deeper;
+    return deeper;
+  }
+  let container = false;
+  for (const [k, v] of Object.entries(node)) {
+    if (k === 'args' || k === 'plan' || k === 'typedInto') continue;   // the request, not the read-back
+    if (v && typeof v === 'object' && isBag(v)) container = true;
+    deeper = walkUnread(v, tool, k, fallback, out, depth + 1) || deeper;
+  }
+  // A write is reported at the leaf that names it, never at a wrapper over
+  // per-field / per-step / per-action results: a fill whose fields each carry
+  // their own outcome is those fields, not one nameless entry for the call.
+  if (deeper || container || !unreadNode(node)) return deeper;
+  out.push({ name: tool, target: unreadTarget(node, key, fallback), unverified: true, ...(typeof node.reason === 'string' ? { reason: node.reason } : {}) });
+  return true;
+}
 export function partialFailures(name, args, text) {
   let o = null;
   try { o = JSON.parse(text); } catch { return []; }
   const out = [];
   const unread = (nm, tg, v) => ({ name: nm, target: tg, unverified: true, ...(typeof v?.reason === 'string' ? { reason: v.reason } : {}) });
-  const notDone = (bag, tool) => {
+  // children of a fill are reported under fast_fill whichever fill ran
+  const childTool = (nm) => (nm === 'fast_fill_form' ? 'fast_fill' : nm);
+  const errored = (bag, tool) => {
     if (bag && typeof bag === 'object') for (const [k, v] of Object.entries(bag)) {
       if (v && typeof v.error === 'string') out.push({ name: tool, target: k });
-      else if (v && v.verified === false) out.push(unread(tool, k, v));
     }
   };
   const children = (nm, res) => {
-    if (nm === 'fast_fill' || nm === 'fast_fill_form') notDone(res?.fields, 'fast_fill');
-    else if (nm === 'fast_select_option') notDone(res?.results, 'fast_select_option');
-    else if (nm === 'fast_fill_vision' && Array.isArray(res?.filled)) {
-      for (const f of res.filled) if (f && f.verified === false) out.push(unread('fast_fill_vision', String(f.field ?? ''), f));
-    }
+    if (nm === 'fast_fill' || nm === 'fast_fill_form') errored(res?.fields, 'fast_fill');
+    else if (nm === 'fast_select_option') errored(res?.results, 'fast_select_option');
   };
   if (name !== 'fast_batch') {
     children(name, o);
-    // a single write/click whose OWN read-back says verified:false did not do what
-    // it was called for (h_repeat: a Birthdate the date widget never committed,
-    // reported as set) — the same failed action as a missed field
+    walkUnread(o, childTool(name), undefined, target({ args }), out);
+    // an OLD build that reports no `verified` at all: a FORCED fast_type bypassed
+    // the editable-focus guard, and that guard IS the missing read-back
     const forcedType = name === 'fast_type' && (args?.force === true || args?.allowIframe === true);
-    if (!out.length && !o?.fields && !o?.results && (o?.verified === false || (forcedType && o?.verified !== true && typeof o?.error !== 'string'))) {
-      out.push(unread(name, target({ args }), { reason: o?.reason || (forcedType ? 'forced: the editable-focus guard was bypassed, so nothing read the value back' : undefined) }));
+    if (!out.length && forcedType && o?.verified !== true && typeof o?.error !== 'string') {
+      out.push(unread(name, target({ args }), { reason: 'forced: the editable-focus guard was bypassed, so nothing read the value back' }));
     }
   }
   else if (Array.isArray(o?.results)) {
@@ -193,6 +251,7 @@ export function partialFailures(name, args, text) {
       const nm = st.name || r.name;
       const before = out.length;
       children(nm, r.result);
+      walkUnread(r.result, childTool(nm), undefined, stepTarget(st), out);
       if (out.length === before && r.ok === false) out.push({ name: nm, target: stepTarget(st) });
     }
   }
@@ -494,7 +553,7 @@ const gateFields = (run) => run.gate === 'off' ? { gate: 'off' } : {
 // meant to catch. The model may fix something or explain why the screen is
 // expected; BOTH are accepted, and both are recorded on the run row so we can
 // audit whether these notes earn their cost.
-const NOTE_LEAD = 'Before I record this: one of your writes could not be read back from the page, so I took a screenshot. Here is what a vision model says is on the screen right now — plain observations; it cannot see your task, your tools or your plan:';
+const NOTE_LEAD = 'Before I record this: one of your writes could not be read back from the page, so I took a screenshot and showed it to a second model in a fresh conversation. It was given that image and the task text, nothing else — it cannot see your plan, your history or your tools. Here is what it says is on the screen right now:';
 const NOTE_TAIL = 'Anything you want to fix, or is that expected? Both are fine: fix it and report again, or call report_done again and say in `result` why the screen looks like this. Your next report_done is accepted either way.';
 export const visualNoteText = (observations) => [NOTE_LEAD, ...observations.map(o => `- ${o}`), NOTE_TAIL].join('\n');
 
@@ -533,31 +592,77 @@ export function ensureVisionEnv(readEnv = () => claudeMcpEnv('fastlink')) {
   return hasVisionKey() ? null : 'GEMINI_API_KEY';
 }
 
+// WHO looks at the screenshot. Default: a BRAND-NEW grok-4.6 conversation — not
+// the model driving the run, and not a continuation of it. A fresh instance cannot
+// be anchored by the reasoning that produced the mistake, and describing is the
+// only thing it is able to do, which is what keeps this dumb BY CONSTRUCTION
+// rather than by our restraint. It is handed the task text and the image and
+// nothing else: no plan, no history, no claimed results, no tool vocabulary
+// (observationPrompt strips any fast_* token out of the task text).
+// Overridable because same-model checking shares blind spots and we want to A/B
+// it: FASTRUN_NOTE_MODEL=grok-4.3, or "gemini" for the old vision-tier path —
+// the ONLY path that needs a GEMINI_API_KEY, which is why the default one works
+// over the relay transport, where that key lives in the Worker and not here.
+export const NOTE_MODEL = process.env.FASTRUN_NOTE_MODEL || 'grok-4.6';
+
+// The default checker: ONE fresh Anthropic-Messages conversation through the same
+// grokcode proxy the run drives on (no second client, no second key). The proxy
+// passes a grok* id straight through, so `model` really is what answers.
+export async function describeWithGrok({ base64, values, intent, model = NOTE_MODEL }, deps = {}) {
+  const { observationPrompt, plainObservations, safeJson } = await import('../fast-dxt/server/scout.js');
+  const send = deps.create || createMessage;
+  let res;
+  try {
+    res = await send({
+      model, maxTokens: 700,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: String(base64 || '').replace(/^data:image\/\w+;base64,/, '') } },
+          { type: 'text', text: observationPrompt({ values, intent }) },
+        ],
+      }],
+    });
+  } catch (e) {
+    return { observations: [], skipped: `checker failed: ${String(e && e.message || e).slice(0, 200)}` };
+  }
+  const text = (res?.content || []).filter(c => c.type === 'text').map(c => c.text || '').join('\n');
+  return { observations: plainObservations(safeJson(text).observations), checkerMs: res?._timing?.latencyMs };
+}
+
+// The pre-Grok checker, kept behind FASTRUN_NOTE_MODEL=gemini so the capability
+// survives for an A/B. It is the only path that needs a key in this process.
+async function describeWithGemini(a) {
+  const missing = ensureVisionEnv();   // must run BEFORE the import (config.js reads env at load)
+  if (missing) return { observations: [], skipped: `no vision: ${missing} is set neither in this process nor in ~/.claude.json mcpServers.fastlink.env` };
+  return (await import('../fast-dxt/server/scout.js')).describeScreen(a);
+}
+
 // Returns the note to hand the model, or null — and records WHY on the run when
-// there is nothing to ask about, no vision key, or no interruption budget left.
+// there is nothing to ask about, no screenshot, or nothing worth saying.
 // `deps` is injectable so the whole path unit-tests with no browser and no model.
 export async function visualNoteRound(run, deps = {}) {
   if (run.gate === 'off' || run.visualNote) return null;   // one round per run
   const unverified = unverifiedWrites(run.toolLog || []);
   if (!unverified.length) return null;                     // everything read back: no note, no cost
+  const checker = deps.model || NOTE_MODEL;
   const shot = deps.screenshot || (() => screenshotBase64(run.client));
-  const describe = deps.describe || (async (a) => {
-    const missing = ensureVisionEnv();   // must run BEFORE the import (config.js reads env at load)
-    if (missing) return { observations: [], skipped: `no vision: ${missing} is set neither in this process nor in ~/.claude.json mcpServers.fastlink.env` };
-    return (await import('../fast-dxt/server/scout.js')).describeScreen(a);
-  });
+  const describe = deps.describe
+    || (checker === 'gemini' ? describeWithGemini : (a) => describeWithGrok({ ...a, model: checker }, deps));
   let base64 = null;
   try { base64 = await shot(); } catch { base64 = null; }
-  if (!base64) { run.visualNote = { skipped: 'no screenshot', unverified }; return null; }
+  if (!base64) { run.visualNote = { checker, skipped: 'no screenshot', unverified }; return null; }
   let out;
-  try { out = await describe({ base64, values: unverified.map(u => u.target).filter(Boolean) }); }
-  catch (e) { out = { observations: [], skipped: `vision failed: ${e.message}` }; }
+  // The checker gets the goal, never the run: what was asked for, and the values
+  // whose write nothing could read back.
+  try { out = await describe({ base64, values: unverified.map(u => u.target).filter(Boolean), intent: run.task }); }
+  catch (e) { out = { observations: [], skipped: `checker failed: ${e.message}` }; }
   const observations = (Array.isArray(out?.observations) ? out.observations : []).map(String).filter(Boolean);
   if (out?.skipped || !observations.length) {
-    run.visualNote = { skipped: out?.skipped || 'nothing observed', unverified };
+    run.visualNote = { checker, skipped: out?.skipped || 'nothing observed', unverified };
     return null;
   }
-  run.visualNote = { observations, unverified, model_response: null, actedAfter: false, afterIdx: (run.toolLog || []).length };
+  run.visualNote = { checker, checkerMs: out.checkerMs, observations, unverified, model_response: null, actedAfter: false, afterIdx: (run.toolLog || []).length };
   return visualNoteText(observations);
 }
 
