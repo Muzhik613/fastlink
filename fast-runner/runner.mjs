@@ -804,6 +804,23 @@ export function buildSystem() {
   return toModelText(`${SYSTEM}\n${todayLine()}`);
 }
 
+// Debug-only fields a tool result may carry (fast_click's `_debug` phase timings, c657fda): never
+// shown to the model, kept on the toolLog entry as `debug` (fast_batch: per step). Only the FIRST
+// text block is a JSON result; it is re-serialized compactly, as the server writes it.
+export function splitDebug(text) {
+  if (typeof text !== 'string' || !text.includes('"_debug"')) return { text, debug: null };
+  let o; try { o = JSON.parse(text); } catch { return { text, debug: null }; }
+  if (!o || typeof o !== 'object') return { text, debug: null };
+  let debug = null;
+  if (o._debug !== undefined) { debug = o._debug; delete o._debug; }
+  if (Array.isArray(o.results)) {
+    const steps = [];
+    for (const r of o.results) if (r?.result && typeof r.result === 'object' && r.result._debug !== undefined) { steps.push({ step: r.step, name: r.name, ...r.result._debug }); delete r.result._debug; }
+    if (steps.length) debug = debug ? { ...debug, steps } : { steps };
+  }
+  return debug ? { text: JSON.stringify(o), debug } : { text, debug: null };
+}
+
 export function toolResultContent(res) {
   const out = [];
   for (const c of res?.content || []) {
@@ -1013,6 +1030,11 @@ async function loop(run) {
         catch (e) { res = { content: [{ type: 'text', text: `tool error: ${e.message}` }], isError: true }; }
       }
       const ms = Date.now() - t1;
+      let debug = null;
+      if (res?.content?.[0]?.type === 'text') {
+        const d = splitDebug(res.content[0].text);
+        if (d.debug) { debug = d.debug; res = { ...res, content: [{ ...res.content[0], text: d.text }, ...res.content.slice(1)] }; }
+      }
       const texts = (res?.content || []).filter(c => c.type === 'text').map(c => c.text);
       const firstText = texts[0] || '';
       // urlTrail + evidence corpus (memory only, not written to runs.jsonl). The corpus holds the text as the
@@ -1022,7 +1044,7 @@ async function loop(run) {
       // (an error's candidates / a batch's per-step results); 160 showed only the
       // first key of a snapshot.
       const preview = firstText.slice(0, 1200);
-      run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview, ...entryFacts(real || u.name, args, firstText, ok) });
+      run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview, ...entryFacts(real || u.name, args, firstText, ok), ...(debug ? { debug } : {}) });
       startVisualCheck(run, run.toolLog.length - 1);   // no-op unless this call left a write unread
       onEvent?.({ type: 'tool', name: real || u.name, args, ms, ok, preview });
 
