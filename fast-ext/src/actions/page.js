@@ -2693,6 +2693,9 @@ async function runPageAction(action, args) {
     // on-screen first); `limit` overrides the default item cap. Any loss (cap or
     // viewport-only skips) leads the result as truncated:true + dropped + hint.
     if (args.full) return markTruncated(snap, explicitHint);
+    // autoCap: the bounded preview an action's auto-snapshot carries (frames.js attaches a
+    // frame's items to a wait that hit inside that frame)
+    if (args.autoCap) return capAutoSnapshot(snap, args);
     const itemCap = (typeof args.limit === 'number' && args.limit >= 0) ? args.limit : ITEM_CAP_DEFAULT;
     return markTruncated(capSnapshot(snap, itemCap, CONTENT_CAP_DEFAULT), explicitHint);
   }

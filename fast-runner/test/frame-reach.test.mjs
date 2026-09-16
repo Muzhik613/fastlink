@@ -59,7 +59,7 @@ globalThis.chrome = {
         const f = frames.get(frameId);
         if (!f) throw new Error(`No frame with id ${frameId}`);
         if (files) { if (!f.win.__fastlink) f.win.eval(PAGE_JS); f.injected = true; return { frameId, result: null }; }
-        const bound = new Function('window', `return (${func.toString()});`)(f.win);
+        const bound = new Function('window', 'document', 'location', 'NodeFilter', 'getComputedStyle', `return (${func.toString()});`)(f.win, f.win.document, f.win.location, f.win.NodeFilter, f.win.getComputedStyle.bind(f.win));
         return { frameId, result: bound(...(args || [])) };
       }).map(async (r) => ({ frameId: r.frameId, result: await r.result }));
     },
@@ -289,4 +289,36 @@ test('depth 2: a same-origin frame nested inside a cross-origin frame is read, c
   assert.deepEqual([z.x, z.y], [200 + 30 + 5, 300 + 40 + 5]);
   assert.match(z.i, /^f11:/);
   SAME_ORIGIN_DOCS.clear();
+});
+
+
+test('live Azure aef0c734: a text wait that hits inside a frame carries that frame\'s items, in top-page space', async () => {
+  setup();
+  const r = await call('fast_wait', { text: 'Pay now', timeoutMs: 3000 });
+  assert.equal(r.inFrame, true, JSON.stringify(r).slice(0, 400));
+  assert.equal(r.found.frameId, 7);
+  assert.equal(r.snapshot.frameId, 7);
+  const pay = r.snapshot.items.find((it) => /Pay now/.test(it.text || ''));
+  assert.ok(pay, JSON.stringify(r.snapshot).slice(0, 400));
+  assert.deepEqual([pay.x, pay.y], [220, 400]);
+  assert.match(pay.i, /^f7:/);
+});
+
+test('a frame that appears after the last fast_snapshot is named once, in one line, on the next action', async () => {
+  setup({ topHtml: '<h1>Signing in…</h1>' });
+  const pay = frames.get(7);
+  frames = new Map([[0, frames.get(0)]]);
+  const first = await call('fast_snapshot', {});
+  assert.equal(first.frames, undefined);
+  // the redirect lands: the form frame renders
+  const top = frames.get(0).win;
+  const el = top.document.createElement('iframe');
+  el.setAttribute('src', PAY); el.setAttribute('data-box', '200,300,400,200');
+  Object.defineProperty(el, 'contentDocument', { get: () => null });
+  top.document.body.appendChild(el);
+  frames.set(7, pay);
+  const r = await call('fast_click', { text: 'Nothing like this', noSnapshot: true });
+  assert.match(r.framesAppeared, /^frames appeared since your last snapshot: https:\/\/pay\.provider\.example\/card-form \(2 items\) — fast_snapshot lists their items under frames$/, JSON.stringify(r).slice(0, 300));
+  const again = await call('fast_click', { text: 'Nothing like this', noSnapshot: true });
+  assert.equal(again.framesAppeared, undefined, 'said once, not on every call');
 });

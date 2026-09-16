@@ -4,7 +4,7 @@ import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
 import { clickXY, typeText } from './input.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
-import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers } from './frames.js';
+import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared } from './frames.js';
 import { isInjectableUrl } from '../util.js';
 
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_list', 'fast_close', 'fast_switch']);
@@ -126,9 +126,9 @@ async function runOne(action, args) {
   // DOM tools reach visible frames with their own documents (frames.js): the same page.js runs
   // inside them, results come back in top-page space
   if (action === 'fast_snapshot') return snapshotWithFrames(await frameCtx(), args || {});
-  if (FRAME_AWARE.has(action)) return actWithFrames(await frameCtx(), action, args || {});
+  if (FRAME_AWARE.has(action)) { const ctx = await frameCtx(); return withAppeared(ctx, await actWithFrames(ctx, action, args || {})); }
   // fast_wait {frame}: a wait scoped to one visible frame (text or selector)
-  if (action === 'fast_wait' && args?.frame) return inNamedFrame(await frameCtx(), 'fast_wait', args);
+  if (action === 'fast_wait' && args?.frame) { const ctx = await frameCtx(); return withAppeared(ctx, await inNamedFrame(ctx, 'fast_wait', args)); }
   if (action === 'fast_wait' && args?.text && !args?.selector) {
     // A text wait searches the top document (page.js) AND every rendered
     // sub-frame, cross-origin included (frames.js). With networkIdle/domready
@@ -136,9 +136,11 @@ async function runOne(action, args) {
     // out forever): resolve on it and REPORT the network state.
     const idle = !!(args.networkIdle || args.domready);
     const a = { ...args, timeoutMs: args.timeoutMs || (idle ? 10000 : 5000) };
-    const r = await waitTextAnyFrame(a, () => injectPageAction('fast_wait', a), { cancelTop: cancelPageWaits });
-    if (idle && r && typeof r === 'object' && !r.error) { const pending = await pendingNow(); return { ...r, networkIdle: pending === 0, pending }; }
-    return r;
+    const ctx = await frameCtx();
+    let r = await waitTextAnyFrame(a, () => injectPageAction('fast_wait', a), { cancelTop: cancelPageWaits });
+    r = await withFrameHitSnapshot(ctx, r, a);   // a hit in a frame carries that frame's items
+    if (idle && r && typeof r === 'object' && !r.error) { const pending = await pendingNow(); r = { ...r, networkIdle: pending === 0, pending }; }
+    return withAppeared(ctx, r);
   }
   if (action === 'fast_wait' && (args?.networkIdle || args?.domready)) {
     // selector + networkIdle: the selector is the signal, the network state is reported
@@ -154,6 +156,13 @@ async function runOne(action, args) {
 }
 
 const FRAME_AWARE = new Set(['fast_click', 'fast_fill', 'fast_select_option']);
+// One line on an action/wait result when a frame appeared after the last fast_snapshot.
+async function withAppeared(ctx, r) {
+  if (!r || typeof r !== 'object') return r;
+  let line = null;
+  try { line = await framesAppeared(ctx); } catch {}
+  return line ? { framesAppeared: line, ...r } : r;
+}
 // The page.js bridge addressed by frame (0 = the top document) on the target tab.
 async function frameCtx() {
   const target = await getTargetTab();

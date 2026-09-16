@@ -331,7 +331,7 @@ export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_
       if (r.found) {
         if (cancelTop) { try { await cancelTop(); } catch {} }
         return {
-          found: { text, frame: r.url }, inFrame: true, waitedMs: Date.now() - t0,
+          found: { text, frame: r.url, frameId: f.id }, inFrame: true, waitedMs: Date.now() - t0,
           note: `"${text}" is inside a frame (${r.url}); its elements are in fast_snapshot's \`frames\` and fast_click / fast_fill / fast_select_option act on them (by text, by id "f<frameId>:<i>", or with frame:"<part of the frame URL>")`,
         };
       }
@@ -445,6 +445,7 @@ const inFrame = (t, r) => {
 export async function snapshotWithFrames(ctx, args) {
   if (args && args.frame) return inNamedFrame(ctx, 'fast_snapshot', args);
   const top = await ctx.run(0, 'fast_snapshot', args);
+  if (top && !top.error && !top.frameNotice) noteSeenFrames(ctx.tabId, []);
   if (!top || top.error || !top.frameNotice) return top;
   const { targets } = await frameTargets(ctx);
   if (!targets.length) return top;
@@ -459,6 +460,7 @@ export async function snapshotWithFrames(ctx, args) {
     frames.push({ frame: t.origin, url: t.url, frameId: t.frameId, box: t.box, ...toTopSpace(rest, t) });
     if (t.parent === 0) readTop.add(t.src);
   });
+  noteSeenFrames(ctx.tabId, targets.map((t) => t.src));
   if (!frames.length) return top;
   const { frameNotice, opaqueFrames, ...rest } = top;
   const unreadSrcs = [];
@@ -676,4 +678,43 @@ export function maskCardNumbers(v, depth = 0) {
   const o = {};
   for (const [k, x] of Object.entries(v)) o[k] = maskCardNumbers(x, depth + 1);
   return o;
+}
+
+
+// ── Frames the model has not seen ────────────────────────────────────────────
+// A text wait that hits inside a frame carries that frame's items (the bounded
+// auto-snapshot an action carries), so the fields arrive with the hit: live Azure
+// aef0c734 — the only snapshot ran during the login hop and saw nothing, the wait
+// hit in the blade frame, and the model never read again (it guessed coordinates).
+export async function withFrameHitSnapshot(ctx, r, args = {}) {
+  if (!r || typeof r !== 'object' || !r.inFrame || !r.found || args.noSnapshot) return r;
+  const { targets } = await frameTargets(ctx);
+  const t = targets.find((x) => x.frameId === r.found.frameId) || targets.find((x) => x.url === r.found.frame);
+  if (!t) return r;
+  const s = await withTimeout(ctx.run(t.frameId, 'fast_snapshot', { autoCap: true, noFrameNotice: true, ...(args.full ? { full: true } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }), REACH.snapMs);
+  if (!s || s.error) return r;
+  markSeen(ctx.tabId, [t.src]);
+  const { frameNotice, opaqueFrames, ...rest } = s;
+  return { ...r, snapshot: { frame: t.origin, url: t.url, frameId: t.frameId, box: t.box, ...toTopSpace(rest, t) } };
+}
+
+// Per tab: the top-level frames (by src) that the last fast_snapshot listed. A later
+// action or wait whose page now shows a frame outside that set says so in one line —
+// the model's last read predates it (a snapshot taken mid-redirect, a frame that
+// renders late). Only the top document's own frame scan runs per call; the frame
+// tree is asked only when a new frame is on screen.
+const SEEN = new Map();   // tabId → Set(src)
+function noteSeenFrames(tabId, srcs) { if (tabId != null) SEEN.set(tabId, new Set(srcs)); }
+function markSeen(tabId, srcs) { const s = SEEN.get(tabId); if (s) for (const x of srcs) s.add(x); }
+export async function framesAppeared(ctx) {
+  const seen = SEEN.get(ctx.tabId);
+  if (!seen) return null;   // no snapshot yet: nothing the model could have missed
+  const topScan = await withTimeout(ctx.run(0, 'fast_frames', {}), REACH.dryMs);
+  const fresh = ((topScan && topScan.frames) || []).filter((f) => !seen.has(f.src));
+  if (!fresh.length) return null;
+  const { targets } = await frameTargets(ctx, { topScan: { frames: fresh } });
+  for (const f of fresh) seen.add(f.src);
+  if (!targets.length) return null;
+  const counts = await Promise.all(targets.map((t) => withTimeout(ctx.run(t.frameId, 'fast_snapshot', { autoCap: true, noFrameNotice: true }), 1000)));
+  return `frames appeared since your last snapshot: ${targets.map((t, k) => `${t.url} (${counts[k] && typeof counts[k].count === 'number' ? counts[k].count : '?'} items)`).join('; ')} — fast_snapshot lists their items under frames`;
 }
