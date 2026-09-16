@@ -62,7 +62,8 @@ test('Azure: text inside the cross-origin blade resolves at once, not at the tim
   assert.ok(Date.now() - t0 < 1000, `resolved in ${Date.now() - t0}ms`);
   assert.equal(r.inFrame, true);
   assert.equal(r.found.frame, 'https://sandbox-1.reactblade.portal.azure.net/blade');
-  assert.match(r.note, /fast_click_xy/);
+  assert.match(r.note, /fast_click \/ fast_fill \/ fast_select_option act on them/);
+  assert.doesNotMatch(r.note, /fast_click_xy/);
 });
 
 test('non-Azure, ordinary slow content: text that appears LATE in the top document resolves through the top wait, untouched', async () => {

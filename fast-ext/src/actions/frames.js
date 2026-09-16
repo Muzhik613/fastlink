@@ -332,7 +332,7 @@ export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_
         if (cancelTop) { try { await cancelTop(); } catch {} }
         return {
           found: { text, frame: r.url }, inFrame: true, waitedMs: Date.now() - t0,
-          note: `"${text}" is inside a sub-frame (${r.url}); fast_click/fast_fill act on the top document only — act on it with fast_click_xy + fast_type`,
+          note: `"${text}" is inside a cross-origin frame (${r.url}); its elements are in fast_snapshot's \`frames\` and fast_click / fast_fill / fast_select_option act on them (by text, by id "f<frameId>:<i>", or with frame:"<part of the frame URL>")`,
         };
       }
       if (f.depth < walk.depth) for (const k of matchChildFrames(tree.get(f.id), r.kids)) pass.push({ ...k, depth: f.depth + 1 });

@@ -127,7 +127,8 @@ async function runOne(action, args) {
   // inside them, results come back in top-page space
   if (action === 'fast_snapshot') return snapshotWithFrames(await frameCtx(), args || {});
   if (FRAME_AWARE.has(action)) return actWithFrames(await frameCtx(), action, args || {});
-  if (action === 'fast_wait' && args?.frame) return inNamedFrame(await frameCtx(), 'fast_wait', args);   // hidden: the scorer's read-back, no toolset offers it
+  // fast_wait {frame}: a wait scoped to one visible cross-origin frame (text or selector)
+  if (action === 'fast_wait' && args?.frame) return inNamedFrame(await frameCtx(), 'fast_wait', args);
   if (action === 'fast_wait' && args?.text && !args?.selector) {
     // A text wait searches the top document (page.js) AND every rendered
     // sub-frame, cross-origin included (frames.js). With networkIdle/domready
