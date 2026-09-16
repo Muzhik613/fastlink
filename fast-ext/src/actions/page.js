@@ -1606,7 +1606,7 @@ const opaqueFrames = (doc = document, win = window) => {
 };
 // "<origin> at x, y, WxH; …" for up to FRAME_NOTICE_LIST frames. Pure.
 const frameList = (frames) => {
-  const shown = frames.slice(0, FRAME_NOTICE_LIST).map((f) => `${f.origin} at x:${f.x}, y:${f.y}, ${f.w}x${f.h}`);
+  const shown = frames.slice(0, FRAME_NOTICE_LIST).map((f) => `${f.origin} at ${f.x},${f.y} ${f.w}x${f.h}`);
   const more = frames.length > shown.length ? ` and ${frames.length - shown.length} more` : '';
   return `${shown.join('; ')}${more}`;
 };
@@ -1616,7 +1616,7 @@ const frameList = (frames) => {
 // (live: three Grok models missed a 450x23 box on the same screenshot). Pure.
 const frameNotice = ({ frames }) => {
   if (!frames || !frames.length) return '';
-  return `${frames.length} visible frame(s) DOM tools could not read: ${frameList(frames)}. Their content is visible in fast_screenshot, but DOM tools cannot target it.`;
+  return `${frames.length} frame(s) DOM tools cannot read: ${frameList(frames)} (visible in fast_screenshot only)`;
 };
 // Lead a snapshot result with the notice (a fresh scan). Returns `out` unchanged when none.
 const noticeBoxes = (frames) => frames.slice(0, FRAME_NOTICE_LIST).map(({ origin, x, y, w, h }) => ({ origin, x, y, w, h }));

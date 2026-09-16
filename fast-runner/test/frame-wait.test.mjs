@@ -61,9 +61,8 @@ test('Azure: text inside the cross-origin blade resolves at once, not at the tim
   assert.equal(flag.cancelled, true, 'the still-running page.js wait is cancelled on a frame hit');
   assert.ok(Date.now() - t0 < 1000, `resolved in ${Date.now() - t0}ms`);
   assert.equal(r.inFrame, true);
-  assert.equal(r.found.frame, 'https://sandbox-1.reactblade.portal.azure.net/blade');
-  assert.match(r.note, /fast_click \/ fast_fill \/ fast_select_option act on them/);
-  assert.doesNotMatch(r.note, /fast_click_xy/);
+  assert.equal(r.found.frame, 'https://sandbox-1.reactblade.portal.azure.net', 'the frame is named by its origin, never its URL');
+  assert.equal(r.note, undefined);
 });
 
 test('non-Azure, ordinary slow content: text that appears LATE in the top document resolves through the top wait, untouched', async () => {
@@ -81,7 +80,7 @@ test('non-Azure: text that appears LATE inside a cross-origin frame is found on 
   setTimeout(() => { stripe.dom.window.document.getElementById('s').textContent = 'Your card number is incomplete.'; }, 120);
   const r = await waitTextAnyFrame({ text: 'card number is incomplete', timeoutMs: 2000 }, topWait(() => false, 2000), { walk: FAST });
   assert.equal(r.inFrame, true);
-  assert.ok(r.waitedMs >= 100);
+  assert.equal(r.found.frame, 'https://js.stripe.com');
 });
 
 test('text only in a sub-frame <script> does not count; a timeout names searched and unsearchable frame origins', async () => {

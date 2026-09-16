@@ -87,11 +87,11 @@ function setup({ topHtml, payHtml, payBox = '200,300,400,200', second } = {}) {
 test('fast_snapshot lists the frame\'s items in top-page space with namespaced ids; page.js injected into the frame in the MAIN world', async () => {
   setup();
   const r = await call('fast_snapshot', {});
-  assert.match(r.framesNote, /^1 frame\(s\) read into `frames` \(https:\/\/pay\.provider\.example\)/);
+  assert.equal(r.framesNote, 'read 1 frame(s) into frames; act on their items by id or text');
   assert.equal(r.frameNotice, undefined, 'a frame that was read is not reported as unreadable');
   assert.equal(r.frames.length, 1);
   const f = r.frames[0];
-  assert.deepEqual([f.frame, f.frameId, f.url], ['https://pay.provider.example', 7, PAY]);
+  assert.deepEqual([f.frame, f.frameId, f.url], ['https://pay.provider.example', 7, undefined]);
   assert.deepEqual(f.box, { x: 200, y: 300, w: 400, h: 200 });
   const pay = f.items.find((it) => /Pay now/.test(it.text || ''));
   assert.ok(pay, JSON.stringify(f.items));
@@ -109,7 +109,7 @@ test('fast_click {text} whose target is only in the frame acts there, without th
   const r = await call('fast_click', { text: 'Pay now', noSnapshot: true });
   assert.equal(clicked, 1, JSON.stringify(r));
   assert.ok(Date.now() - t0 < 1400, `took ${Date.now() - t0}ms — the top document's 1.5s auto-wait was paid`);
-  assert.deepEqual(r.inFrame, { frame: 'https://pay.provider.example', url: PAY, frameId: 7 });
+  assert.deepEqual(r.inFrame, { frame: 'https://pay.provider.example', frameId: 7 });
 });
 
 test('fast_fill {fields} splits by document: Email in the top, Card number in the frame, read back in the frame, card masked', async () => {
@@ -173,9 +173,9 @@ test('a miss names only the frames that could NOT be read; a miss with every fra
   setup();
   frames.delete(7);
   const r2 = await call('fast_click', { text: 'Nowhere at all', noSnapshot: true });
-  assert.match(r2.frameNotice, /^1 visible frame\(s\) DOM tools could not read: https:\/\/pay\.provider\.example at x:200, y:300, 400x200\. Their content is visible in fast_screenshot, but DOM tools cannot target it\.$/);
+  assert.equal(r2.frameNotice, '1 frame(s) DOM tools cannot read: https://pay.provider.example at 200,300 400x200 (visible in fast_screenshot only)');
   const snap = await call('fast_snapshot', {});
-  assert.match(snap.frameNotice, /could not read/);
+  assert.match(snap.frameNotice, /cannot read/);
   assert.equal(snap.frames, undefined);
 });
 
@@ -284,11 +284,12 @@ test('live OCI: a form rendered LATE into a SAME-origin frame (URL = the top pag
   SAME_ORIGIN_DOCS.clear();
 });
 
-test('a frame value that names no frame lists the frame URLs that exist', async () => {
+test('a frame value that names no frame lists the frames (origin + id); a frame id picks one', async () => {
   setup();
   const r = await call('fast_snapshot', { frame: 'https://shop.example/checkout', full: true });
-  assert.match(r.error, /^no visible frame URL contains "https:\/\/shop\.example\/checkout" — nothing was done; the frames on this page are: https:\/\/pay\.provider\.example\/card-form \(the value you passed is the top page URL: omit frame to act on the top document\)$/);
-  assert.equal(r.frames[0].url, PAY);
+  assert.equal(r.error, 'no frame matches "https://shop.example/checkout" (nothing done); frames: https://pay.provider.example (f7); that is the top page — omit frame');
+  const byId = await call('fast_snapshot', { frame: 'f7' });
+  assert.equal(byId.inFrame.frameId, 7, 'a frame id picks the frame');
 });
 
 test('depth 2: a same-origin frame nested inside a cross-origin frame is read, coordinates added through both frames', async () => {
@@ -333,7 +334,7 @@ test('a frame that appears after the last fast_snapshot is named once, in one li
   top.document.body.appendChild(el);
   frames.set(7, pay);
   const r = await call('fast_click', { text: 'Nothing like this', noSnapshot: true });
-  assert.match(r.framesAppeared, /^frames appeared since your last snapshot: https:\/\/pay\.provider\.example\/card-form \(2 items\) — fast_snapshot lists their items under frames$/, JSON.stringify(r).slice(0, 300));
+  assert.equal(r.framesAppeared, 'new frame(s) since your last snapshot: https://pay.provider.example f7 (2 items)', JSON.stringify(r).slice(0, 300));
   const again = await call('fast_click', { text: 'Nothing like this', noSnapshot: true });
   assert.equal(again.framesAppeared, undefined, 'said once, not on every call');
 });

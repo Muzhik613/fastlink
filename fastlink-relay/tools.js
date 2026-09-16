@@ -29,7 +29,7 @@ export const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        frame: { type: 'string', description: 'Part of a frame URL: act inside that frame (see fast_snapshot `frames`).' },
+        frame: { type: 'string', description: 'A frame by origin or id ("f7"): act inside it (see fast_snapshot `frames`).' },
         viewport: { type: 'boolean', description: 'Only on-screen items.' },
         overlay: { type: 'boolean', description: 'Also list items of an open menu or popover.' },
         full: { type: 'boolean', description: 'No item cap.' },
@@ -47,7 +47,7 @@ export const TOOLS = [
       properties: {
         text: { type: 'string', description: 'Visible text, label, aria-label or placeholder to match.' },
         id: { type: 'string', description: 'Snapshot item id: "42", or "f7:42" inside a frame.' },
-        frame: { type: 'string', description: 'Part of a frame URL: act inside that frame (see fast_snapshot `frames`).' },
+        frame: { type: 'string', description: 'A frame by origin or id ("f7"): act inside it (see fast_snapshot `frames`).' },
         role: { type: 'string', description: 'Only elements with this role (e.g. "button", "tab", "option").' },
         tag: { type: 'string', description: 'Only elements with this tag (e.g. "a").' },
         index: { type: 'number', description: 'With `text` only: the N-th match (0-based). Never an item id.' },
@@ -63,7 +63,7 @@ export const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        frame: { type: 'string', description: 'Part of a frame URL: act inside that frame (see fast_snapshot `frames`).' },
+        frame: { type: 'string', description: 'A frame by origin or id ("f7"): act inside it (see fast_snapshot `frames`).' },
         match: { type: 'string', description: 'Label, placeholder or name of ONE field.' },
         value: { type: 'string', description: 'Value for `match` ("" clears).' },
         fields: { type: 'object', description: '{label: value} for several fields; a value may be {value, index, section}.' },
@@ -128,7 +128,7 @@ export const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        frame: { type: 'string', description: 'Part of a frame URL: act inside that frame (see fast_snapshot `frames`).' },
+        frame: { type: 'string', description: 'A frame by origin or id ("f7"): act inside it (see fast_snapshot `frames`).' },
         text: { type: 'string', description: 'Text to wait for (use 2+ words).' },
         selector: { type: 'string', description: 'CSS selector of a visible element.' },
         networkIdle: { type: 'boolean', description: 'Wait for the network to go quiet.' },
@@ -188,7 +188,7 @@ export const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        frame: { type: 'string', description: 'Part of a frame URL: act inside that frame (see fast_snapshot `frames`).' },
+        frame: { type: 'string', description: 'A frame by origin or id ("f7"): act inside it (see fast_snapshot `frames`).' },
         field: { type: 'string', description: 'Dropdown label, name or id.' },
         option: { type: 'string', description: 'Option text.' },
         selections: { type: 'object', description: '{field: option} for several dropdowns.' },
@@ -227,7 +227,7 @@ export const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        frame: { type: 'string', description: 'Part of a frame URL: act inside that frame (see fast_snapshot `frames`).' },
+        frame: { type: 'string', description: 'A frame by origin or id ("f7"): act inside it (see fast_snapshot `frames`).' },
         to: { type: 'string', description: 'top, bottom or a percentage like "50%".' },
         pixels: { type: 'number', description: 'Pixels (negative = up).' },
         selector: { type: 'string', description: 'CSS selector of the scroll container.' },

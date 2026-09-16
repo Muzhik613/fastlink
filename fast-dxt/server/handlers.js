@@ -83,7 +83,7 @@ async function dispatchCall(name, args) {
     // Tool-level errors come back as resolved payloads with `error` set, plus
     // any extras (diagnostics, available, etc.). Surface them as text so the
     // LLM sees everything, not just the message.
-    if (payload && typeof payload === 'object' && 'error' in payload) return text(payload);
+    if (payload && typeof payload === 'object' && 'error' in payload) { const { origin, ...err } = payload; return text(err); }   // origin is the relay's consent key, not the model's
     let result = payload?.result ?? null;
     if (name === 'fast_screenshot' && result?.dataUrl) return screenshotContent(result);
     return text(result);

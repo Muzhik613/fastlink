@@ -331,8 +331,7 @@ export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_
       if (r.found) {
         if (cancelTop) { try { await cancelTop(); } catch {} }
         return {
-          found: { text, frame: r.url, frameId: f.id }, inFrame: true, waitedMs: Date.now() - t0,
-          note: `"${text}" is inside a frame (${r.url}); its elements are in fast_snapshot's \`frames\` and fast_click / fast_fill / fast_select_option act on them (by text, by id "f<frameId>:<i>", or with frame:"<part of the frame URL>")`,
+          found: { text, frame: originOf(r.url), frameId: f.id }, inFrame: true,
         };
       }
       if (f.depth < walk.depth) for (const k of matchChildFrames(tree.get(f.id), r.kids)) pass.push({ ...k, depth: f.depth + 1 });
@@ -431,7 +430,9 @@ export function toTopSpace(result, t) {
   };
   return walk(result);
 }
-const frameTag = (t) => ({ frame: t.origin, url: t.url, frameId: t.frameId });
+// A frame is named by its origin and frame id — its URL (a portal blade's is ~250 chars
+// with a session id) is never repeated to the caller.
+const frameTag = (t) => ({ frame: t.origin, frameId: t.frameId });
 const inFrame = (t, r) => {
   if (!r || typeof r !== 'object') return r;
   const { frameNotice, opaqueFrames, ...rest } = r;
@@ -457,7 +458,8 @@ export async function snapshotWithFrames(ctx, args) {
     const s = snaps[k];
     if (!s || s.error) return;
     const { frameNotice, opaqueFrames, ...rest } = s;
-    frames.push({ frame: t.origin, url: t.url, frameId: t.frameId, box: t.box, ...toTopSpace(rest, t) });
+    const { url: _u, ...body } = rest;
+    frames.push({ frame: t.origin, frameId: t.frameId, box: t.box, ...toTopSpace(body, t) });
     if (t.parent === 0) readTop.add(t.src);
   });
   noteSeenFrames(ctx.tabId, targets.map((t) => t.src));
@@ -471,7 +473,7 @@ export async function snapshotWithFrames(ctx, args) {
     const n = await withTimeout(ctx.run(0, 'fast_frames', { unread: unreadSrcs }), REACH.dryMs);
     if (n && n.frameNotice) notice = { frameNotice: n.frameNotice, opaqueFrames: n.opaqueFrames };
   }
-  const framesNote = `${frames.length} frame(s) read into \`frames\` (${[...new Set(frames.map((f) => f.frame))].join(', ')}): their items carry top-page x,y and ids "f<frameId>:<i>"; fast_click / fast_fill / fast_select_option act inside them (by text, id, or frame:"<part of the frame URL>")`;
+  const framesNote = `read ${frames.length} frame(s) into frames; act on their items by id or text`;
   // frames lead the top document's own items: on a framed app the top is chrome only
   const { url, title, ...others } = rest;
   return { framesNote, ...notice, url, title, frames, ...others };
@@ -483,16 +485,16 @@ export async function snapshotWithFrames(ctx, args) {
 export async function inNamedFrame(ctx, action, args) {
   const want = String(args.frame);
   const { targets } = await frameTargets(ctx);
-  const hits = targets.filter((t) => t.url.includes(want) || t.origin.includes(want));
+  const byId = /^f?(\d+)$/.exec(want);
+  const hits = targets.filter((t) => (byId ? t.frameId === Number(byId[1]) : (t.url.includes(want) || t.origin.includes(want))));
   if (hits.length !== 1) {
-    const list = (hits.length ? hits : targets).map((t) => ({ ...frameTag(t), box: t.box }));
+    const names = (hits.length ? hits : targets).map((t) => `${t.origin} (f${t.frameId})`).join(', ');
     return {
       error: hits.length
-        ? `${hits.length} visible frames match frame:${JSON.stringify(want)} — nothing was done; pass a longer part of one frame URL: ${hits.map((t) => t.url).join(' | ')}`
+        ? `frame:${JSON.stringify(want)} matches ${hits.length} frames (nothing done); pass one frame id: ${names}`
         : targets.length
-          ? `no visible frame URL contains ${JSON.stringify(want)} — nothing was done; the frames on this page are: ${targets.map((t) => t.url).join(' | ')}${ctx.topUrl && ctx.topUrl.includes(want) ? ' (the value you passed is the top page URL: omit frame to act on the top document)' : ''}`
-          : `no visible frame on this page — nothing was done; omit frame to act on the top document`,
-      frames: list,
+          ? `no frame matches ${JSON.stringify(want)} (nothing done); frames: ${names}${ctx.topUrl && ctx.topUrl.includes(want) ? '; that is the top page — omit frame' : ''}`
+          : 'no visible frame on this page (nothing done); omit frame',
     };
   }
   const { frame, ...rest } = args;
@@ -685,7 +687,8 @@ export async function withFrameHitSnapshot(ctx, r, args = {}) {
   if (!s || s.error) return r;
   markSeen(ctx.tabId, [t.src]);
   const { frameNotice, opaqueFrames, ...rest } = s;
-  return { ...r, snapshot: { frame: t.origin, url: t.url, frameId: t.frameId, box: t.box, ...toTopSpace(rest, t) } };
+  const { url: _u, ...body } = rest;
+  return { ...r, snapshot: { frame: t.origin, frameId: t.frameId, box: t.box, ...toTopSpace(body, t) } };
 }
 
 // Per tab: the top-level frames (by src) that the last fast_snapshot listed. A later
@@ -706,5 +709,5 @@ export async function framesAppeared(ctx) {
   for (const f of fresh) seen.add(f.src);
   if (!targets.length) return null;
   const counts = await Promise.all(targets.map((t) => withTimeout(ctx.run(t.frameId, 'fast_snapshot', { autoCap: true, noFrameNotice: true }), 1000)));
-  return `frames appeared since your last snapshot: ${targets.map((t, k) => `${t.url} (${counts[k] && typeof counts[k].count === 'number' ? counts[k].count : '?'} items)`).join('; ')} — fast_snapshot lists their items under frames`;
+  return `new frame(s) since your last snapshot: ${targets.map((t, k) => `${t.origin} f${t.frameId} (${counts[k] && typeof counts[k].count === 'number' ? counts[k].count : '?'} items)`).join('; ')}`;
 }

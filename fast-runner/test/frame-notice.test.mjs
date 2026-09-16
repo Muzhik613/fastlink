@@ -32,7 +32,7 @@ test('an embedded cross-origin form: fast_snapshot LEADS with the notice, origin
     <iframe src="https://js.stripe.com/v3/elements-inner-card.html" data-box="40,300,400,220"></iframe>`);
   const r = await run(w, 'fast_snapshot', {});
   assert.equal(Object.keys(r)[0], 'frameNotice', 'first thing the model reads');
-  assert.equal(r.frameNotice, '1 visible frame(s) DOM tools could not read: https://js.stripe.com at x:40, y:300, 400x220. Their content is visible in fast_screenshot, but DOM tools cannot target it.');
+  assert.equal(r.frameNotice, '1 frame(s) DOM tools cannot read: https://js.stripe.com at 40,300 400x220 (visible in fast_screenshot only)');
   assert.deepEqual(JSON.parse(JSON.stringify(r.opaqueFrames)), [{ origin: 'https://js.stripe.com', x: 40, y: 300, w: 400, h: 220 }]);
 });
 
@@ -46,7 +46,7 @@ test('a page full of ad iframes: trackers, hidden, below-the-fold and parent-wri
   ];
   const w = page(`<h1>News</h1><p>story</p>${ads.join('')}`, 'https://news.example/');
   const r = await run(w, 'fast_snapshot', {});
-  assert.match(r.frameNotice, /^6 visible frame\(s\) DOM tools could not read: https:\/\/ad0\.example at x:0, y:100, 300x250; .* and 2 more\. Their content/);
+  assert.match(r.frameNotice, /^6 frame\(s\) DOM tools cannot read: https:\/\/ad0\.example at 0,100 300x250; .* and 2 more \(visible in fast_screenshot only\)$/);
   assert.equal(r.opaqueFrames.length, 4);
   assert.ok(!/px\.ads|hidden\.ads|below\.ads|news\.example/.test(r.frameNotice));
 });
@@ -69,7 +69,7 @@ test('fast_wait timeoutMs 3000 on text that never appears returns within 3.5s (t
 test('a selector wait (this document only) that times out names the visible frames and the frame arg', async () => {
   const w = page('<h1>Create a virtual machine</h1><iframe src="https://sandbox-1.reactblade.portal.azure.net/blade" data-box="0,120,1200,700"></iframe>', 'https://portal.azure.com/');
   const r = await run(w, 'fast_wait', { selector: '#vmName', timeoutMs: 500, noSnapshot: true });
-  assert.match(r.error, /^Timed out waiting for selector "#vmName" in this document — it may be inside a visible frame \(https:\/\/sandbox-1\.reactblade\.portal\.azure\.net at x:0, y:120, 1200x700\); pass frame:/);
+  assert.match(r.error, /^Timed out waiting for selector "#vmName" in this document — it may be inside a visible frame \(https:\/\/sandbox-1\.reactblade\.portal\.azure\.net at 0,120 1200x700\); pass frame:/);
 });
 
 test('REGRESSION ba72fd8: a wait whose text matches only a hidden element answers at its deadline (it used to throw and hang to the 20s bridge)', async () => {
@@ -87,7 +87,7 @@ test('REGRESSION ba72fd8: a wait whose text matches only a hidden element answer
 test('a frame document read by the background (noFrameNotice) carries no notice of its own', async () => {
   const w = page('<h1>Blade</h1><iframe src="https://nested.example/" data-box="0,0,400,300"></iframe>', 'https://sandbox-1.reactblade.portal.azure.net/blade');
   assert.equal((await run(w, 'fast_snapshot', { noFrameNotice: true })).frameNotice, undefined);
-  assert.match((await run(w, 'fast_snapshot', {})).frameNotice, /could not read/);
+  assert.match((await run(w, 'fast_snapshot', {})).frameNotice, /cannot read/);
 });
 
 test('the scan is bounded on a page with tens of thousands of iframes', () => {

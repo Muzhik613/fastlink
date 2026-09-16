@@ -36,6 +36,53 @@ const TAB_GONE_RE = /no tab with id|cannot access|chrome:\/\/|the tab was closed
 
 let __evtSeq = 0;
 
+// ── What the model reads ─────────────────────────────────────────────────────
+// Only what a caller acts on leaves the extension: no timings or internal bookkeeping
+// (logs keep those), no value repeated under a second name, no URL that did not change.
+// One pass at the exit, over the result and the per-field / per-step / snapshot parts.
+const DEBUG_KEYS = new Set(['timing', 'elapsedMs', 'waitedMs', 'totalMatches', 'valueSet', 'kind', 'via', 'opened', 'panelIds', 'triedOpen', 'tried', 'snapshotFresh', 'targetTab', 'field', 'selectField']);
+const SETTLE_HINT_RE = /\s*\|?\s*page was still changing when this snapshot was taken[^|]*/;
+function slimItem(it) {
+  if (!it || typeof it !== 'object') return it;
+  const o = { ...it };
+  if (o.innerText && o.innerText === o.text) delete o.innerText;
+  if (o.name && (o.name === o.text || o.name === o.label)) delete o.name;
+  if (o.ariaLabel && (o.ariaLabel === o.label || o.ariaLabel === o.text)) delete o.ariaLabel;
+  return o;
+}
+function slimSnapshot(sn) {
+  if (!sn || typeof sn !== 'object') return sn;
+  const o = { ...sn };
+  if (Array.isArray(o.items)) o.items = o.items.map(slimItem);
+  if (Array.isArray(o.frames)) o.frames = o.frames.map(slimSnapshot);
+  if (o.dialog && Array.isArray(o.dialog.items)) o.dialog = { ...o.dialog, items: o.dialog.items.map(slimItem) };
+  return o;
+}
+function slimResult(r, depth = 0) {
+  if (!r || typeof r !== 'object' || Array.isArray(r) || depth > 3 || typeof r.dataUrl === 'string') return r;
+  const o = {};
+  for (const [k, v] of Object.entries(r)) {
+    if (DEBUG_KEYS.has(k)) continue;
+    if (k === 'willNavigate' && v === false) continue;
+    if (k === 'index' && typeof v === 'number' && depth === 0 && r.clicked) continue;
+    if (k === 'contentScript' && v === 'fresh') continue;
+    o[k] = v;
+  }
+  if (o.urlChanged === false) { delete o.url; delete o.urlChanged; }
+  if (typeof o.hint === 'string') { const h = o.hint.replace(SETTLE_HINT_RE, '').replace(/^\s*\|\s*/, '').trim(); if (h) o.hint = h; else delete o.hint; }
+  if (o.clicked) o.clicked = slimItem(o.clicked);
+  if (o.snapshot) o.snapshot = slimSnapshot(o.snapshot);
+  if (Array.isArray(o.items) || Array.isArray(o.frames)) Object.assign(o, slimSnapshot({ items: o.items, frames: o.frames }));
+  if (!o.items) delete o.items;
+  if (!o.frames) delete o.frames;
+  for (const bag of ['fields', 'results']) {
+    if (o[bag] && typeof o[bag] === 'object') {
+      o[bag] = Array.isArray(o[bag]) ? o[bag].map((x) => slimResult(x, depth + 1)) : Object.fromEntries(Object.entries(o[bag]).map(([k, v]) => [k, slimResult(v, depth + 1)]));
+    }
+  }
+  return o;
+}
+
 // ---------------------------------------------------------------------------
 // User "Stop" pause gate (SAFETY N2 kill-switch). The popup's Stop button sets
 // chrome.storage.session['fastlink.drivingPaused']; while true, EVERY action is
@@ -74,7 +121,7 @@ export async function dispatchAction(action, args) {
   notifyOverlay({ phase: 'start', id: evtId, action, args });
   try {
     // card numbers are masked to their last 4 digits in every result (frames.js)
-    const r = maskCardNumbers(await runOne(action, args));
+    const r = slimResult(maskCardNumbers(await runOne(action, args)));
     // Pass error payloads through whole — diagnostics/available/etc. must survive to the LLM.
     if (r && typeof r === 'object' && 'error' in r && r.error !== undefined) {
       notifyOverlay({ phase: 'end', id: evtId, ok: false, error: r.error });
