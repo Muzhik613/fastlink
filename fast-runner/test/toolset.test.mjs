@@ -48,6 +48,27 @@ test('hidden tools (scorer fast_frame_read, operator fast_ext_reload) are on the
   assert.deepEqual(names(tools), ['fast_snapshot', ...NATIVE]);
 });
 
+test('no shipped toolset override contradicts tools.js on id / frame / index (da54792, 81054d8)', () => {
+  // Two descriptions of one tool must agree: the override replaces tools.js's text, but the model still
+  // sees tools.js's input schema, so an override that says otherwise sends it two stories.
+  for (const name of ['phase2', 'phase2-eval', 'no-cdp']) {
+    const ts = loadToolset(name);
+    for (const [tool, text] of Object.entries(ts.describe)) {
+      const schema = TOOLS.find(t => t.name === tool)?.inputSchema?.properties || {};
+      const at = `${name} ${tool}`;
+      assert.doesNotMatch(text, /NOT a snapshot id/i, `${at}: a snapshot item id IS a target now`);
+      if (schema.id) assert.match(text, /`id`/, `${at}: names the id target`);
+      if (schema.id) assert.match(text, /f7:42|f<frameId>:/, `${at}: shows the frame id form`);
+      // fast_wait's `frame` is the scorer's hidden read-back (fast-ext index.js), so its override does not advertise it
+      if (schema.frame && tool !== 'fast_snapshot' && tool !== 'fast_wait') assert.match(text, /`frame/, `${at}: names frame`);
+      if (tool === 'fast_wait') assert.match(text, /frames are searched/, `${at}: a text wait searches frames`);
+      if (tool === 'fast_snapshot') assert.match(text, /`frames`/, `${at}: frame items come under frames`);
+      if (schema.index && /index = the N-th/.test(text) && tool === 'fast_click') assert.match(text, /with text|text match/, `${at}: the N-th-match reading of index is only WITH text`);
+      if (tool === 'fast_click_xy') assert.doesNotMatch(text, /cross-origin iframe\)/, `${at}: fast_click reaches visible cross-origin frames`);
+    }
+  }
+});
+
 test('"default" and unset and FASTRUN_TOOLSET resolve the same file', () => {
   const a = loadToolset('default'), b = loadToolset(undefined);
   process.env.FASTRUN_TOOLSET = 'phase2';
