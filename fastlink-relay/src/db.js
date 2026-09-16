@@ -507,36 +507,6 @@ export async function setOperator(db, userId, isOp) {
     .run();
 }
 
-// --- BYO Gemini key (encrypted at rest, AES-GCM) ----------------------------
-// keyEncSecret comes from env.KEY_ENC_SECRET (passed in by the caller so db.js
-// stays free of module-level state/secrets). Returns the decrypted key or null.
-
-export async function getUserGeminiKey(db, userId, keyEncSecret) {
-  const row = await db
-    .prepare(`SELECT gemini_key_enc FROM users WHERE user_id = ?`)
-    .bind(String(userId))
-    .first();
-  if (!row || !row.gemini_key_enc) return null;
-  try {
-    return await aesGcmDecrypt(row.gemini_key_enc, keyEncSecret);
-  } catch {
-    return null; // unreadable (wrong/rotated KEY_ENC_SECRET) — treat as no key
-  }
-}
-
-// Store (or clear, when key is falsy) a user's Gemini key, encrypted at rest.
-export async function setUserGeminiKey(db, userId, key, keyEncSecret) {
-  const enc = key ? await aesGcmEncrypt(String(key), keyEncSecret) : null;
-  await db
-    .prepare(
-      `INSERT INTO users (user_id, email, created_at, gemini_key_enc)
-       VALUES (?, NULL, ?, ?)
-       ON CONFLICT(user_id) DO UPDATE SET gemini_key_enc = excluded.gemini_key_enc`
-    )
-    .bind(String(userId), now(), enc)
-    .run();
-}
-
 // --- fast_evaluate policy (allowlist) ---------------------------------------
 
 // Composite policy for relay-core's gate. fast_evaluate fires only when
@@ -588,48 +558,4 @@ export async function removeEvalOrigin(db, userId, origin) {
     .prepare(`DELETE FROM eval_allowed_origins WHERE user_id = ? AND origin = ?`)
     .bind(String(userId), String(origin))
     .run();
-}
-
-// --- AES-GCM helpers (encrypt-at-rest for the BYO Gemini key) ---------------
-// Key is derived from keyEncSecret via SHA-256 (32-byte AES-256 key). Output is
-// base64( iv(12) || ciphertext+tag ). Throws if keyEncSecret is missing.
-
-async function aesKey(keyEncSecret) {
-  if (!keyEncSecret) throw new Error('KEY_ENC_SECRET not configured');
-  const raw = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(keyEncSecret)));
-  return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
-}
-
-async function aesGcmEncrypt(plaintext, keyEncSecret) {
-  const key = await aesKey(keyEncSecret);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = new Uint8Array(
-    await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext))
-  );
-  const out = new Uint8Array(iv.length + ct.length);
-  out.set(iv, 0);
-  out.set(ct, iv.length);
-  return bytesToB64(out);
-}
-
-async function aesGcmDecrypt(b64, keyEncSecret) {
-  const key = await aesKey(keyEncSecret);
-  const buf = b64ToBytes(b64);
-  const iv = buf.slice(0, 12);
-  const ct = buf.slice(12);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
-  return new TextDecoder().decode(pt);
-}
-
-function bytesToB64(bytes) {
-  let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-
-function b64ToBytes(b64) {
-  const bin = atob(String(b64));
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
 }

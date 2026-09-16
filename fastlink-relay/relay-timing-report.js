@@ -5,8 +5,7 @@
 // compare line for line. Both render through fast-dxt/server/timing-format.js.
 //
 // Auth: the relay's /trace endpoint is device-token-authed (same token the
-// FastLink extension already holds — the same credential /consent and
-// /settings/gemini-key use). Get it from the extension's service worker console:
+// FastLink extension already holds — the same credential /consent uses). Get it from the extension's service worker console:
 //   chrome.storage.local.get('deviceToken', console.log)
 //
 // Usage:

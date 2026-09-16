@@ -110,9 +110,6 @@ MAIL_FROM = "login@ytx.app"
 # NOTE: pending human ratification per SIGNUP-SPEC §7 Q1 (real working keypair;
 # webstore will re-notify if the key is swapped pre-launch).
 EXTENSION_ID = "ockcjadbkdfgfllidpcoamcepahfmlpf"
-# Optional Gemini model override for the scout/vision tier (relay-core reads it).
-# Defaults to gemini-2.5-flash-lite if unset.
-# FASTLINK_GEMINI_MODEL = "gemini-2.5-flash-lite"
 # Optional (magiclink mode): the email marked is_operator=1 — enables the
 # operator-only fast_evaluate test mode (eval-allowlist delta, tasks #9/#10). In
 # shared mode the bootstrap user is operator automatically, so this is ignored.
@@ -133,18 +130,6 @@ EXTENSION_ID = "ockcjadbkdfgfllidpcoamcepahfmlpf"
 #                       COOKIE_SECRET if unset, but set it explicitly).
 #   MAIL_API_KEY      - Resend API key to send the link (auth.js reads
 #                       MAIL_API_KEY || RESEND_API_KEY; standardize on MAIL_API_KEY).
-#   --- active-optional (v1; scout/vision tier ported, SPEC §12) ---
-#   GEMINI_API_KEY    - enables fast_scout/point/point_som/fill_vision/do/locate.
-#                       OPTIONAL: without it those 6 tools return {disabled:true}
-#                       and the relay still runs. (auth-core falls back to
-#                       GOOGLE_API_KEY.) Operator pays for ALL users' vision calls
-#                       — see the cost/abuse flag in SAFETY.md §11 (shared+rate-
-#                       limit vs per-user key is an open pre-launch decision).
-#   --- BYO per-user Gemini key (tasks #9/#10; set before enabling per-user keys) ---
-#   KEY_ENC_SECRET    - AES-GCM key material to encrypt each user's own Gemini key
-#                       at rest in D1 (the per-user-key answer to the §11 cost
-#                       flag). Required ONLY once BYO-key is enabled; until then
-#                       the shared GEMINI_API_KEY path is used.
 
 # ---------------------------------------------------------------------------
 # Observability: tail/live logs back the audit/debug story (SAFETY.md §5).

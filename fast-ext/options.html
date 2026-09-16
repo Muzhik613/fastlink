@@ -190,7 +190,7 @@
     .disclosure summary { cursor: pointer; color: var(--fl-signal); font-size: 13.5px; font-weight: 600; }
     .disclosure[open] summary { margin-bottom: 6px; }
 
-    /* ---- vision saved row ---- */
+    /* ---- confirmation row (#pair-confirm) ---- */
     .saved-row {
       display: flex; align-items: center; gap: 10px; margin-top: 12px;
       padding: 11px 13px; border-radius: var(--fl-r);
@@ -271,7 +271,6 @@
 
     <nav class="tabs" role="tablist" aria-label="Settings sections">
       <button class="tab" id="tab-connection" role="tab" data-tab="connection" aria-controls="panel-connection">Connection</button>
-      <button class="tab" id="tab-vision" role="tab" data-tab="vision" aria-controls="panel-vision">Vision &amp; speed</button>
       <button class="tab" id="tab-behavior" role="tab" data-tab="behavior" aria-controls="panel-behavior">Behavior</button>
       <button class="tab" id="tab-sites" role="tab" data-tab="sites" aria-controls="panel-sites">Sites &amp; about</button>
     </nav>
@@ -374,45 +373,6 @@
 
     </section>
 
-    <!-- ============ TAB: VISION & SPEED ============ -->
-    <section class="tabpanel" id="panel-vision" role="tabpanel" aria-labelledby="tab-vision">
-
-      <!-- 2. VISION & SPEED (Gemini key) -->
-      <div class="card" id="vision-card">
-      <h2>Vision &amp; speed <span id="vision-pill" class="pill rec badge">Recommended</span></h2>
-      <p class="desc">Add your free Google Gemini key to unlock FastLink's fastest, most capable tiers. This is core to a great experience — the key is stored on the relay (device-token authed), never typed into a chat.</p>
-      <ul class="unlocks">
-        <li><b>Vision tier</b> — drive canvas, iframe, and other non-DOM UIs; screenshot-based locating &amp; clicking; one-shot vision form-fill.</li>
-        <li><b>Scout</b> — instant page pre-reads that let Claude plan in one pass, so tasks run much faster.</li>
-      </ul>
-
-      <!-- field view (no key on file) -->
-      <div id="gemini-field">
-        <label for="geminiKey">Gemini API key</label>
-        <input id="geminiKey" type="password" placeholder="AIza…" autocomplete="off" spellcheck="false" />
-        <div class="row">
-          <button id="gemini-btn" class="primary small">Save key</button>
-          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="linkbtn">Get a free key →</a>
-        </div>
-        <ol class="howto">
-          <li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener"><strong>Google AI Studio</strong></a>.</li>
-          <li>Sign in and click <strong>Create API key</strong> (any project works).</li>
-          <li>Copy the key (<code>AIza…</code>), paste it above, and click <strong>Save key</strong>.</li>
-        </ol>
-        <p class="fine">Requires a paired browser (above). No key? FastLink still works in DOM-only mode — but you'll want this for canvas/iframe sites and the speed boost.</p>
-      </div>
-
-      <!-- saved view (key on file) -->
-      <div id="gemini-saved" class="saved-row" style="display:none;">
-        <span class="chk">✓</span>
-        <span id="gemini-saved-text">Vision enabled — key saved</span>
-        <button id="gemini-change" class="ghost small">Change key</button>
-      </div>
-      <div id="gemini-msg" class="msg"></div>
-    </div>
-
-    </section>
-
     <!-- ============ TAB: BEHAVIOR ============ -->
     <section class="tabpanel" id="panel-behavior" role="tabpanel" aria-labelledby="tab-behavior">
 
@@ -506,7 +466,6 @@
       </div>
       <div class="about-links">
         <a href="onboarding.html" target="_blank" class="linkbtn">Open the welcome guide →</a>
-        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="linkbtn">Get a Gemini key →</a>
       </div>
     </div>
 

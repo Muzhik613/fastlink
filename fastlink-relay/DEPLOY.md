@@ -82,17 +82,6 @@ rebuild). Secrets are NOT in wrangler.toml — set each with `wrangler secret pu
 openssl rand -hex 32 | wrangler secret put COOKIE_SECRET
 ```
 
-**Recommended (active-optional): vision/scout tier**
-
-```bash
-# Enables fast_scout/point/point_som/fill_vision/do/locate (SPEC §12, ported in
-# task #7). OPTIONAL — without it those 6 tools return {disabled:true} and the
-# relay still runs. Get a Gemini key from Google AI Studio. Operator pays for ALL
-# users' vision calls — see the cost/abuse flag in SAFETY.md §11 before going
-# multi-user.
-wrangler secret put GEMINI_API_KEY
-```
-
 ### Option A — Shared mode (recommended first deploy: single user, no email)
 
 The fastest path to a live relay — no email provider needed. Keep
@@ -125,25 +114,11 @@ wrangler secret put MAIL_API_KEY                              # Resend API key
 > `MAIL_API_KEY`. Until that's done, run in **shared mode** (Option A). (auth.js
 > reads `MAIL_API_KEY || RESEND_API_KEY` — standardize on `MAIL_API_KEY`.)
 
-### Optional — BYO per-user Gemini key + operator eval (tasks #9/#10)
+### Optional — operator eval (tasks #9/#10)
 
-Advanced, additive — skip for a basic deploy. Lets each user supply their **own**
-Gemini key (so the operator isn't funding everyone's vision calls — the per-user
-answer to the cost flag in SAFETY.md §11), stored AES-GCM-encrypted at rest in D1.
-
-```bash
-openssl rand -hex 32 | wrangler secret put KEY_ENC_SECRET   # encrypts per-user Gemini keys at rest
-```
-
-`KEY_ENC_SECRET` is **one shared value**: oauth's db.js AES-GCM-encrypts each
-user's BYO key with it, and relay-core's DO decrypts with the same secret
-(`getUserGeminiKey(DB, userId, env.KEY_ENC_SECRET)`) — set it once, identically.
-It's a secret, not a var (no wrangler.toml binding). Set it **before** enabling
-BYO keys; if unset (or a user has no stored key), BYO decrypt returns `null` and
-the relay **gracefully falls back** to the operator `GEMINI_API_KEY`. Optional
-var `OPERATOR_EMAIL` (magic-link mode) marks one email `is_operator=1`, enabling
-operator-only `fast_evaluate` test mode; in shared mode the bootstrap user is
-operator automatically.
+Optional var `OPERATOR_EMAIL` (magic-link mode) marks one email `is_operator=1`,
+enabling operator-only `fast_evaluate` test mode; in shared mode the bootstrap user
+is operator automatically.
 
 ## 5. Public base URL (already set: relay.ytx.app)
 
@@ -258,7 +233,6 @@ The relay drives the **paired** browser; nothing happens until a browser dials i
 | extension won't connect | wrong base URL / Origin rejected | check `ALLOWED_ORIGINS` var + popup relay URL + deviceToken |
 | shared-mode `/authorize` always denies | bootstrap secret unset | `wrangler secret put OWNER_SECRET` (alias `SHARED_SECRET` also accepted) |
 | auth "insecure default" warning | `COOKIE_SECRET` unset | `wrangler secret put COOKIE_SECRET` (required all modes) |
-| vision tools return `{disabled:true}` | `GEMINI_API_KEY` unset | `wrangler secret put GEMINI_API_KEY` (optional but enables scout/vision) |
 | `/mcp` CORS preflight fails in browser | OAuthProvider may reject the unauthenticated `OPTIONS` before relay-core's apiHandler runs | preflight carries no `Authorization`; if it never reaches the handler, oauth's defaultHandler must answer `OPTIONS /mcp` (204) — relay-core handles the case where it does reach it |
 
 ---

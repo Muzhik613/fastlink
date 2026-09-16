@@ -76,8 +76,6 @@ export function makeDefaultHandler() {
             return handleExtAuthorize(request, env);
           case '/ext/authorize/wait':
             return handleExtAuthorizeWait(request, env);
-          case '/settings/gemini-key':
-            return handleSettingsGeminiKey(request, env);
           case '/consent':
             return handleConsent(request, env);
           case '/trace':
@@ -514,65 +512,6 @@ async function handlePairClaim(request, env) {
 }
 
 // ===========================================================================
-// /settings/gemini-key — device-token-authed BYO Gemini key (SIGNUP-SPEC §5.3, P1).
-// The onboarding page (ext-auth, step 2) POSTs the user's own Gemini key so the
-// scout/vision tier works for extension-only users without leaving the
-// browser. The device token the extension already holds IS the auth — no extra
-// OAuth. Key is stored AES-GCM encrypted at rest (db.setUserGeminiKey). FastLink is
-// fully usable DOM-only WITHOUT a key; this is purely the optional speed tier.
-//   POST { deviceToken, key }  -> { ok:true, hasKey } (empty/missing key clears it)
-//   GET  ?deviceToken=...      -> { hasKey, effective, source } (never the key itself)
-//     hasKey    = a personal BYO key is stored for this user
-//     effective = vision actually works — own key OR the relay's operator-level
-//                 GEMINI_API_KEY/GOOGLE_API_KEY fallback (mirrors userRelay.js),
-//                 so the UI doesn't show "add a key" when vision is already live
-//     source    = 'own' | 'shared' | null
-// ===========================================================================
-async function handleSettingsGeminiKey(request, env) {
-  if (request.method === 'OPTIONS') return corsPreflight();
-
-  // Resolve identity from the device token (same bearer the extension holds).
-  async function userFromToken(token) {
-    const device = await db.lookupDevice(env.DB, token);
-    if (!device || device.revoked) return null;
-    return device.userId;
-  }
-
-  if (request.method === 'GET') {
-    const token = new URL(request.url).searchParams.get('deviceToken');
-    const userId = await userFromToken(token);
-    if (!userId) return jsonResponse({ error: 'invalid_device_token' }, 401);
-    const key = await db.getUserGeminiKey(env.DB, userId, env.KEY_ENC_SECRET);
-    // Same operator-key fallback userRelay.js uses when serving vision calls —
-    // a user without a personal key still has vision if the shared key exists.
-    const shared = !!(env.GEMINI_API_KEY || env.GOOGLE_API_KEY);
-    return jsonResponse({
-      hasKey: !!key,
-      effective: !!key || shared,
-      source: key ? 'own' : (shared ? 'shared' : null),
-    });
-  }
-
-  if (request.method === 'POST') {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return jsonResponse({ error: 'invalid_json' }, 400);
-    }
-    const userId = await userFromToken(body && body.deviceToken);
-    if (!userId) return jsonResponse({ error: 'invalid_device_token' }, 401);
-    const key = body && body.key != null ? String(body.key).trim() : '';
-    // Empty/missing key clears any stored key (db treats falsy as clear).
-    await db.setUserGeminiKey(env.DB, userId, key || null, env.KEY_ENC_SECRET);
-    await db.logAudit(env.DB, userId, key ? 'gemini_key_set' : 'gemini_key_clear', {});
-    return jsonResponse({ ok: true, hasKey: !!key });
-  }
-
-  return jsonResponse({ error: 'method_not_allowed' }, 405);
-}
-
-// ===========================================================================
 // /consent — per-origin consent grant/revoke (SIGNUP-SPEC §4.2). relay-auth OWNS
 // this endpoint; hardening owns the ENFORCEMENT gate in mcp.js (which READS the
 // site_consent rows this writes). Device-token-authed (the extension already holds
@@ -626,8 +565,7 @@ async function handleConsent(request, env) {
 
 // ===========================================================================
 // /trace — read back the per-session tool-call TIMING trace the DO recorded
-// (src/timing.js). Device-token-authed, exactly like /consent and
-// /settings/gemini-key: the token the user's own extension holds resolves to a
+// (src/timing.js). Device-token-authed, exactly like /consent: the token the user's own extension holds resolves to a
 // userId, and we only ever read THAT user's DO. There is no unauthenticated
 // surface, and no cross-user surface — the DO is addressed by idFromName(userId)
 // derived from the token, never from a request parameter.
@@ -662,7 +600,7 @@ async function handleTrace(request, env) {
 // /devices — name this browser and see the account's other browsers.
 // Backs the extension options page's "This browser's name" card, which is the
 // relay twin of the local broker's install-slot card. Device-token-authed,
-// exactly like /consent, /settings/gemini-key and /trace: the token the
+// exactly like /consent and /trace: the token the
 // extension already holds resolves to a userId, and we only ever touch THAT
 // user's DO (idFromName(userId) derived from the token — never from a request
 // parameter), so a device token can only read/rename devices on its own account.

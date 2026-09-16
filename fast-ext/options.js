@@ -1,7 +1,7 @@
 // options.js — the FastLink Settings hub. FastLink runs the local broker AND the
 // cloud relay AT THE SAME TIME (both drive the same browser), so this page pairs/
 // unpairs the relay, shows live status of BOTH transports, and centralizes every
-// setting: the Gemini vision key (mirrors onboarding.js), advanced control, the
+// setting: advanced control, the
 // broker slot, desktop notifications, and per-origin site permissions.
 // Applying a transport change reloads the extension so background.js re-reads config.
 
@@ -10,9 +10,9 @@ import { claimPairingCode, authorizeViaWebAuthFlow, authorizeViaTabPoll } from '
 const $ = (id) => document.getElementById(id);
 
 // ---- section tabs -----------------------------------------------------------
-// Top tab bar: one section (Connection / Vision & speed / Behavior / Sites &
-// about) visible at a time. The selected tab is mirrored into location.hash so
-// a refresh (and any future deep link, e.g. options.html#vision) lands on the
+// Top tab bar: one section (Connection / Behavior / Sites & about) visible at a
+// time. The selected tab is mirrored into location.hash so
+// a refresh (and any future deep link, e.g. options.html#behavior) lands on the
 // same section.
 const TAB_DEFAULT = 'connection';
 function showTab(name) {
@@ -206,7 +206,7 @@ async function onSignIn() {
     showMsg(live
       ? `Connected${userId ? ` as ${userId}` : ''}. The cloud relay is now active.`
       : `Connected${userId ? ` as ${userId}` : ''}. Reloading FastLink to apply…`, 'ok');
-    if (live) { render(); reflectVisionStatus(); }
+    if (live) render();
   } catch (e) {
     showMsg(e?.message || String(e), 'err');
   } finally {
@@ -226,7 +226,7 @@ async function onPair() {
     showMsg(live
       ? `Paired${userId ? ` as ${userId}` : ''}. The cloud relay is now active.`
       : `Paired${userId ? ` as ${userId}` : ''}. Reloading FastLink to connect…`, 'ok');
-    if (live) { render(); reflectVisionStatus(); }
+    if (live) render();
   } catch (e) {
     showMsg(e?.message || String(e), 'err');
   } finally {
@@ -275,99 +275,6 @@ async function onDisconnectToggle() {
   const type = act === 'reconnect' ? 'fastlink:relay-reconnect' : 'fastlink:relay-stop';
   try { await chrome.runtime.sendMessage({ type }); } catch {}
   renderControls();
-}
-
-// ---------------------------------------------------------------------------
-// Vision & speed (Gemini key). MIRRORS onboarding.js exactly: same relay storage
-// state (relayBase + deviceToken) and the same endpoints (POST/GET
-// {base}/settings/gemini-key), so the two pages always agree on whether a key is
-// on file. The key lives on the relay (device-token authed) — this page only
-// reflects/edits whether one exists, never reads it back.
-// ---------------------------------------------------------------------------
-// `source` distinguishes WHY vision is enabled: 'own' = user's BYO key is on
-// file; 'shared' = no personal key, but the relay's operator-level Gemini key
-// covers this user (so the "add a key" pitch would be wrong). Omitted/unknown
-// source is treated as 'own' for back-compat with relays that predate it.
-function paintVision(enabled, source) {
-  const pill = $('vision-pill');
-  const field = $('gemini-field');
-  const saved = $('gemini-saved');
-  if (enabled) {
-    const shared = source === 'shared';
-    pill.textContent = 'Enabled';
-    pill.className = 'pill ok badge';
-    field.style.display = 'none';
-    saved.style.display = 'flex';
-    $('gemini-saved-text').textContent = shared
-      ? "Vision enabled — using the relay's shared key"
-      : 'Vision enabled — key saved';
-    // Shared-key users have no key to "change" — offer the upgrade path instead.
-    $('gemini-change').textContent = shared ? 'Use your own key' : 'Change key';
-    $('gemini-btn').textContent = shared ? 'Save key' : 'Update key';
-  } else {
-    pill.textContent = 'Recommended';
-    pill.className = 'pill rec badge';
-    saved.style.display = 'none';
-    field.style.display = '';
-  }
-}
-
-async function onSaveGeminiKey() {
-  const key = ($('geminiKey').value || '').trim();
-  const btn = $('gemini-btn');
-  const msg = $('gemini-msg');
-  if (!key) { msg.textContent = 'Paste a Gemini API key first.'; msg.className = 'msg info'; return; }
-  btn.disabled = true;
-  msg.textContent = 'Saving key…'; msg.className = 'msg info';
-  try {
-    const c = await chrome.storage.local.get(['relayBase', 'deviceToken']);
-    if (!c.deviceToken) throw new Error('Pair this browser with the relay first (Connection above).');
-    const base = String(c.relayBase || DEFAULT_RELAY_BASE).replace(/\/+$/, '');
-    const res = await fetch(`${base}/settings/gemini-key`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ deviceToken: c.deviceToken, key }),
-    });
-    if (!res.ok) {
-      let b = {}; try { b = await res.json(); } catch {}
-      const FRIENDLY = {
-        invalid_device_token: 'This browser is no longer paired — re-pair it in Connection above.',
-        invalid_json: 'The relay rejected the request.',
-      };
-      throw new Error(FRIENDLY[b?.error] || b?.error || `Could not save the key (HTTP ${res.status}).`);
-    }
-    let body = {}; try { body = await res.json(); } catch {}
-    $('geminiKey').value = '';
-    const removed = body.hasKey === false;
-    // Removal doesn't necessarily disable vision — the relay's shared key may
-    // still cover this user, so re-ask the relay instead of painting false.
-    if (removed) reflectVisionStatus(); else paintVision(true, 'own');
-    msg.textContent = removed
-      ? 'Vision key removed — FastLink continues to work DOM-only.'
-      : 'Vision enabled — the scout / vision speed tier is now active for this account.';
-    msg.className = 'msg ok';
-  } catch (e) {
-    msg.textContent = e?.message || String(e);
-    msg.className = 'msg err';
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-// Reflect whether a vision key is already on file (read-only GET, never returns
-// the key). Silent if unpaired or the endpoint isn't live yet.
-async function reflectVisionStatus() {
-  const c = await chrome.storage.local.get(['relayBase', 'deviceToken']);
-  if (!c.deviceToken) { paintVision(false); return; }
-  try {
-    const base = String(c.relayBase || DEFAULT_RELAY_BASE).replace(/\/+$/, '');
-    const res = await fetch(`${base}/settings/gemini-key?deviceToken=${encodeURIComponent(c.deviceToken)}`);
-    if (!res.ok) return;
-    const b = await res.json();
-    // `effective`/`source` are newer relay fields — fall back to hasKey so an
-    // updated extension still renders correctly against an older relay.
-    paintVision(!!(b?.effective ?? b?.hasKey), b?.source || (b?.hasKey ? 'own' : null));
-  } catch {}
 }
 
 // Advanced control = coordinate clicks/typing, running scripts, and background-
@@ -426,8 +333,8 @@ async function onToggleDebugger() {
 //
 // The relay is authoritative (names live in D1, selection lives in the user's
 // Durable Object). This page reads/writes them through {base}/devices, authed
-// with the device token this browser already holds — exactly like the Gemini-key
-// and site-permission cards. Nothing is mirrored into chrome.storage: a second
+// with the device token this browser already holds — exactly like the
+// site-permission card. Nothing is mirrored into chrome.storage: a second
 // copy of a name would just be a way to disagree with the relay.
 // ---------------------------------------------------------------------------
 const RELAY_NAME_ERRORS = {
@@ -845,15 +752,6 @@ $('install-custom-apply').addEventListener('click', onApplyCustomInstall);
 $('install-custom').addEventListener('keydown', (e) => { if (e.key === 'Enter') onApplyCustomInstall(); });
 $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') onPair(); });
 
-$('gemini-btn').addEventListener('click', onSaveGeminiKey);
-$('gemini-change').addEventListener('click', () => {
-  // Reveal the input to replace the key; keep the green "Enabled" pill.
-  $('gemini-saved').style.display = 'none';
-  $('gemini-field').style.display = '';
-  $('geminiKey').focus();
-});
-$('geminiKey').addEventListener('keydown', (e) => { if (e.key === 'Enter') onSaveGeminiKey(); });
-
 $('notify-toggle').addEventListener('change', (e) => {
   chrome.storage.local.set({ fastlinkNotify: !!e.target.checked }).catch(() => {});
 });
@@ -868,7 +766,7 @@ $('reload-btn').addEventListener('click', () => chrome.runtime.reload());
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local') {
     if (changes.fastlinkConn || changes.relayAuthError) render();
-    if (changes.deviceToken || changes.relayEnabled || changes.fastlinkMode) { render(); renderControls(); reflectVisionStatus(); renderRelayDevices(); }
+    if (changes.deviceToken || changes.relayEnabled || changes.fastlinkMode) { render(); renderControls(); renderRelayDevices(); }
     if (changes[ADVANCED_CONTROL_KEY]) renderDebugger();
     if (changes.fastlinkNotify) renderNotifyToggle();
     if (changes.fastlinkSlotBusy) renderSlotBusy();
@@ -891,7 +789,6 @@ async function init() {
   renderInstallSlot();
   renderNotifyToggle();
   renderPermissions();
-  reflectVisionStatus();
   renderRelayDevices();
   // Deep-link params win over stored/default values (they reflect a fresh code).
   // Auto-pair: a deep-linked code is fresh (just minted on the relay), so run the
