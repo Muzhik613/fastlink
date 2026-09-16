@@ -86,7 +86,6 @@
     fast_select_option: 'Selecting',
     fast_nav: 'Navigating to', fast_reload: 'Reloading',
     fast_scroll: 'Scrolling', fast_wheel: 'Scrolling',
-    fast_upload: 'Uploading file',
     fast_wait: 'Waiting', fast_key_press: 'Pressing key',
     fast_tab: 'Switching tab', fast_switch: 'Switching tab',
     fast_list: 'Listing tabs', fast_close: 'Closing tab',

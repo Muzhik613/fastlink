@@ -386,18 +386,4 @@ export const TOOLS = [
       required: ['text'],
     },
   },
-  {
-    name: 'fast_upload',
-    description: 'Upload local file(s) into a file <input> WITHOUT the OS file-picker dialog (which browser automation cannot drive — clicking the picker just opens a native window no script can fill). Sets the files directly on the input via the trusted CDP DOM domain and fires input/change so the page reacts as if the user picked them. WINDOWS-FRIENDLY paths: pass a Windows path (C:\\Users\\you\\pic.png), a WSL mount path (/mnt/c/Users/you/pic.png), or a native WSL path (/home/you/file.pdf) — the server resolves it to a path the Chrome (Windows) process can open (native WSL paths become \\\\wsl.localhost\\<distro>\\… automatically) and verifies the file EXISTS before sending. Targeting: by default it uses the page\'s only/first <input type=file>; pass `selector` (CSS selector for the input or a wrapper containing it), `text` (substring of the input\'s label/name/id/aria-label/nearby text), or `index` (0-based) to pick a specific one. Use `path` for one file or `paths` for several (the input must have the `multiple` attribute). Requires "Advanced control" (CDP) enabled — same as fast_click_xy. Returns { uploaded, files, accepted:[{name,size,type}], input:{name,id,count} } so you can confirm the file landed. Only the TOP document is searched (not cross-origin iframes).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Path to ONE file to upload. Windows (C:\\Users\\...), WSL mount (/mnt/c/...), or native WSL (/home/...). The server verifies it exists before sending.' },
-        paths: { type: 'array', items: { type: 'string' }, description: 'Paths to MULTIPLE files (the target file input must have the `multiple` attribute). Use instead of `path`.' },
-        selector: { type: 'string', description: 'Optional CSS selector for the file input (or a wrapper element that contains one). Use when the page has more than one file input.' },
-        text: { type: 'string', description: 'Optional substring of the input\'s label / name / id / aria-label / nearby text, to pick a specific file input.' },
-        index: { type: 'number', description: 'Optional 0-based index to pick the N-th <input type=file> when several are present. Default: the first/only one.' },
-      },
-    },
-  },
 ];

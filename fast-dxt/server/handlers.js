@@ -1,7 +1,6 @@
-import { writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from 'fs';
+import { writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve } from 'path';
-import { execFileSync } from 'child_process';
+import { join } from 'path';
 import { Buffer } from 'buffer';
 import { callExtension, getStatus, getBrokerLinkInfo, setSelectedInstall, getSelectedInstall } from './brokerClient.js';
 import { HTTP_ENABLED, HTTP_PORT, TOKEN, SCOUT_ENABLED } from './config.js';
@@ -110,7 +109,6 @@ async function dispatchCall(name, args) {
     if (name === 'fast_fill_vision') return text(await handleFillVision(args));
     if (name === 'fast_do') return text(await handleDo(args));
     if (name === 'fast_locate') return text(await handleLocate(args));
-    if (name === 'fast_upload') return text(await handleUpload(args));
     const payload = CAPTURE_TOOLS.has(name)
       ? await callCapture(name, args || {})
       : await callExtension(name, args || {});
@@ -182,79 +180,6 @@ async function handleUseInstall(args) {
       ? `Pinned to "${want}"; all calls route there. fast_profile "auto" releases.`
       : `Pinned to "${want}" but NOT connected — open FastLink in that profile with slot label "${want}". Calls error until it connects. Connected now: ${known.filter(k => installs[k]?.connected).join(', ') || '(none)'}.`,
   };
-}
-
-// fast_upload: resolve each caller-supplied path to a path the WINDOWS Chrome
-// process can open, verify it exists, then hand the Windows paths to the extension
-// (which drives CDP DOM.setFileInputFiles). The MCP server runs under WSL while
-// Chrome runs on Windows, so a WSL path like /home/you/x.png is NOT openable by
-// Chrome as-is — we translate it to \\wsl.localhost\<distro>\… via `wslpath`.
-//
-// Accepts, per path:
-//   • a Windows path      C:\Users\you\pic.png  (or C:/Users/you/pic.png)
-//   • a WSL mount path    /mnt/c/Users/you/pic.png
-//   • a native WSL path   /home/you/file.pdf  (or a relative path)
-// and returns the Windows form for each. Existence is checked from the WSL side.
-function wslpath(flag, p) {
-  try { return execFileSync('wslpath', [flag, p], { encoding: 'utf8' }).trim(); }
-  catch { return null; }
-}
-
-function resolveToWindowsPath(input) {
-  const p = String(input).trim().replace(/^["']|["']$/g, '');
-  if (!p) return { error: 'empty path' };
-
-  const isWin = /^[A-Za-z]:[\\/]/.test(p);
-  const isUnc = /^\\\\/.test(p);
-  if (isWin || isUnc) {
-    const winPath = p.replace(/\//g, '\\'); // Chrome wants backslashes
-    // Verify existence from WSL by mapping the Windows path back to /mnt/…
-    const wslForCheck = wslpath('-u', winPath);
-    if (wslForCheck && !existsSync(wslForCheck)) {
-      return { error: `file not found: ${p} (looked at ${wslForCheck})` };
-    }
-    return { winPath };
-  }
-
-  // A WSL/POSIX path (absolute or relative). Resolve, confirm it exists, then get
-  // the Windows form (/mnt/c/… → C:\…, /home/… → \\wsl.localhost\<distro>\…).
-  const abs = resolve(p);
-  if (!existsSync(abs)) return { error: `file not found: ${abs}` };
-  const winPath = wslpath('-w', abs);
-  if (!winPath) return { error: `could not convert ${abs} to a Windows path (is wslpath available?)` };
-  return { winPath };
-}
-
-async function handleUpload(args) {
-  const raw = Array.isArray(args?.paths) ? args.paths
-    : (args?.paths != null ? [args.paths] : (args?.path != null ? [args.path] : []));
-  if (!raw.length) {
-    return { error: 'fast_upload needs `path` (a single file) or `paths` (an array of files).' };
-  }
-
-  const resolved = [];
-  const problems = [];
-  for (const p of raw) {
-    const r = resolveToWindowsPath(p);
-    if (r.error) problems.push({ path: p, error: r.error });
-    else resolved.push(r.winPath);
-  }
-  // If ANY path is bad, refuse the whole call — a partial upload is worse than a
-  // clear error the caller can fix.
-  if (problems.length) {
-    return { error: 'fast_upload: could not resolve some file path(s).', problems, resolvedOk: resolved };
-  }
-
-  const payload = await callExtension('fast_upload', {
-    selector: args?.selector,
-    text: args?.text,
-    index: args?.index,
-    paths: resolved,
-  });
-  if (payload && typeof payload === 'object' && 'error' in payload) {
-    return { ...payload, resolvedPaths: resolved };
-  }
-  return { ...(payload?.result ?? {}), resolvedPaths: resolved };
 }
 
 async function statusReport() {
@@ -465,7 +390,7 @@ const warmCaptures = new Map();      // url -> { capture, ts }
 const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_type', 'fast_key_press',
   'fast_fill', 'fast_select_option', 'fast_nav', 'fast_reload',
-  'fast_scroll', 'fast_wheel', 'fast_fill_vision', 'fast_do', 'fast_upload',
+  'fast_scroll', 'fast_wheel', 'fast_fill_vision', 'fast_do',
 ]);
 let visionWarmTimer = null;
 let visionWarmInFlight = false;

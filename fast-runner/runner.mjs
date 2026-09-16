@@ -47,7 +47,7 @@ Rules:
 const STATE_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_select_option', 'fast_key_press',
   'fast_type', 'fast_nav', 'fast_tab', 'fast_reload', 'fast_scroll',
-  'fast_upload', 'fast_switch', 'fast_close', 'fast_batch', 'fast_do', 'fast_fill_vision',
+  'fast_switch', 'fast_close', 'fast_batch', 'fast_do', 'fast_fill_vision',
 ]);
 const READ_TOOLS = new Set(['fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_evaluate', 'fast_marks', 'fast_scout', 'fast_list']);
 const isStateChanging = (e) => STATE_TOOLS.has(e.name);

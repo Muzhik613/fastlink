@@ -651,7 +651,7 @@ const TVERB = {
   fast_click: 'Clicking', fast_click_xy: 'Clicking', fast_fill: 'Typing', fast_type: 'Typing',
   fast_fill_vision: 'Typing', fast_select_option: 'Selecting',
   fast_nav: 'Navigating', fast_reload: 'Reloading', fast_scroll: 'Scrolling', fast_wheel: 'Scrolling',
-  fast_upload: 'Uploading file', fast_wait: 'Waiting', fast_key_press: 'Pressing key',
+  fast_wait: 'Waiting', fast_key_press: 'Pressing key',
   fast_tab: 'Switching tab', fast_switch: 'Switching tab', fast_evaluate: 'Running script',
 };
 function tVerb(a) { return TVERB[a] || String(a || '').replace(/^fast_/, '').replace(/_/g, ' ') || 'Working'; }

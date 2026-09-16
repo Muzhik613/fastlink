@@ -3,7 +3,6 @@ import { takeScreenshot }  from './screenshot.js';
 import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
 import { clickXY, typeText, wheelScroll } from './input.js';
-import { uploadFile }      from './upload.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { captureMarks }    from './marks.js';
 import { visionCapture, annotateBoxes } from './vision.js';
@@ -132,7 +131,6 @@ async function runOne(action, args) {
   // INTERNAL only (no tool schema): the vision tier's scroll:true passes call
   // fast_wheel through callExtension to reach GCP's nested scrollers.
   if (action === 'fast_wheel')      return wheelScroll(args);
-  if (action === 'fast_upload')     return uploadFile(args);
   if (action === 'fast_wait' && (args?.networkIdle || args?.domready)) {
     // text/selector + networkIdle: the text is the real signal (SPAs long-poll,
     // so pure idle can time out forever); resolve on it and REPORT the network
