@@ -175,10 +175,10 @@ export async function runCell({
       //   • anyone else's Chrome, e.g. the owner's signed-in profile for cfworkers/Azure: close
       //     ONLY this test's closeUrlPatterns. His other tabs are never touched. This is why
       //     closeUrlPatterns still exists.
-      const rig = rigIdentity(); // throws if the rig is configured but unproven, and never falls back
+      const rig = await rigIdentity({ install }); // throws if the rig is configured but unproven, and never falls back
       if (rig.rig) {
-        const r = await resetRigBrowser(rig.port);
-        notes.push(`rig reset: ${r.before} tab(s) → 1 blank (closed ${r.closed.length})`);
+        const r = await resetRigBrowser();
+        notes.push(`rig reset: ${r.before} tab(s) in ${r.windows} window(s) → 1 blank (closed ${r.closed})`);
       } else {
         const closed = await closeMatching(test.reset?.closeUrlPatterns || []);
         if (closed.length) notes.push(`reset closed ${closed.length} tab(s)`);

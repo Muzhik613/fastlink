@@ -8,7 +8,8 @@
 # next pass boundary we restart Chrome (extension reload), delete the marker and record the commit.
 # The runner spawns a fresh fast-dxt/server per cell, so only Chrome needs the restart.
 # Tabs: run.js resets the rig Chrome to ONE about:blank tab before every cell (bench/rig.js), so
-# nothing a cell or a wandering model opened survives into the next cell.
+# nothing a cell or a wandering model opened survives into the next cell. Cells pin the rig's own
+# install label (--install \$FASTLINK_RIG_INSTALL, exported by hvm-rig.sh), which that reset requires.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 PASSES=${PASSES:-3}
@@ -39,7 +40,7 @@ for p in $(seq "$PASS_START" "$LAST"); do
   for t in $TESTS; do
     echo "=== pass $p/$LAST  $t  $(date -u +%FT%TZ)"
     rig_up > /dev/null || { echo "!!! rig down before $t (pass $p); skipping cell"; continue; }
-    node bench/run.js --client grok_runner --transport local --test "$t" ${TOOLSET:+--toolset "$TOOLSET"} || echo "!!! cell $t failed (pass $p)"
+    node bench/run.js --client grok_runner --transport local --install "$FASTLINK_RIG_INSTALL" --test "$t" ${TOOLSET:+--toolset "$TOOLSET"} || echo "!!! cell $t failed (pass $p)"
   done
   node bench/hvm-report.js --since "$SINCE" --passes "$LAST" --notes "$NOTES" --out "$DOC" || echo "!!! report failed"
   node bench/drive-runner.js usage > /dev/null
