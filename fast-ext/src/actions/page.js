@@ -3589,15 +3589,40 @@ async function runPageAction(action, args) {
     // id-first: `id` is a snapshot item's `i`. It is used only while that element
     // is still in the page and (when text is also given) still carries the text;
     // otherwise the call falls back to text (idStale:true) or refuses without text.
+    // Ids as the caller sees them: "f<frameId>:" when this document is a frame the
+    // background addressed (frames.js passes idPrefix), bare in the top document.
+    const idP = typeof args.idPrefix === 'string' ? args.idPrefix : '';
+    const hasText = args.text != null && String(args.text).trim() !== '';
+    const hasId = args.id != null && args.id !== '';
+    if (!hasText && !hasId) {
+      // No text and no id: never search for the string "undefined" (live Azure: three
+      // {frame, role:"button", index:131} clicks, each "No element matching \"undefined\"").
+      // An index with nothing to count matches of is a snapshot item's i.
+      if (typeof args.index !== 'number') {
+        return { error: `fast_click needs a target — pass id:"${idP}<i>" (an item's i from fast_snapshot) or text:"<label>"; nothing was clicked`, code: 'no_target' };
+      }
+      args.id = args.index;
+      args.__idFromIndex = true;
+      delete args.index;
+    }
     let preMatched = null;
     if (args.id != null && args.id !== '') {
       const want = Number(args.id);
       const el0 = Number.isFinite(want) ? elById(want) : null;
       snap = await serializeSnapshot(false, { matchAll: true });
       const it = el0 && el0.isConnected ? snap.items.find((x) => x.i === want) : null;
-      const textOk = !it || !args.text || matchItems([it], args.text).length > 0;
-      if (it && textOk) preMatched = [it];
-      else if (!args.text) return { error: `id ${args.id} is no longer on the page (the element was re-rendered or removed) — nothing was clicked; take a fresh fast_snapshot, or pass text`, idStale: true };
+      const textOk = !it || !hasText || matchItems([it], args.text).length > 0;
+      const roleFits = !it || !wantRole || roleOk(it);
+      if (it && textOk && roleFits) preMatched = [it];
+      else if (!hasText) {
+        const what = args.__idFromIndex ? `index ${want} (read as snapshot item i:${want}, since no text was given)` : `id ${idP}${want}`;
+        return {
+          error: it && !roleFits
+            ? `${what} is a <${it.tag}>${it.role ? ` role=${it.role}` : ''}, not role "${args.role}" — nothing was clicked; pass id:"${idP}<i>" of the element you mean, or text:"<label>"`
+            : `${what} is no longer on the page (the element was re-rendered or removed) — nothing was clicked; take a fresh fast_snapshot and pass id:"${idP}<i>", or text:"<label>"`,
+          idStale: true,
+        };
+      }
       else args.__idStale = true;
     }
     for (;;) {

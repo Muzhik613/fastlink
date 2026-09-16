@@ -59,3 +59,13 @@ test('an unrelated miss carries no such hint', async () => {
   assert.ok(miss.error);
   assert.doesNotMatch(String(miss.hint || ''), /you just clicked/);
 });
+
+test('top document: index with no text is snapshot item i; no text/id/index names both forms', async () => {
+  const w = page(HEADER);
+  const snap = await run(w, 'fast_snapshot', {});
+  const name = snap.items.find((it) => /Name/.test(it.text || ''));
+  const r = await run(w, 'fast_click', { index: name.i, noSnapshot: true });
+  assert.equal(r.clicked.text, 'Name: Activate to sort', JSON.stringify(r).slice(0, 300));
+  const none = await run(w, 'fast_click', { noSnapshot: true });
+  assert.equal(none.error, 'fast_click needs a target — pass id:"<i>" (an item\'s i from fast_snapshot) or text:"<label>"; nothing was clicked');
+});

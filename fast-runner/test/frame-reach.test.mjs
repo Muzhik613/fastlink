@@ -175,3 +175,45 @@ test('a miss names only the frames that could NOT be read; a miss with every fra
   assert.match(snap.frameNotice, /could not read/);
   assert.equal(snap.frames, undefined);
 });
+
+test('live Azure: {frame, role:"button", index:N} with no text clicks snapshot item N of that frame, never "undefined"', async () => {
+  setup();
+  const snap = await call('fast_snapshot', {});
+  const f = snap.frames[0];
+  const pay = f.items.find((it) => /Pay now/.test(it.text || ''));
+  const cardInput = f.items.find((it) => it.tag === 'input');
+  const n = Number(pay.i.split(':')[1]);
+  let clicked = 0;
+  frames.get(7).win.document.querySelector('button').addEventListener('click', () => { clicked++; });
+  const r = await call('fast_click', { frame: 'pay.provider', role: 'button', index: n, noSnapshot: true });
+  assert.equal(clicked, 1, JSON.stringify(r));
+  assert.equal(r.inFrame.frameId, 7);
+  // an index whose item is not a button: refused, naming the exact id form
+  const m = Number(cardInput.i.split(':')[1]);
+  const bad = await call('fast_click', { frame: 'pay.provider', role: 'button', index: m, noSnapshot: true });
+  assert.match(bad.error, new RegExp(`index ${m} \\(read as snapshot item i:${m}, since no text was given\\) is a <input>.*pass id:"f7:<i>"`));
+  assert.equal(clicked, 1);
+  // no text, no id, no index: the two valid forms with the real frame id
+  const none = await call('fast_click', { frame: 'pay.provider', role: 'button', noSnapshot: true });
+  assert.match(none.error, /^fast_click needs a target — pass id:"f7:<i>" \(an item's i from fast_snapshot\) or text:"<label>"/);
+  assert.doesNotMatch(JSON.stringify([r, bad, none]), /undefined/);
+});
+
+test('index with no text and no frame, while frames are on screen: refused with every exact id form', async () => {
+  setup();
+  const r = await call('fast_click', { role: 'button', index: 3, noSnapshot: true });
+  assert.match(r.error, /^index:3 with no text is ambiguous on this page — nothing was clicked; pass id:"3" for snapshot item 3 of the top document, id:"f7:3" for item 3 in https:\/\/pay\.provider\.example, or text:"<label>"$/);
+});
+
+test('fast_snapshot puts frames right after url/title, before the top document\'s own items', async () => {
+  setup();
+  const keys = Object.keys(await call('fast_snapshot', {}));
+  assert.ok(keys.indexOf('frames') < keys.indexOf('items'), keys.join(','));
+});
+
+test('a click in a frame that lands on a dropdown trigger carries the fast_select_option hint, as in the top document', async () => {
+  setup({ payHtml: '<label id="rl">Region</label><div role="combobox" aria-labelledby="rl" aria-haspopup="listbox" aria-expanded="false" tabindex="0">(US) East US</div>' });
+  const r = await call('fast_click', { frame: 'pay.provider', text: '(US) East US', noSnapshot: true });
+  assert.equal(r.inFrame.frameId, 7, JSON.stringify(r));
+  assert.match(r.hint || '', /fast_select_option/, JSON.stringify(r));
+});

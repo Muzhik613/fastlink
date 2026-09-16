@@ -467,7 +467,9 @@ export async function snapshotWithFrames(ctx, args) {
     if (n && n.frameNotice) notice = { frameNotice: n.frameNotice, opaqueFrames: n.opaqueFrames };
   }
   const framesNote = `${frames.length} cross-origin frame(s) read into \`frames\` (${[...new Set(frames.map((f) => f.frame))].join(', ')}): their items carry top-page x,y and ids "f<frameId>:<i>"; fast_click / fast_fill / fast_select_option act inside them (by text, id, or frame:"<part of the frame URL>")`;
-  return { framesNote, ...notice, ...rest, frames };
+  // frames lead the top document's own items: on a framed app the top is chrome only
+  const { url, title, ...others } = rest;
+  return { framesNote, ...notice, url, title, frames, ...others };
 }
 
 // Run `action` in the one visible cross-origin frame whose URL contains args.frame.
@@ -483,7 +485,7 @@ export async function inNamedFrame(ctx, action, args) {
     };
   }
   const { frame, ...rest } = args;
-  return inFrame(hits[0], await ctx.run(hits[0].frameId, action, { ...rest, noFrameNotice: true }));
+  return inFrame(hits[0], await ctx.run(hits[0].frameId, action, { ...rest, noFrameNotice: true, idPrefix: `f${hits[0].frameId}:` }));
 }
 
 // fast_click / fast_fill / fast_select_option, frame-aware. With no visible
@@ -503,7 +505,7 @@ export async function actWithFrames(ctx, action, args = {}) {
     const { targets } = await frameTargets(ctx);
     const t = targets.find((x) => x.frameId === Number(idm[1]));
     if (!t) return { error: `id ${args.id} points into frame ${idm[1]}, which is no longer a visible cross-origin frame — nothing was done; take a fresh fast_snapshot`, idStale: true };
-    return inFrame(t, await ctx.run(t.frameId, action, { ...args, id: Number(idm[2]), noFrameNotice: true }));
+    return inFrame(t, await ctx.run(t.frameId, action, { ...args, id: Number(idm[2]), noFrameNotice: true, idPrefix: `f${t.frameId}:` }));
   }
   if (args.frame) return inNamedFrame(ctx, action, args);
   if (args.id != null && args.id !== '') return ctx.run(0, action, args);   // a top-document id
@@ -522,6 +524,18 @@ export async function actWithFrames(ctx, action, args = {}) {
     return n && n.frameNotice ? { frameNotice: n.frameNotice, opaqueFrames: n.opaqueFrames, ...r } : r;
   };
   if (!targets.length) return topCall(new Set());
+  const noTarget = action === 'fast_click' && !(args.text != null && String(args.text).trim() !== '');
+  if (noTarget) {
+    // no text and no id while frames are on screen: an index could mean an item of
+    // the top document or of any frame — say exactly what to pass
+    if (typeof args.index !== 'number') return ctx.run(0, action, args);   // page.js names the two forms
+    const n = args.index;
+    return {
+      error: `index:${n} with no text is ambiguous on this page — nothing was clicked; pass id:"${n}" for snapshot item ${n} of the top document, ${targets.map((t) => `id:"f${t.frameId}:${n}" for item ${n} in ${t.origin}`).join(', ')}, or text:"<label>"`,
+      code: 'no_target',
+      frames: targets.map((t) => ({ ...frameTag(t), box: t.box })),
+    };
+  }
 
   const multiKey = MULTI[action];
   let entries = null;   // [[key, spec]] for the per-field forms
@@ -560,7 +574,7 @@ export async function actWithFrames(ctx, action, args = {}) {
     const w = where(keyOf());
     if (w.refuse) return w.refuse;
     if (w.in === 'top') return topCall(readSrcs);
-    return inFrame(w.in, await ctx.run(w.in.frameId, action, { ...args, noFrameNotice: true }));
+    return inFrame(w.in, await ctx.run(w.in.frameId, action, { ...args, noFrameNotice: true, idPrefix: `f${w.in.frameId}:` }));
   }
 
   // per field: group by document, run each group, merge in the caller's order
@@ -577,7 +591,7 @@ export async function actWithFrames(ctx, action, args = {}) {
   const specOf = new Map(entries);
   const parts = [];
   for (const [gk, g] of groups) {
-    const sub = { ...args, [multiKey]: Object.fromEntries(g.keys.map((k) => [k, specOf.get(k)])), noFrameNotice: gk !== 'top' };
+    const sub = { ...args, [multiKey]: Object.fromEntries(g.keys.map((k) => [k, specOf.get(k)])), noFrameNotice: gk !== 'top', ...(gk !== 'top' ? { idPrefix: `f${gk}:` } : {}) };
     if (multiKey === 'selections') { delete sub.field; delete sub.option; }
     const r = await ctx.run(gk === 'top' ? 0 : gk, action, sub);
     parts.push({ g, r: g.t ? inFrame(g.t, r) : r });
