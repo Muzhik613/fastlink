@@ -1,6 +1,6 @@
 # fast-runner tool usage
 
-335 cell(s), ALL passes, one table per toolset × model, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
+341 cell(s), ALL passes, one table per toolset × model, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
 
 fumble columns: `retry` = call immediately followed by the same tool on the same target; `switch` = followed by a different tool on the same target; `fumble %` = (retry+switch)/calls.
 
@@ -115,3 +115,19 @@ Total: 44 calls across 9 distinct tools; 3 fumbles (7%).
 |---|---:|---:|---:|---:|---:|---:|---|
 
 Total: 0 calls across 0 distinct tools; 0 fumbles (0%).
+
+## toolset `default / grok-4.3` — 6 cell(s): multipage×1, staticform×1, overlay×1, flightsearch×1, mapsdir×1, extract×1
+
+| tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
+|---|---:|---:|---:|---:|---:|---:|---|
+| fast_snapshot | 7 | 0 | 119 | 0 | 0 | 0 | multipage, staticform, flightsearch, mapsdir, extract |
+| fast_tab | 6 | 0 | 283 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
+| fast_click | 4 | 0 | 65 | 0 | 0 | 0 | multipage, staticform |
+| fast_select_option | 4 | 1 | 297 | 1 | 0 | 25 | overlay, flightsearch |
+| fast_fill | 3 | 0 | 786 | 0 | 0 | 0 | staticform, flightsearch, mapsdir |
+| fast_batch | 2 | 0 | 2629 | 0 | 0 | 0 | flightsearch, mapsdir |
+| fast_scout | 2 | 0 | 2732 | 0 | 0 | 0 | flightsearch, mapsdir |
+| fast_key_press | 1 | 0 | 44 | 0 | 0 | 0 | mapsdir |
+| fast_text | 1 | 0 | 165 | 0 | 0 | 0 | extract |
+
+Total: 30 calls across 9 distinct tools; 1 fumbles (3%).
