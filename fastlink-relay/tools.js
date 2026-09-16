@@ -71,24 +71,27 @@ export const TOOLS = [
   },
   {
     name: 'fast_tab',
-    description: 'Open a new Chrome tab at the given URL. Returns the new tab id and URL.',
+    description: 'Open a new Chrome tab at the given URL and wait until its page has loaded and stopped redirecting (up to waitMs, default 10000). Returns the tab id, the URL it landed on, and `snapshot`: the same bounded preview an action returns (visible frames\' items included; an empty app shell is re-read for up to 3s), so you can act on the page without a separate fast_snapshot. The preview lists what it left out under `omitted`; call fast_snapshot before reporting values or concluding something is absent. noSnapshot:true skips it.',
     inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'URL to open' },
         background: { type: 'boolean', description: 'If true, do not switch to the new tab. Defaults to false (focus the new tab).' },
+        waitMs: { type: 'number', description: 'Max ms to wait for the page to load and settle (default 10000).' },
+        noSnapshot: { type: 'boolean', description: 'If true, skip the page preview and return just the tab id and URL.' },
       },
       required: ['url'],
     },
   },
   {
     name: 'fast_nav',
-    description: 'Navigate the active Chrome tab to a URL. Waits for the load to complete (up to waitMs, default 10000) before returning — override with waitMs to wait longer for slow pages or shorter to return early. Then HEALTH-CHECKS the page.js content script (with a short settle-retry, because it re-attaches asynchronously and can race the return — which is what made post-nav snapshots come back empty) and returns `contentScript`: "fresh" (it was already live), "reinjected" (it was stale/missing — common after the extension was reloaded — so FastLink re-injected it), or "stale" (still not live, e.g. a restricted chrome:// URL). A "stale" result ALSO includes a `hint`: subsequent snapshot/click/wait may return empty or falsely idle, so fast_nav to the same URL to recover.',
+    description: 'Navigate the active Chrome tab to a URL. Waits for the load to complete and any redirect hop after it to settle (up to waitMs, default 10000) before returning, and returns `snapshot`: the same bounded preview fast_tab returns (noSnapshot:true skips it) — override with waitMs to wait longer for slow pages or shorter to return early. Then HEALTH-CHECKS the page.js content script (with a short settle-retry, because it re-attaches asynchronously and can race the return — which is what made post-nav snapshots come back empty) and returns `contentScript`: "fresh" (it was already live), "reinjected" (it was stale/missing — common after the extension was reloaded — so FastLink re-injected it), or "stale" (still not live, e.g. a restricted chrome:// URL). A "stale" result ALSO includes a `hint`: subsequent snapshot/click/wait may return empty or falsely idle, so fast_nav to the same URL to recover.',
     inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'URL to navigate to' },
         waitMs: { type: 'number', description: 'Max ms to wait for the load to complete (default 10000).' },
+        noSnapshot: { type: 'boolean', description: 'If true, skip the page preview.' },
       },
       required: ['url'],
     },

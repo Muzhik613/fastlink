@@ -58,20 +58,27 @@ async function focusTabWindow(tab) {
 // signature of this race. Between two separate MCP tool calls the model's round-trip
 // hides it; inside fast_batch the steps run back-to-back and it fired EVERY time
 // (reproduced on example.com: fast_tab → fast_snapshot = "Restricted URL: ").
+// settleLoaded polls chrome.tabs.get rather than listening for onUpdated: a load that
+// finished before a listener attached would burn the whole timeout on every fast_tab.
 //
-// Deliberately NOT waitForComplete(): that waits for status:'complete' via an
-// onUpdated listener, so a load that finishes before the listener attaches would
-// burn the entire timeout on every single fast_tab. A committed URL is the property
-// callers actually need, and it has a natural early-out.
-async function waitForUrlCommit(tabId, waitMs) {
+// Wait for the tab's page to be LOADED and stay put: status 'complete' and the same
+// URL for LOAD_STABLE_MS, capped at waitMs (default 10000). A redirect hop (a login
+// page that forwards to the app) starts a new load, so it is waited out too — the
+// caller's first read lands on the page it was sent to, not a blank auth shell (live
+// Azure: fast_tab returned in 0.1s, the snapshot read portal.azure.com/auth/login/ empty,
+// and the model had to wait and read again). Returns the final URL (null: tab gone).
+const LOAD_STABLE_MS = 400;
+async function settleLoaded(tabId, waitMs) {
   const cap = typeof waitMs === 'number' ? waitMs : 10000;
   const deadline = Date.now() + cap;
+  let lastUrl = null, stableSince = Date.now(), t = null;
   for (;;) {
-    let t = null;
-    try { t = await chrome.tabs.get(tabId); } catch { return null; } // tab closed under us
-    if (t.url) return t.url;
-    if (Date.now() >= deadline) return t.pendingUrl || null;
-    await new Promise((r) => setTimeout(r, 50));
+    try { t = await chrome.tabs.get(tabId); } catch { return null; }   // tab closed under us
+    const url = t.url || t.pendingUrl || '';
+    if (t.status !== 'complete' || url !== lastUrl) { lastUrl = url; stableSince = Date.now(); }
+    else if (Date.now() - stableSince >= LOAD_STABLE_MS) return url;
+    if (Date.now() >= deadline) return url || null;
+    await new Promise((r) => setTimeout(r, 100));
   }
 }
 
@@ -89,7 +96,7 @@ async function openTab({ url, background, waitMs }) {
     // and captureVisibleTab/screenshot work without a fast_switch first. When
     // background:true we deliberately leave focus alone (active:false above).
     if (!background) await focusTabWindow(tab);
-    return { id: tab.id, url: (await waitForUrlCommit(tab.id, waitMs)) || tab.pendingUrl || tab.url, targetTab: tab.id };
+    return { id: tab.id, url: (await settleLoaded(tab.id, waitMs)) || tab.pendingUrl || tab.url, targetTab: tab.id };
   } catch (e) {
     if (!/no current window/i.test(e?.message || '')) throw e;
     // Cold-started SW with no current window: pick any normal window, else
@@ -99,29 +106,14 @@ async function openTab({ url, background, waitMs }) {
       const tab = await chrome.tabs.create({ ...opts, windowId: win.id });
       await setTargetTab(tab.id);
       if (!background) await focusTabWindow(tab);
-      return { id: tab.id, url: (await waitForUrlCommit(tab.id, waitMs)) || tab.pendingUrl || tab.url, targetTab: tab.id };
+      return { id: tab.id, url: (await settleLoaded(tab.id, waitMs)) || tab.pendingUrl || tab.url, targetTab: tab.id };
     }
     const created = await chrome.windows.create({ url, focused: !background });
     const tab = created.tabs?.[0];
     if (tab?.id !== undefined) await setTargetTab(tab.id);
-    if (tab?.id !== undefined) await waitForUrlCommit(tab.id, waitMs);
-    return { id: tab?.id, url, targetTab: tab?.id };
+    const settled = tab?.id !== undefined ? await settleLoaded(tab.id, waitMs) : null;
+    return { id: tab?.id, url: settled || url, targetTab: tab?.id };
   }
-}
-
-// Resolve once the tab reaches load 'complete', capped so we never hang on a
-// slow/never-loading page.
-function waitForComplete(tabId, waitMs) {
-  const cap = typeof waitMs === 'number' ? waitMs : 10000;
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = () => { if (!done) { done = true; chrome.tabs.onUpdated.removeListener(listener); resolve(); } };
-    const listener = (id, info) => {
-      if (id === tabId && info.status === 'complete') finish();
-    };
-    chrome.tabs.onUpdated.addListener(listener);
-    setTimeout(finish, cap);
-  });
 }
 
 // True if the MAIN-world page.js self-attached window.__fastlink.run in the tab.
@@ -160,11 +152,10 @@ async function navigateTab({ url, waitMs }) {
   const tab = await getTargetTab();
   if (!tab) return { error: 'No active tab' };
   await chrome.tabs.update(tab.id, { url });
-  // Wait for the navigation to actually finish — without this, a subsequent
-  // step in fast_batch lands while Chrome is mid-tear-down of the old page,
-  // and our content script's window.__fastlink may be missing or destroyed.
-  // Cap at 10s by default to avoid hanging on slow/never-loading pages.
-  await waitForComplete(tab.id, waitMs);
+  // Wait for the navigation to actually finish (and any redirect hop after it) —
+  // without this, a subsequent step in fast_batch lands while Chrome is mid-tear-down
+  // of the old page, and our content script's window.__fastlink may be missing.
+  const landed = await settleLoaded(tab.id, waitMs);
   // HEALTH-CHECK the page channel before returning. The pre-injected page.js can
   // be (a) not-yet-attached because the declarative injection races our return,
   // or (b) stale/missing because the extension was reloaded after the tab opened
@@ -185,11 +176,11 @@ async function navigateTab({ url, waitMs }) {
   // doesn't silently chase empty snapshots; re-navigating is the recovery path.
   if (contentScript === 'stale') {
     return {
-      id: tab.id, url, contentScript,
+      id: tab.id, url: landed || url, contentScript,
       hint: 'FastLink\'s content script is not live in the navigated tab — snapshot/click/wait may return empty or falsely idle. fast_nav to the same URL to recover. (Restricted chrome:// / extension-gallery URLs cannot be driven.)',
     };
   }
-  return { id: tab.id, url, contentScript };
+  return { id: tab.id, url: landed || url, contentScript };
 }
 
 // EVERY window, not just the current one. A currentWindow-only list hid every tab in any other

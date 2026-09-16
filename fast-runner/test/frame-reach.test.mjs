@@ -42,7 +42,7 @@ globalThis.chrome = {
   storage: { session: { get: async () => ({}), set: async () => {} }, local: { get: async () => ({}) }, onChanged: { addListener() {} } },
   tabs: {
     query: async () => [{ id: 1, url: frames.get(0).url, active: true, windowId: 1 }],
-    get: async () => ({ id: 1, url: frames.get(0).url }),
+    get: async () => ({ id: 1, url: frames.get(0).url, status: 'complete' }),
     sendMessage: () => {}, onUpdated: { addListener() {} }, onRemoved: { addListener() {} },
   },
   windows: { getAll: async () => [] },
@@ -430,4 +430,40 @@ test('a dialog OK that stays disabled is refused; one the page does not accept i
   assert.equal(r2.verified, false, JSON.stringify(r2).slice(0, 400));
   assert.ok(r2.dialogStillOpen);
   assert.match(r2.reason, /still open after clicking "OK"/);
+});
+
+test('an action\'s snapshot preview says omitted (an honest count), never truncated:true; an explicit fast_snapshot still does', async () => {
+  const many = Array.from({ length: 120 }, (_, k) => `<button>Action number ${k} with a long enough label to fill the preview</button>`).join('');
+  setup({ topHtml: `<h1>Big</h1><button id="go">Go</button>${many}` });
+  frames = new Map([[0, frames.get(0)]]);
+  const r = await call('fast_click', { text: 'Go' });
+  assert.equal(r.snapshot.truncated, undefined, JSON.stringify(Object.keys(r.snapshot)));
+  assert.ok(r.snapshot.omitted && r.snapshot.omitted.items > 0, JSON.stringify(r.snapshot.omitted));
+  assert.equal(Object.keys(r.snapshot)[0], 'omitted');
+  const s = await call('fast_snapshot', {});
+  assert.equal(s.truncated, true);
+});
+
+test('fast_nav waits out a redirect hop and returns the landed page\'s snapshot; an empty shell is re-read until content shows', async () => {
+  setup({ topHtml: '<p>Portal is loading.</p>' });
+  frames = new Map([[0, frames.get(0)]]);
+  const top = frames.get(0).win;
+  top.document.body.innerHTML = '';
+  const t0 = Date.now();
+  let url = 'https://shop.example/auth/login/';
+  const saved = { get: chrome.tabs.get, update: chrome.tabs.update };
+  chrome.tabs.update = async () => ({});
+  chrome.tabs.get = async () => {
+    const ms = Date.now() - t0;
+    if (ms > 300) url = SHOP;
+    return { id: 1, url, status: ms > 350 ? 'complete' : 'loading' };
+  };
+  setTimeout(() => { top.document.body.innerHTML = '<h1>Create a resource</h1><label for="n">Name</label><input id="n">'; }, 900);
+  const r = await call('fast_nav', { url: SHOP });
+  chrome.tabs.get = saved.get; chrome.tabs.update = saved.update;
+  assert.equal(r.url, SHOP, JSON.stringify(r).slice(0, 300));
+  assert.ok(Date.now() - t0 >= 750, 'waited for the URL to stay put after the load completed');
+  assert.ok(r.snapshot && r.snapshot.items.some((it) => it.tag === 'input'), JSON.stringify(r.snapshot).slice(0, 300));
+  const skip = await call('fast_nav', { url: SHOP, noSnapshot: true });
+  assert.equal(skip.snapshot, undefined);
 });

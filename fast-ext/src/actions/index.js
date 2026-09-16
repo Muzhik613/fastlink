@@ -116,6 +116,7 @@ async function withOrigin(envelope) {
 }
 
 async function runOne(action, args) {
+  if (action === 'fast_tab' || action === 'fast_nav') return withLandedSnapshot(await handleTabAction(action, args), args || {});
   if (TAB_ACTIONS.has(action))      return handleTabAction(action, args);
   if (action === 'fast_screenshot') return takeScreenshot(args);
   if (action === 'fast_text')       return getText(args);
@@ -158,6 +159,25 @@ async function runOne(action, args) {
 }
 
 const FRAME_AWARE = new Set(['fast_click', 'fast_fill', 'fast_select_option']);
+// fast_tab / fast_nav return the page they landed on: the same bounded preview an
+// action carries, visible frames' items included, so the first read is not a separate
+// call on a still-empty page. A page that loaded but shows nothing yet (an app shell
+// still booting) is re-read for up to LANDED_EMPTY_MS.
+const LANDED_EMPTY_MS = 3000;
+async function withLandedSnapshot(r, args) {
+  if (!r || typeof r !== 'object' || r.error || args.noSnapshot === true || args.noSnapshot === 'true') return r;
+  const ctx = await frameCtx();
+  const snapArgs = { autoCap: true, ...(args.full ? { full: true } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) };
+  const t0 = Date.now();
+  let snap = await snapshotWithFrames(ctx, snapArgs);
+  const empty = (x) => x && !x.error && !(x.count > 0) && !(x.frames && x.frames.length) && !x.frameNotice && !(x.contentCount > 0);
+  while (empty(snap) && Date.now() - t0 < LANDED_EMPTY_MS) {
+    await new Promise((res) => setTimeout(res, 300));
+    snap = await snapshotWithFrames(ctx, snapArgs);
+  }
+  if (!snap || snap.error) return r;
+  return { ...r, ...(snap.url ? { url: snap.url } : {}), snapshot: snap };
+}
 // One line on an action/wait result when a frame appeared after the last fast_snapshot.
 async function withAppeared(ctx, r) {
   if (!r || typeof r !== 'object') return r;

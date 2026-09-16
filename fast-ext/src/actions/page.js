@@ -1613,7 +1613,12 @@ const withFrameNotice = (out) => {
   return frontload(out, { frameNotice: notice, opaqueFrames: noticeBoxes(scan.frames) });
 };
 
-const markTruncated = (snap, hintFor) => {
+// `preview` (an action's auto-snapshot): the same counts under `omitted`, with no
+// `truncated` flag — a preview is bounded by design and lists what to act on; the
+// "truncated:true → read again before acting" rule belongs to a fast_snapshot the caller
+// asked for (live df6a2ba2: a wait hit carried the frame's fields, its preview said
+// truncated:true, and the model spent a turn re-reading before acting).
+const markTruncated = (snap, hintFor, { preview = false } = {}) => {
   if (!snap || typeof snap !== 'object') return snap;
   const d = snap.dropped || {};
   const off = snap.offscreenItems || 0;
@@ -1624,7 +1629,9 @@ const markTruncated = (snap, hintFor) => {
   const parts = [hintFor(dropped)];
   if (snap.hint) parts.push(snap.hint);
   delete snap.hint;   // serializeSnapshot emits hint:undefined — spreading it would erase ours
-  return withFrameNotice({ truncated: true, dropped, hint: parts.join(' | '), ...snap });
+  return withFrameNotice(preview
+    ? { omitted: dropped, hint: parts.join(' | '), ...snap }
+    : { truncated: true, dropped, hint: parts.join(' | '), ...snap });
 };
 const offscreenHint = (d) => d.offscreen
   ? `${d.offscreen} interactive element(s) are outside the viewport (below/above the fold) and NOT listed — call fast_snapshot without viewport:true, or fast_scroll, before concluding a control is absent`
@@ -1680,10 +1687,10 @@ const byteCapSnapshot = (snap, max = AUTO_SNAP_MAX_CHARS) => {
 // uncapped (only viewport-only loss can remain); `limit:N` overrides the item cap.
 // Returns a possibly NEW object — always assign the return value.
 const capAutoSnapshot = (snap, args) => {
-  if (args && (args.full === true || args.full === 'true')) return markTruncated(snap, autoHint);
+  if (args && (args.full === true || args.full === 'true')) return markTruncated(snap, autoHint, { preview: true });
   const itemCap = (args && typeof args.limit === 'number' && args.limit >= 0) ? args.limit : AUTO_ITEM_CAP;
   capSnapshot(snap, itemCap, AUTO_CONTENT_CAP);
-  return markTruncated(byteCapSnapshot(snap), autoHint);
+  return markTruncated(byteCapSnapshot(snap), autoHint, { preview: true });
 };
 // Rebuild `obj` with `head`'s keys first (JSON key order = what the model reads first).
 const frontload = (obj, head) => {
