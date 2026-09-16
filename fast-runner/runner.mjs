@@ -13,6 +13,9 @@ const DEFAULT_BUDGETS = { maxToolCalls: 60, maxWallMs: 600_000, maxConsecutiveEr
 const RESULT_CAP = 80_000; // chars per tool result fed back to Grok
 const MAX_NUDGES = 2;      // end_turn without report_done -> nudge, then fail
 const MAX_GATE_REFUSALS = 3; // report_done refused this many times -> accepted, flagged gateOverridden
+// End-of-run visual note (see visualNoteRound): ONE round per run, and never more
+// than this many report_done interruptions in total, gate refusals included.
+const REPORT_INTERRUPT_CEILING = 2;
 const TZ = 'America/Chicago';
 
 // Today's date is in the prompt so a model never guesses the year for "a month
@@ -152,21 +155,38 @@ const stepTarget = (s) => String(s?.args?.text ?? s?.args?.field ?? s?.args?.mat
 // here). h_repeat: a selections pick verified:false under a wrapper saying
 // verified:true, and a batch saying "3/3 steps ok" over a 0/2 fill. A top-level
 // single write/click whose own result is verified:false counts the same way.
+// A verified:false entry also carries `unverified:true` + the tool's own `reason`
+// ("cross-origin: value not readable", …): the write may well have landed, it is
+// the READ-BACK that is missing, and that is what the end-of-run visual note asks
+// the screen about. A FORCED fast_type (force/allowIframe) that did not come back
+// verified:true is the same thing — the guard it bypassed was the read-back.
 export function partialFailures(name, args, text) {
   let o = null;
   try { o = JSON.parse(text); } catch { return []; }
   const out = [];
-  const notDone = (bag, tool) => { if (bag && typeof bag === 'object') for (const [k, v] of Object.entries(bag)) if (v && (typeof v.error === 'string' || v.verified === false)) out.push({ name: tool, target: k }); };
+  const unread = (nm, tg, v) => ({ name: nm, target: tg, unverified: true, ...(typeof v?.reason === 'string' ? { reason: v.reason } : {}) });
+  const notDone = (bag, tool) => {
+    if (bag && typeof bag === 'object') for (const [k, v] of Object.entries(bag)) {
+      if (v && typeof v.error === 'string') out.push({ name: tool, target: k });
+      else if (v && v.verified === false) out.push(unread(tool, k, v));
+    }
+  };
   const children = (nm, res) => {
     if (nm === 'fast_fill' || nm === 'fast_fill_form') notDone(res?.fields, 'fast_fill');
     else if (nm === 'fast_select_option') notDone(res?.results, 'fast_select_option');
+    else if (nm === 'fast_fill_vision' && Array.isArray(res?.filled)) {
+      for (const f of res.filled) if (f && f.verified === false) out.push(unread('fast_fill_vision', String(f.field ?? ''), f));
+    }
   };
   if (name !== 'fast_batch') {
     children(name, o);
     // a single write/click whose OWN read-back says verified:false did not do what
     // it was called for (h_repeat: a Birthdate the date widget never committed,
     // reported as set) — the same failed action as a missed field
-    if (!out.length && o?.verified === false && !o?.fields && !o?.results) out.push({ name, target: target({ args }) });
+    const forcedType = name === 'fast_type' && (args?.force === true || args?.allowIframe === true);
+    if (!out.length && !o?.fields && !o?.results && (o?.verified === false || (forcedType && o?.verified !== true && typeof o?.error !== 'string'))) {
+      out.push(unread(name, target({ args }), { reason: o?.reason || (forcedType ? 'forced: the editable-focus guard was bypassed, so nothing read the value back' : undefined) }));
+    }
   }
   else if (Array.isArray(o?.results)) {
     const steps = args?.actions || args?.steps || [];
@@ -186,7 +206,7 @@ export function partialFailures(name, args, text) {
 // state-changing step is such a verified write) is the read-after-action for that
 // write — not for any later action. overlay p1-p3 (gate=record, 2026-09-15): the
 // select result carried verified:true, picked:"Forest", value:"Forest".
-const VERIFYING_WRITES = new Set(['fast_fill', 'fast_fill_form', 'fast_select_option']);
+const VERIFYING_WRITES = new Set(['fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_type']);
 function readBack(name, args, o) {
   if (VERIFYING_WRITES.has(name)) return o?.verified === true;
   if (name !== 'fast_batch' || !Array.isArray(o?.results)) return false;
@@ -273,7 +293,7 @@ export function unresolvedFailures(log) {
     for (const p of e.partial || []) {
       const retried = later.some(x => FILL_SELECT.has(x.name) && succeededTargets(x).some(t => sameTarget(t, p.target)))
         || (!FILL_SELECT.has(p.name) && later.some(x => x.ok && x.name === p.name && target(x) === p.target));
-      if (!retried) out.set(`${p.name}\0${p.target}`, { name: p.name, target: p.target, t: e.t });
+      if (!retried) out.set(`${p.name}\0${p.target}`, { name: p.name, target: p.target, t: e.t, ...(p.unverified ? { unverified: true } : {}), ...(p.reason ? { reason: p.reason } : {}) });
     }
     if (e.ok) return;
     const tg = target(e);
@@ -287,6 +307,13 @@ export function unresolvedFailures(log) {
   });
   return [...out.values()];
 }
+
+// The writes nothing could read back: the unresolved failures flagged
+// `unverified` — a result that said verified:false, or a forced fast_type whose
+// bypassed guard IS the missing read-back. This is not a claim that they failed:
+// only that the page never confirmed them, which is exactly what a screenshot
+// can still be asked about.
+export const unverifiedWrites = (log) => unresolvedFailures(log || []).filter(f => f.unverified);
 
 // The model's OWN action claims vs. the calls it made (no task parsing): a
 // `result` saying "opened / clicked / selected / filled / submitted …" needs a
@@ -427,6 +454,76 @@ const gateFields = (run) => run.gate === 'off' ? { gate: 'off' } : {
   unresolvedFailures: run.unresolvedFailures || undefined, claimMismatch: run.claimMismatch || undefined,
 };
 
+// ── End-of-run visual note ───────────────────────────────────────────────────
+// A cross-origin iframe (Azure's portal blade) cannot be read back by any tool we
+// have, so the evidence gate cannot catch a claim that rests on a write into one.
+// When a run reaches report_done with such a write, we take ONE screenshot and
+// ask the vision tier what is ON the screen — then hand those observations to the
+// model as an observation plus an invitation.
+//
+// The note stays DUMB ON PURPOSE. It states what is visible; it does not classify
+// widgets, does not name a tool, does not diagnose and does not deliver a verdict
+// — rebuilding the model's judgement in code is what produced the bugs this is
+// meant to catch. The model may fix something or explain why the screen is
+// expected; BOTH are accepted, and both are recorded on the run row so we can
+// audit whether these notes earn their cost.
+const NOTE_LEAD = 'Before I record this: one of your writes could not be read back from the page, so I took a screenshot. Here is what a vision model says is on the screen right now — plain observations; it cannot see your task, your tools or your plan:';
+const NOTE_TAIL = 'Anything you want to fix, or is that expected? Both are fine: fix it and report again, or call report_done again and say in `result` why the screen looks like this. Your next report_done is accepted either way.';
+export const visualNoteText = (observations) => [NOTE_LEAD, ...observations.map(o => `- ${o}`), NOTE_TAIL].join('\n');
+
+// ONE screenshot, whichever transport this run uses: the local server saves the
+// PNG and returns {path}; the relay hands back an MCP image block.
+async function screenshotBase64(client) {
+  const res = await client.callTool('fast_screenshot', {});
+  for (const c of res?.content || []) {
+    if (c.type === 'image' && c.data) return c.data;
+    if (c.type !== 'text') continue;
+    let o = null;
+    try { o = JSON.parse(c.text); } catch { continue; }
+    if (typeof o?.dataUrl === 'string') return o.dataUrl.replace(/^data:image\/\w+;base64,/, '');
+    if (typeof o?.path === 'string') { try { return readFileSync(o.path).toString('base64'); } catch { return null; } }
+  }
+  return null;
+}
+
+// Returns the note to hand the model, or null — and records WHY on the run when
+// there is nothing to ask about, no vision key, or no interruption budget left.
+// `deps` is injectable so the whole path unit-tests with no browser and no model.
+export async function visualNoteRound(run, deps = {}) {
+  if (run.gate === 'off' || run.visualNote) return null;   // one round per run
+  const unverified = unverifiedWrites(run.toolLog || []);
+  if (!unverified.length) return null;                     // everything read back: no note, no cost
+  if ((run.gateRefusals?.length || 0) + 1 > REPORT_INTERRUPT_CEILING) {
+    run.visualNote = { skipped: 'interruption budget already spent on gate refusals', unverified };
+    return null;
+  }
+  const shot = deps.screenshot || (() => screenshotBase64(run.client));
+  const describe = deps.describe || (async (a) => (await import('../fast-dxt/server/scout.js')).describeScreen(a));
+  let base64 = null;
+  try { base64 = await shot(); } catch { base64 = null; }
+  if (!base64) { run.visualNote = { skipped: 'no screenshot', unverified }; return null; }
+  let out;
+  try { out = await describe({ base64, values: unverified.map(u => u.target).filter(Boolean) }); }
+  catch (e) { out = { observations: [], skipped: `vision failed: ${e.message}` }; }
+  const observations = (Array.isArray(out?.observations) ? out.observations : []).map(String).filter(Boolean);
+  if (out?.skipped || !observations.length) {
+    run.visualNote = { skipped: out?.skipped || 'nothing observed', unverified };
+    return null;
+  }
+  run.visualNote = { observations, unverified, model_response: null, actedAfter: false, afterIdx: (run.toolLog || []).length };
+  return visualNoteText(observations);
+}
+
+// What the model did with the note: what it said back, and whether it changed the
+// page afterwards. Called once, as the run finishes.
+export function closeVisualNote(run, result) {
+  const n = run.visualNote;
+  if (!n || n.skipped || n.model_response != null) return;
+  n.actedAfter = (run.toolLog || []).slice(n.afterIdx || 0).some(e => e.ok && isStateChanging(e));
+  n.model_response = String(lastAssistantText(run) || result || '').slice(0, 2000);
+  delete n.afterIdx;
+}
+
 const NATIVE_TOOLS = [
   {
     name: 'ask_caller',
@@ -560,7 +657,7 @@ function snapshot(run) {
   const base = { status: run.status, run_id: run.id };
   if (run.status === 'question') return { ...base, question: run.question, so_far: soFar(run) };
   if (run.status === 'running') return base;
-  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, ...gateFields(run) };
+  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, ...gateFields(run), visualNote: run.visualNote || undefined };
 }
 
 function notify(run) {
@@ -572,6 +669,7 @@ function finish(run, status, fields = {}) {
   if (run.done) return;
   run.done = true;
   Object.assign(run, fields, { status, endedAt: Date.now() });
+  closeVisualNote(run, run.result);   // what the model said to the note, and whether it acted
   try {
     mkdirSync(STATE_DIR, { recursive: true });
     appendFileSync(RUNS_FILE, JSON.stringify({
@@ -579,7 +677,7 @@ function finish(run, status, fields = {}) {
       toolset: run.toolset.name, status, startedAt: new Date(run.startedAt).toISOString(), wallMs: run.endedAt - run.startedAt,
       toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog, turns: run.turns,
       result: run.result, evidence: run.evidence, error: run.error, usage: run.usage, urlTrail: run.urlTrail,
-      ...gateFields(run),
+      ...gateFields(run), visualNote: run.visualNote || undefined,
     }) + '\n');
   } catch {}
   run.client?.close().catch(() => {});
@@ -636,6 +734,13 @@ async function loop(run) {
           results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: `report_done refused: ${verdict.refuse.join('; ')}. Fix that, then call report_done again.` }] });
           continue;
         }
+        // one last look at the SCREEN when a write in this run was never read back
+        const note = await visualNoteRound(run);
+        if (note) {
+          onEvent?.({ type: 'visualNote', text: note });
+          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: note }] });
+          continue;
+        }
         return finish(run, 'done', verdict.finish);
       }
       if (u.name === 'ask_caller') {
@@ -690,7 +795,7 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
     id: randomBytes(4).toString('hex'), task, transport, browser, toolset, gate, status: 'running',
     messages: [{ role: 'user', content: [{ type: 'text', text: `TASK: ${task}` }] }],
     system: buildSystem(toolset, client.instructions),
-    tools, back, client, toolLog: [], turns: [], corpus: [], urlTrail: [], gateRefusals: [], gateOverridden: null, gateWouldRefuse: null, unresolvedFailures: null, question: null, waiters: [], pendingAnswer: null,
+    tools, back, client, toolLog: [], turns: [], corpus: [], urlTrail: [], gateRefusals: [], gateOverridden: null, gateWouldRefuse: null, unresolvedFailures: null, visualNote: null, question: null, waiters: [], pendingAnswer: null,
     budgets: { ...DEFAULT_BUDGETS, ...budgets }, onEvent, startedAt: Date.now(), consecutiveErrors: 0,
     usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, modelMs: 0 }, abort: new AbortController(), cancelled: false, done: false,
   };

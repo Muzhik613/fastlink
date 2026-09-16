@@ -33,6 +33,31 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — fast-runner: an end-of-run VISUAL NOTE when a write was never read back (and it stays dumb)
+- **What:** at `report_done`, if `unverifiedWrites(toolLog)` is non-empty (a result that said
+  `verified:false`, or a forced `fast_type` whose bypassed guard IS the missing read-back), the runner
+  takes **one** screenshot, asks the vision tier (`describeScreen` in `fast-dxt/server/scout.js` — the
+  same Gemini plumbing `fast_point` uses, no new dependency) what is ON the screen, and hands Grok the
+  observations plus an invitation: "anything you want to fix, or is that expected?". Acting on it and
+  explaining why the screen is expected are BOTH accepted; the next `report_done` goes through either
+  way. ONE round per run, and never more than `REPORT_INTERRUPT_CEILING` = 2 report_done interruptions
+  counting gate refusals (two refusals already spend it). Every outcome is on the run row:
+  `visualNote:{observations, unverified, model_response, actedAfter}` or
+  `visualNote:{skipped:"no vision"|"no screenshot"|"nothing observed"|"interruption budget …"}`.
+- **Why:** Azure's create-VM blade is a CROSS-ORIGIN iframe, so no tool we have can read a value back
+  out of it. The run typed into it with `force:true` and reported `set VM name="fastlink-bench-vm"`;
+  two screenshots show the whole page selected blue and the field empty. The evidence gate had nothing
+  to catch — every check it runs is about tool results, and the tool result looked clean.
+- **Files:** `fast-runner/runner.mjs`, `fast-dxt/server/scout.js`, `fast-runner/README.md`,
+  `fast-runner/test/visual-note.test.mjs`.
+- **Watch out:** the note MUST stay dumb — it states what is visible and never classifies a widget,
+  names a tool, diagnoses a cause or issues a verdict (a test asserts the wrapper text carries none of
+  that). Rebuilding the model's judgement in the gate is what produced the bugs this exists to catch.
+  It is also not free: one screenshot + one vision call on runs that trigger it, which is why nothing
+  triggers when every write read back, and why `actedAfter` is recorded — if the notes never change
+  anything, delete this.
+- **Status:** committed; `fast-runner` 74/74 (18 new). Six-cell hvm bench: see below.
+
 ## 2026-09-16 — a write that cannot be read back says so: `verified:false` + a machine-readable reason
 - **What:** `fast_type` now ends every call with its own read-back — `verified:true` with
   `typedInto:{tag,type,label,value}`, or `verified:false` with `reason` ("cross-origin: value not

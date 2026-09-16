@@ -625,6 +625,47 @@ export async function pointByImage({ targets, base64 }) {
 // (Enter/Tab/...) and target may be empty. SAFETY: the planner is told NOT to
 // emit a final submit/create/delete/confirm step unless the intent explicitly
 // asks for it — it stops with the form filled.
+// PLAIN-OBSERVATION tier — the end-of-run visual note (fast-runner). It is NOT a
+// judge and NOT a planner: it is shown one screenshot and asked to say what is on
+// the screen, in the same flat register a bystander would use ("this box looks
+// empty", "there is a red dot next to Basics", "the form continues below the
+// visible area"). It must not name widget kinds, diagnose a cause, prescribe a
+// tool or deliver a verdict — the model driving the browser does that. `values`
+// are strings the agent says it entered; the note reports what the boxes holding
+// them actually read, when it can see them.
+// Returns { observations:[string], skipped? } — never throws for the caller.
+export async function describeScreen({ base64, values } = {}) {
+  if (!SCOUT_ENABLED) return { observations: [], skipped: 'no vision' };
+  if (!base64 || typeof base64 !== 'string') return { observations: [], skipped: 'no image' };
+  const img = base64.replace(/^data:image\/\w+;base64,/, '');
+  const wanted = (Array.isArray(values) ? values : []).map((v) => String(v)).filter(Boolean).slice(0, 8);
+  const prompt = [
+    'Describe what this browser screenshot SHOWS. Report only what is visibly on the screen.',
+    'Cover, when visible: (a) input boxes that look empty or still show greyed placeholder text,',
+    'naming the label printed beside them; (b) any red/orange marks, dots, outlines, warning icons',
+    'or validation messages, and what they sit next to; (c) whether the content continues below the',
+    'visible area (a scrollbar, a cut-off section, a partially visible row).',
+    wanted.length ? `(d) for each of these values, say what the box that should hold it reads right now, or that you cannot see it: ${wanted.map((v) => JSON.stringify(v)).join(', ')}.` : '',
+    'RULES: each observation is one short sentence about what is on the screen.',
+    'Do NOT name control types (do not call anything a dropdown, a text field, a checkbox).',
+    'Do NOT explain causes, do NOT suggest what to do, do NOT name any tool or action,',
+    'Do NOT say whether anything is right, wrong, complete or incomplete. No advice, no verdicts.',
+    'If the screen looks fine and nothing stands out, return an empty list.',
+    'Reply strict JSON: {"observations":[string, ...]}.',
+  ].filter(Boolean).join(' ');
+  try {
+    const out = await callModelParts({
+      parts: [{ text: prompt }, { inlineData: { mimeType: 'image/png', data: img } }],
+      maxTokens: 600,
+    });
+    const observations = (Array.isArray(out && out.observations) ? out.observations : [])
+      .map((s) => String(s || '').trim()).filter(Boolean).slice(0, 12);
+    return { observations };
+  } catch (e) {
+    return { observations: [], skipped: `vision failed: ${String(e && e.message || e).slice(0, 200)}` };
+  }
+}
+
 export async function planByImage({ intent, base64 }) {
   if (!SCOUT_ENABLED) return { steps: [], reason: 'scout disabled (set GEMINI_API_KEY)' };
   if (!base64 || typeof base64 !== 'string') return { steps: [], reason: 'no image' };
