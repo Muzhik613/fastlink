@@ -232,3 +232,84 @@ test('a value longer than the read-back window says unreadable, not "reads somet
   assert.equal(r.verified, false);
   assert.match(r.reason, /^unreadable: the field holds 900 characters/);
 });
+
+// ── force: a coordinate-focused write lands in what was clicked ──────────────
+// The live bug (Azure create-VM, vision fill): Resource group / Region / Image
+// were dropdowns that take no text focus, so each click left focus on the VM
+// name box and each "any valid" was typed THERE — the name read
+// "fastlink-bench-vmany validany valid" and every fill reported only "unverified".
+test('inspectFocusInFrame: underPointer is true on the field, via its <label>, or via a wrapper holding only it', () => {
+  const input = el('input', { value: 'a', matches: () => true });
+  assert.equal(inFrame({ ...docWith(input), querySelectorAll: () => [] }).underPointer, true);
+
+  const off = () => el('input', { value: 'a', matches: () => false });
+  const viaLabel = off();
+  const label = { closest: () => ({ control: viaLabel }), contains: () => false, querySelectorAll: () => [] };
+  assert.equal(inFrame({ ...docWith(viaLabel), querySelectorAll: () => [label] }).underPointer, true);
+
+  const wrapped = off();
+  const wrapper = { closest: () => null, contains: (x) => x === wrapped, querySelectorAll: () => [wrapped] };
+  assert.equal(inFrame({ ...docWith(wrapped), querySelectorAll: () => [wrapper] }).underPointer, true);
+});
+
+test('inspectFocusInFrame: underPointer is false when the pointer is over another control, or in another frame', () => {
+  const name = el('input', { value: 'fastlink-bench-vm', matches: () => false });
+  const dropdown = { closest: () => null, contains: () => false, querySelectorAll: () => [] };
+  assert.equal(inFrame({ ...docWith(name), querySelectorAll: () => [dropdown] }).underPointer, false);
+  // a form that holds this field AND others is not "the field's wrapper"
+  const form = { closest: () => null, contains: () => true, querySelectorAll: () => [name, {}, {}] };
+  assert.equal(inFrame({ ...docWith(name), querySelectorAll: () => [form] }).underPointer, false);
+  // nothing hovered in this frame: the pointer is in some other frame
+  assert.equal(inFrame({ ...docWith(name), querySelectorAll: () => [] }).underPointer, false);
+  // a probe that cannot evaluate hover reports nothing rather than a guess
+  assert.equal(inFrame(docWith(el('input', { value: '' }))).underPointer, undefined);
+});
+
+test('REGRESSION doubled text: a forced type whose click left focus on the previous field types NOTHING', async () => {
+  const stale = field('fastlink-bench-vm', 'Virtual machine name', { underPointer: false });
+  const s = sandbox({ injections: [crossOrigin(stale)] });
+  const r = await s.typeText({ text: 'any valid', force: true });
+  assert.equal(r.code, 'focus_not_on_clicked_target');
+  assert.match(r.error, /focus is still on <input> \(Virtual machine name\) \(holding "fastlink-bench-vm"\)/);
+  assert.match(r.reason, /nothing typed/);
+  assert.match(r.hint, /dropdown/);
+  assert.deepEqual(s.cdpCalls, [], 'no insertText into the name box');
+});
+
+test('REGRESSION doubled text: filling the same field twice with clear:true leaves the value once', async () => {
+  // a field model: Ctrl+A+Delete empties it, insertText appends at the caret
+  let value = 'fastlink-bench-vm';
+  const probe = () => crossOrigin(field(value, 'Virtual machine name', { underPointer: true }));
+  const cdpCalls = [];
+  const chrome = {
+    debugger: {
+      attach: async () => {}, onDetach: { addListener() {} },
+      sendCommand: async (_t, method, params) => {
+        cdpCalls.push(method);
+        if (method === 'Input.dispatchKeyEvent' && params.type === 'keyDown' && params.key === 'Delete') value = '';
+        if (method === 'Input.insertText') value += params.text;
+      },
+    },
+    storage: { local: { get: async () => ({}) } },
+    scripting: { executeScript: async () => probe() },
+  };
+  const { typeText } = new Function('chrome', 'getInjectableTab', 'window', 'document', 'location', 'navigator',
+    `${src}\nreturn { typeText };`)(chrome, async () => ({ tab: { id: 1 } }), undefined, undefined, undefined, { platform: 'Linux' });
+  for (let i = 0; i < 2; i++) {
+    const r = await typeText({ text: 'fastlink-bench-vm', clear: true, force: true });
+    assert.equal(r.verified, true);
+  }
+  assert.equal(value, 'fastlink-bench-vm');
+});
+
+test('a forced type whose click DID focus the field types normally; clickXY moves the pointer first and flags a missed focus', async () => {
+  const s = sandbox({ injections: [crossOrigin(field('', 'Name', { underPointer: true })), crossOrigin(field('vm', 'Name'))] });
+  const r = await s.typeText({ text: 'vm', force: true });
+  assert.equal(r.verified, true);
+
+  const c = sandbox({ injections: [crossOrigin(field('fastlink-bench-vm', 'Virtual machine name', { underPointer: false }))] });
+  const out = await c.clickXY({ x: 10, y: 20, clickCount: 3 });
+  assert.deepEqual(c.cdpCalls[0], { method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x: 10, y: 20, button: 'none', buttons: 0 } });
+  assert.equal(c.cdpCalls.filter(k => k.params.type === 'mousePressed').length, 3);
+  assert.match(out.hint, /NOT the element that was clicked/);
+});

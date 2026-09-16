@@ -82,6 +82,10 @@ export async function clickXY({ x, y, button, clickCount }) {
   // the named button, or right/middle clicks misfire.
   const mask = btn === 'right' ? 2 : btn === 'middle' ? 4 : 1;
   const count = Math.max(1, clickCount || 1);
+  // Move the pointer there first, as a real mouse does: hover state follows it,
+  // and fast_type's force check reads that hover state to confirm focus landed
+  // on what was clicked.
+  await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 });
   // Escalating clickCount (1,2,…) is how CDP signals double/triple-click.
   for (let i = 1; i <= count; i++) {
     const base = { x, y, button: btn, clickCount: i, buttons: mask };
@@ -104,6 +108,9 @@ export async function clickXY({ x, y, button, clickCount }) {
     if (f.label) out.focused.label = f.label;
     if (f.frames.length) out.focused.frames = f.frames;
     if (f.editable) out.focused.value = f.value;
+    if (f.underPointer === false) {
+      out.hint = `focus is on ${describeFocus(f)}, which is NOT the element that was clicked — the click did not move focus, so a fast_type now would go into that other field. Click the field's own box before typing.`;
+    }
     if (!f.editable) {
       out.hint = `${describeFocus(f)} holds focus, not an editable field — a fast_type now would be refused. Click the field's own box, or read its rect and click that center, before typing.`;
     }
@@ -187,6 +194,25 @@ function inspectFocusInFrame() {
     path, host, tag, type: el.type || '', editable, readable: editable,
     label: trim(label, 80), value: trim(value, 300), valueLen: value.length,
   };
+  // Is the focused field the thing under the mouse pointer? After a coordinate
+  // click it must be: the pointer is over the field itself, over a <label> for
+  // it, or over a wrapper that holds no other field. When a click lands on
+  // something that does not take focus (a dropdown button, a styled div), focus
+  // STAYS on the previous field and this says false. Only a positive mismatch is
+  // reported; anything this cannot evaluate leaves it undefined.
+  if (editable) {
+    try {
+      if (el.matches(':hover')) out.underPointer = true;
+      else {
+        const hovered = document.querySelectorAll(':hover');
+        const deepest = hovered[hovered.length - 1];
+        const lab = deepest && deepest.closest ? deepest.closest('label') : null;
+        const FIELDS = 'input:not([type=hidden]),textarea,select,[contenteditable]:not([contenteditable=false])';
+        out.underPointer = !!deepest && ((lab && lab.control === el)
+          || (deepest.contains(el) && deepest.querySelectorAll(FIELDS).length === 1));
+      }
+    } catch {}
+  }
   if (!editable) out.reason = `focus is on a <${tag}>, which holds no editable value`;
   else if (el.type === 'password') { out.value = '•'.repeat(Math.min(value.length, 32)); out.readable = false; out.reason = 'password field: value not readable'; }
   return out;
@@ -274,11 +300,15 @@ async function selectAllAndDelete(tabId) {
 //   args.text   : string to insert (required)
 //   args.clear  : when true, select-all + Delete first so the value is REPLACED,
 //                 not appended (default false → append at the caret).
-//   args.force  : (alias allowIframe) type even when focus sits in a frame the
-//                 extension cannot inject into, so nothing can confirm a field
-//                 has focus. Every other frame — cross-origin iframes included —
-//                 is probed directly (probeFocus), so force is not needed to
-//                 reach a cross-origin form.
+//   args.force  : (alias allowIframe) the field was JUST focused by a coordinate
+//                 click (fast_click_xy). Two consequences: (1) the focused field
+//                 must be the element under the pointer, else nothing is typed —
+//                 a click on something that takes no focus leaves focus on the
+//                 PREVIOUS field, and typing there is how a vision fill turned
+//                 "fastlink-bench-vm" into "fastlink-bench-vmany validany valid";
+//                 (2) where focus sits in a frame the extension cannot inject
+//                 into, it types anyway, unverified. Every other frame —
+//                 cross-origin iframes included — is probed directly.
 // Before inserting we verify an EDITABLE element is actually focused — a bare
 // insertText goes to document.activeElement, so with nothing useful focused the
 // text vanishes or lands in the wrong field (live: a URL appended into a Name
@@ -312,6 +342,17 @@ export async function typeText({ text, clear, force, allowIframe } = {}) {
       error: `fast_type: no editable element focused — ${describeFocus(el)} has focus; click/focus the field first, nothing was typed`,
       code: 'no_editable_focus', focused: where(el),
       ...(uninspectable ? { hint: 'the focused frame cannot be inspected — if a coordinate click just focused a field inside it, fast_type {text, force:true} types there unverified' } : {}),
+    };
+  }
+
+  // A coordinate-focused write must land in what was clicked (see args.force).
+  if (forced && el.editable && el.underPointer === false) {
+    return {
+      error: `fast_type: the click did not focus its target — focus is still on ${describeFocus(el)}${el.value ? ` (holding ${JSON.stringify(el.value)})` : ''}, which is not under the pointer, so nothing was typed`,
+      code: 'focus_not_on_clicked_target',
+      reason: 'focus not on the clicked element: nothing typed',
+      focused: where(el),
+      hint: 'the clicked element does not take text focus — if it is a dropdown/combobox, open it and pick an option (fast_select_option, or click the option) instead of typing; otherwise click the text box itself',
     };
   }
 
