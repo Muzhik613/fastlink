@@ -33,6 +33,41 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — a write that cannot be read back says so: `verified:false` + a machine-readable reason
+- **What:** `fast_type` now ends every call with its own read-back — `verified:true` with
+  `typedInto:{tag,type,label,value}`, or `verified:false` with `reason` ("cross-origin: value not
+  readable", "unreadable: …", or what the field reads instead). The probe follows SAME-ORIGIN iframes
+  down to the real focused element (those stay verifiable) and stops at a cross-origin one, which it
+  names by host. A fill whose field is no longer in the page, and a `fast_select_option` whose control
+  was torn down, now say `unreadable: …` instead of comparing against an empty read.
+  `fast_fill_vision` and `fast_do` take `fast_type`'s verdict instead of hardcoding one. The old
+  `into:{…}` echo is REPLACED by `typedInto` (nothing else consumed it).
+- **Why:** the forced write into Azure's cross-origin blade returned `{typed, cleared, forced, into}`
+  with no hint that nothing had confirmed it, so both Grok and the gate read it as a success.
+- **Files:** `fast-ext/src/actions/input.js`, `fast-ext/src/actions/page.js`,
+  `fast-dxt/server/handlers.js`, `fast-dxt/server/tools.js`, `fastlink-relay/tools.js`,
+  `fast-runner/runner.mjs`, `fast-runner/test/type-guard.test.mjs`.
+- **Watch out:** `fast_type` joined `VERIFYING_WRITES` in the runner gate, so a `verified:true` type is
+  now its own read-after-action (same rule as fill/select), and a `verified:false` one is an unretried
+  failed action. The two `tools.js` copies must stay byte-identical (checked: 3371 chars each).
+- **Status:** committed; unit-tested (`type-guard.test.mjs`). The Azure cross-origin case itself can
+  only be proven in the owner's Chrome — left to the lead.
+
+## 2026-09-16 — `clear:true` never select-alls the PAGE: it is refused unless an editable field has focus
+- **What:** `fast_type {clear:true}` runs its select-all ONLY inside a focused editable element. With
+  the document, `<body>` or a cross-origin `<iframe>` focused it refuses — nothing typed, nothing
+  selected — returning `code:"clear_without_editable_focus"`, `focused:{…}` naming what had focus, and
+  a hint that a triple-click (`fast_click_xy {clickCount:3}`) selects only that field's own contents.
+  `force:true` does NOT buy past this: force bypasses the *typing* guard, not the select-all.
+- **Why:** THE BUG. On Azure, `fast_type {clear:true, force:true}` sent Ctrl+A to a document whose
+  activeElement was the cross-origin blade `<iframe>`, so the browser selected the entire page (two
+  screenshots show it blue) and the VM-name field was never touched.
+- **Files:** `fast-ext/src/actions/input.js`, `fast-dxt/server/tools.js`, `fastlink-relay/tools.js`.
+- **Watch out:** clearing a pre-filled value inside a cross-origin iframe now REQUIRES the triple-click
+  route (which is what `fast_fill_vision` already does, and why it never had this bug). If a future
+  change re-allows an unfocused select-all "just for force mode", this bug is back.
+- **Status:** committed; unit-tested (the Azure sequence is a test case).
+
 ## 2026-09-16 — walkDeep guards: iterative (never RangeError), budgeted, and a miss says the page was too big to scan
 - **What:** `walkDeep` walks a root QUEUE instead of recursing, so frame/shadow nesting can never
   blow the JS stack. It carries budgets — `WALK_MAX_NODES` 300000, `WALK_MAX_ROOTS` 4000,

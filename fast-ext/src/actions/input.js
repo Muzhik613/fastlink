@@ -125,13 +125,52 @@ export async function dragXY({ fromX, fromY, toX, toY, steps }) {
 }
 
 // Runs in the page MAIN world: describe the focused element so we can (a) refuse
-// to type when nothing editable is focused and (b) echo back what received the
-// text. Self-contained (no closures) — chrome.scripting serializes it.
+// to type (or select-all) when nothing editable is focused and (b) read the value
+// back after typing. Self-contained (no closures) — chrome.scripting serializes it.
+//
+// ALWAYS returns a descriptor, never null: "the document has focus" and "an
+// <iframe> has focus" are exactly the facts the caller must be able to name, and
+// a null told it nothing. Focus inside a SAME-ORIGIN iframe is followed down to
+// the real element (so those fills stay verifiable); a CROSS-ORIGIN iframe is
+// where the top frame's knowledge ends — reported as readable:false with
+// reason:"cross-origin: value not readable".
 function inspectActiveElement() {
-  const el = document.activeElement;
-  if (!el || el === document.body || el === document.documentElement) return null;
-  const tag = (el.tagName || '').toLowerCase();
   const NON_TEXT = ['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'image', 'range', 'color', 'hidden'];
+  const trim = (s, n) => (typeof s === 'string' && s.length > n ? s.slice(0, n) + '…' : (s || ''));
+  let doc = document;
+  let el = document.activeElement;
+  const frames = [];
+  // Descend through same-origin iframes to the element that really has focus.
+  for (let depth = 0; depth < 10; depth++) {
+    if (!el || (el.tagName || '').toLowerCase() !== 'iframe') break;
+    let inner = null;
+    try { inner = el.contentDocument; } catch { inner = null; }
+    if (!inner) {
+      // cross-origin: the top frame cannot see, read or verify anything inside it
+      let src = '';
+      try { src = new URL(el.src || '', location.href).host; } catch {}
+      return {
+        tag: 'iframe', type: '', editable: false, readable: false,
+        reason: 'cross-origin: value not readable',
+        label: src || (el.getAttribute && el.getAttribute('title')) || '',
+        value: '', valueLen: 0, frames: frames.concat(src ? [src] : ['iframe']),
+      };
+    }
+    let host = '';
+    try { host = new URL(el.src || '', location.href).host; } catch {}
+    frames.push(host || 'iframe');
+    doc = inner;
+    el = inner.activeElement;
+  }
+  if (!el || el === doc.body || el === doc.documentElement) {
+    return {
+      tag: el === doc.documentElement ? 'html' : el ? 'body' : 'none',
+      type: '', editable: false, readable: true,
+      reason: 'the document itself has focus — no field is focused',
+      label: '', value: '', valueLen: 0, frames,
+    };
+  }
+  const tag = (el.tagName || '').toLowerCase();
   const editable =
     (tag === 'input' && !NON_TEXT.includes((el.type || 'text').toLowerCase())) ||
     tag === 'textarea' ||
@@ -142,10 +181,15 @@ function inspectActiveElement() {
       el.getAttribute('placeholder') || el.id)) || '';
   } catch {}
   let value = '';
-  if (tag === 'input' || tag === 'textarea') value = el.value || '';
+  if (tag === 'input' || tag === 'textarea') value = el.value == null ? '' : String(el.value);
   else if (el.isContentEditable) value = el.textContent || '';
-  const trim = (s) => (typeof s === 'string' && s.length > 80 ? s.slice(0, 80) + '…' : (s || ''));
-  return { tag, type: el.type || '', editable, label: trim(label), value: trim(value) };
+  const out = {
+    tag, type: el.type || '', editable, readable: editable,
+    label: trim(label, 80), value: trim(value, 300), valueLen: value.length, frames,
+  };
+  if (!editable) out.reason = `focus is on a <${tag}>, which holds no editable value`;
+  else if (el.type === 'password') { out.value = '•'.repeat(Math.min(value.length, 32)); out.readable = false; out.reason = 'password field: value not readable'; }
+  return out;
 }
 
 // Detect macOS so keyboard chords use the platform-correct select-all modifier:
@@ -163,6 +207,10 @@ function isMacPlatform() {
 // fast_key MOD_BITS map already carries meta/cmd=4), so the clear-before-type
 // select-all fires the right chord on every platform. Clears the field so a
 // follow-up insertText REPLACES instead of appending.
+// ONLY ever called with an EDITABLE element focused (see typeText): Ctrl/Cmd+A
+// with the DOCUMENT focused selects the whole PAGE, which is what happened on
+// Azure's cross-origin portal blade — the page went blue and the name field was
+// never touched, while the call reported success.
 async function selectAllAndDelete(tabId) {
   const a = keyInfo('a');
   const selectAllMod = isMacPlatform() ? MOD_BITS.meta : MOD_BITS.ctrl;
@@ -193,7 +241,15 @@ async function selectAllAndDelete(tabId) {
 // Before inserting we verify an EDITABLE element is actually focused — a bare
 // insertText goes to document.activeElement, so with nothing useful focused the
 // text vanishes or lands in the wrong field (live: a URL appended into a Name
-// field, "FastLink relayhttps://…"). Returns which element received the text.
+// field, "FastLink relayhttps://…").
+//
+// EVERY return says whether the value was READ BACK: `verified:true` with the
+// live value, or `verified:false` with a machine-readable `reason`
+// ("cross-origin: value not readable", "unreadable: …", or what the field reads
+// instead) plus `typedInto`. A forced write into a cross-origin iframe is
+// exactly the case nothing in the page can confirm, so it must never come back
+// looking like a success — the Azure portal blade reported "set VM name" while
+// the field was empty.
 export async function typeText({ text, clear, force, allowIframe } = {}) {
   if (typeof text !== 'string') return { error: 'fast_type: text is required (string)' };
   const got = await getInjectableTab();
@@ -204,32 +260,63 @@ export async function typeText({ text, clear, force, allowIframe } = {}) {
   const probe = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
   if (probe.error) return probe;
   const el = probe.result;
+  const where = (d) => (d ? {
+    tag: d.tag, type: d.type, label: d.label, value: d.value,
+    ...(d.frames && d.frames.length ? { frames: d.frames } : {}),
+  } : null);
+  const named = (d) => (!d || d.tag === 'none' ? 'nothing'
+    : d.tag === 'iframe' ? `a cross-origin <iframe>${d.label ? ` (${d.label})` : ''}`
+    : `<${d.tag}>${d.label ? ` (${d.label})` : ''}`);
+
   // Normal mode: refuse when nothing editable is focused (catches the "typed into
   // the wrong field" class of bug). Force mode: trust the caller's prior focusing
   // click — the editable element may be inside a cross-origin iframe the top-frame
   // probe can't see, so don't refuse on a non-editable/<iframe> activeElement.
   if (!forced && (!el || !el.editable)) {
-    return { error: 'fast_type: no editable element focused — click/focus the field first (or pass force:true for a cross-origin iframe input you already clicked)', focused: el?.tag || null };
+    return { error: 'fast_type: no editable element focused — click/focus the field first (or pass force:true for a cross-origin iframe input you already clicked)', focused: where(el) };
+  }
+
+  // clear:true is a SELECT-ALL, and a select-all only means "this field" when a
+  // field has focus. With the document, <body> or a CROSS-ORIGIN <iframe>
+  // focused, Ctrl/Cmd+A selects the whole PAGE and the Delete that follows can
+  // hit anything — the Azure create-VM blade turned entirely blue while the name
+  // field stayed empty. So clear is REFUSED there, force or not, and nothing is
+  // typed: the caller is told what had focus.
+  if (clear && (!el || !el.editable)) {
+    return {
+      error: `fast_type: clear:true needs an editable field focused, but ${named(el)} has focus — a select-all there selects the WHOLE PAGE, not a field, so nothing was typed`,
+      code: 'clear_without_editable_focus',
+      focused: where(el),
+      hint: 'triple-click the field first (fast_click_xy {x, y, clickCount:3}) — that selects only that field\'s own contents, including inside a cross-origin iframe — then fast_type {text, force:true} with no clear',
+    };
   }
 
   if (clear) await selectAllAndDelete(tabId);
   await cdp(tabId, 'Input.insertText', { text });
 
-  // Echo the (post-insert) focused element so the caller can confirm the text
-  // landed where intended. Best-effort — fall back to the pre-insert probe. In
-  // force mode across a cross-origin iframe boundary this echoes the <iframe>
-  // element (the inner input is unreadable from the top frame) — expected, not a
-  // failure; flag forced so the caller knows the guard was bypassed intentionally.
-  let into = el;
+  // Read the (post-insert) focused element back. Best-effort — fall back to the
+  // pre-insert probe. Across a cross-origin iframe boundary this is the <iframe>
+  // element itself: the inner input is unreadable from the top frame, so the
+  // result says verified:false with that reason rather than echoing a success.
+  let after = el;
   try {
-    const after = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
-    if (after.result) into = after.result;
+    const p2 = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
+    if (p2.result) after = p2.result;
   } catch {}
+  const tail = { typed: text.length, cleared: !!clear, forced: forced || undefined, typedInto: where(after) };
+  if (!after || !after.readable) {
+    return { verified: false, reason: (after && after.reason) || 'unreadable: value not readable', ...tail };
+  }
+  const live = String(after.value == null ? '' : after.value);
+  const holds = clear ? live === text : live.includes(text);
+  if (holds) return { verified: true, ...tail };
+  if (after.valueLen > live.replace(/…$/, '').length) {
+    return { verified: false, reason: `unreadable: the field holds ${after.valueLen} characters, more than the 300-character read-back window, so the value could not be confirmed`, ...tail };
+  }
   return {
-    typed: text.length,
-    cleared: !!clear,
-    forced: forced || undefined,
-    into: into ? { tag: into.tag, type: into.type, label: into.label, value: into.value } : null,
+    verified: false,
+    reason: `the field reads ${JSON.stringify(live)} after typing, not the text sent — the page reformatted, rejected or redirected it; do not report the text as entered`,
+    ...tail,
   };
 }
 
