@@ -48,7 +48,7 @@ const STATE_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_select_option', 'fast_key_press', 'fast_key',
   'fast_type', 'fast_nav', 'fast_tab', 'fast_reload', 'fast_scroll', 'fast_wheel', 'fast_drag', 'fast_drag_xy',
   'fast_upload', 'fast_hover', 'fast_switch', 'fast_close', 'fast_batch', 'fast_do', 'fast_fill_vision',
-  'fast_macro_run', 'fast_network_replay',
+  'fast_network_replay',
 ]);
 const READ_TOOLS = new Set(['fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_evaluate', 'fast_marks', 'fast_scout', 'fast_list', 'fast_console', 'fast_network']);
 const isStateChanging = (e) => STATE_TOOLS.has(e.name);

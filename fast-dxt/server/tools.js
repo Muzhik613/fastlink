@@ -448,53 +448,6 @@ export const TOOLS = [
     },
   },
   {
-    name: 'fast_macro_save',
-    description: 'Save a named multi-step recipe (e.g. "login flow", "navigate to Credentials") so you can replay it with fast_macro_run later. Steps are arbitrary fast_* tool calls. Persisted in chrome.storage.local — survives across browser sessions on this machine.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Macro name (used as the key).' },
-        description: { type: 'string', description: 'Optional human description shown in fast_macro_list.' },
-        actions: {
-          type: 'array',
-          description: 'Ordered list of steps. Each is {name, args} where name is any fast_* tool except the macro tools themselves.',
-          items: {
-            type: 'object',
-            properties: { name: { type: 'string' }, args: { type: 'object' } },
-            required: ['name'],
-          },
-        },
-      },
-      required: ['name', 'actions'],
-    },
-  },
-  {
-    name: 'fast_macro_list',
-    description: 'List all saved macros (name, step count, description, savedAt). Most-recently-saved first.',
-    inputSchema: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'fast_macro_run',
-    description: 'Run a previously saved macro by name. Stops on the first failing step unless continueOnError is set. Returns per-step results.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Macro name (from fast_macro_save / fast_macro_list).' },
-        continueOnError: { type: 'boolean', description: 'If true, keep running after a step errors. Default false.' },
-      },
-      required: ['name'],
-    },
-  },
-  {
-    name: 'fast_macro_delete',
-    description: 'Delete a saved macro by name.',
-    inputSchema: {
-      type: 'object',
-      properties: { name: { type: 'string', description: 'Macro name to delete.' } },
-      required: ['name'],
-    },
-  },
-  {
     name: 'fast_click_xy',
     description: 'Trusted click at a pixel via the CDP Input domain (a REAL mouse event, isTrusted:true) — unlike fast_click\'s injected JS, LWC/React widgets honor it and it can focus an iframe input with no DOM reach-in. Coordinates are TOP-LEVEL VIEWPORT CSS pixels: if the target lives inside an iframe, add the iframe\'s page offset to its in-iframe getBoundingClientRect before passing (a same-origin frame\'s offset is its own frameElement.getBoundingClientRect on the parent page). x and y are validated as numbers — a missing/non-numeric coordinate returns an error instead of silently clicking (0,0). Playbook for stubborn React/iframe fields: read the field\'s rect via fast_evaluate (getBoundingClientRect, use its center x/y), fast_click_xy there to focus it (trusted), then fast_type to enter text. **Every click reports WHERE FOCUS LANDED**: `focused` {tag, type, label, editable} (+ the field\'s live `value` when it is editable), and a `hint` when nothing editable holds focus — which is exactly when the fast_type after it would be refused (the first click after an overlay/consent banner closes often lands before the page is listening). Read `focused` before typing instead of discovering it from the refusal.',
     inputSchema: {

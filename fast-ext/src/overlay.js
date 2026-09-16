@@ -93,8 +93,6 @@
     fast_list: 'Listing tabs', fast_close: 'Closing tab',
     fast_console: 'Reading console', fast_network: 'Reading network',
     fast_network_replay: 'Replaying request', fast_evaluate: 'Running script',
-    fast_macro_run: 'Running macro', fast_macro_save: 'Saving macro',
-    fast_macro_list: 'Listing macros', fast_macro_delete: 'Deleting macro',
   };
   const humanVerb = (action) =>
     VERB[action] || String(action || '').replace(/^fast_/, '').replace(/_/g, ' ') || 'Working';

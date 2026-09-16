@@ -7,7 +7,6 @@ import { uploadFile }      from './upload.js';
 import { readConsole }     from './console.js';
 import { readNetwork }     from './network.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
-import { saveMacro, listMacros, runMacro, deleteMacro } from './macros.js';
 import { captureMarks }    from './marks.js';
 import { visionCapture, annotateBoxes } from './vision.js';
 import { isInjectableUrl } from '../util.js';
@@ -150,10 +149,6 @@ async function runOne(action, args) {
     }
     return waitForNetworkIdle(args);
   }
-  if (action === 'fast_macro_save')   return saveMacro(args);
-  if (action === 'fast_macro_list')   return listMacros();
-  if (action === 'fast_macro_run')    return runMacro(args, dispatchAction);
-  if (action === 'fast_macro_delete') return deleteMacro(args);
   if (PAGE_ACTIONS.has(action))     return injectPageAction(action, args);
   return { error: `Unknown action: ${action}` };
 }

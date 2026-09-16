@@ -97,16 +97,15 @@ export function createScout({ model } = {}) {
 
   // --- DOM scout (digest → plan) -------------------------------------------
 
-  async function scout(apiKey, { intent, digest, macros }) {
+  async function scout(apiKey, { intent, digest }) {
     if (!apiKey) return { disabled: true, reason: DISABLED, brief: null, steps: [] };
     const slim = slimDigest(digest);
-    const saved = slimMacros(macros);
     const map = await getPageMap(apiKey, slim);
-    if (!intent) return { warmed: map.warmed, url: slim.url, summary: map.summary, elements: map.elements, savedActions: saved };
-    const plan = await overlayIntent(apiKey, map, intent, slim, saved);
+    if (!intent) return { warmed: map.warmed, url: slim.url, summary: map.summary, elements: map.elements };
+    const plan = await overlayIntent(apiKey, map, intent, slim);
     return {
       warmed: map.warmed, url: slim.url, brief: plan.brief, steps: plan.steps,
-      savedActions: saved, needMore: plan.needMore, needMoreReason: plan.needMoreReason, needsMoreInfo: plan.needsMoreInfo,
+      needMore: plan.needMore, needMoreReason: plan.needMoreReason, needsMoreInfo: plan.needsMoreInfo,
     };
   }
 
@@ -141,12 +140,11 @@ export function createScout({ model } = {}) {
     return { summary: out.summary || '', elements: Array.isArray(out.elements) ? out.elements : [] };
   }
 
-  async function overlayIntent(apiKey, map, intent, slim, saved) {
+  async function overlayIntent(apiKey, map, intent, slim) {
     const system = [
       'You are a fast web-automation planner AND a snapshot broker. You get a page',
       'map (summary + elements with i and purpose), raw items[] (each with i, labels,',
-      'cx/cy center coords + inFrame), savedActions[] (optional reusable macros), and',
-      'a user INTENT.',
+      'cx/cy center coords + inFrame), and a user INTENT.',
       'STEP 1 — judge sufficiency: if the element(s) needed to accomplish the intent',
       'are NOT present in this data, set "needMore":true with a short "needMoreReason"',
       '(e.g. "target likely off-screen", "in an overlay/portal", "inside an iframe")',
@@ -159,9 +157,6 @@ export function createScout({ model } = {}) {
       'those step(s) and ignore unmentioned fields — do NOT invent values for fields',
       'the user did not mention.',
       'STEP 2 — steps (name + args): ' + ALLOWED_STEPS + '.',
-      'If a savedAction cleanly matches the whole intent you MAY return a single',
-      '{"name":"fast_macro_run","args":{"name":"<macro name>"}} — but prefer explicit',
-      'steps unless the macro is an obvious exact fit.',
       'TIER SELECTION: default to the cheap injected tier (fast_click, fast_fill).',
       'When a target has inFrame:true, or is inside an overlay/portal (inOverlay:true),',
       'or is a React/LWC/custom-component control where injected events are unreliable,',
@@ -172,7 +167,7 @@ export function createScout({ model } = {}) {
       '"needMoreReason":string?,"brief":string,"steps":[{"name":string,"args":object}],',
       '"needsMoreInfo":string?}. Be terse.',
     ].join(' ');
-    const user = JSON.stringify({ intent, summary: map.summary, elements: map.elements, items: slim.items, savedActions: saved });
+    const user = JSON.stringify({ intent, summary: map.summary, elements: map.elements, items: slim.items });
     const out = await callModel(apiKey, system, user, 1000);
     const steps = normalizeSteps(Array.isArray(out.steps) ? out.steps : []);
     const parsedNothing = !steps.length && !out.needsMoreInfo && out.needMore === undefined;
@@ -412,14 +407,6 @@ export function createScout({ model } = {}) {
 }
 
 // --- pure helpers (no instance state, no key) -------------------------------
-
-function slimMacros(macros) {
-  return (macros || []).map((m) => prune({
-    name: m.name,
-    description: m.description || undefined,
-    steps: (m.actions || m.steps || []).length || undefined,
-  }));
-}
 
 function slimDigest(d) {
   const items = (d.items || []).map((it) => prune({

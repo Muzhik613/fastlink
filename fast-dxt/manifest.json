@@ -146,22 +146,6 @@
       "description": "Re-fire a request from the active tab's page context, so the page's cookies/auth are sent automatically (no manual header copy)."
     },
     {
-      "name": "fast_macro_save",
-      "description": "Save a named multi-step recipe (e.g."
-    },
-    {
-      "name": "fast_macro_list",
-      "description": "List all saved macros (name, step count, description, savedAt)."
-    },
-    {
-      "name": "fast_macro_run",
-      "description": "Run a previously saved macro by name."
-    },
-    {
-      "name": "fast_macro_delete",
-      "description": "Delete a saved macro by name."
-    },
-    {
       "name": "fast_click_xy",
       "description": "Trusted click at a pixel via the CDP Input domain (a REAL mouse event, isTrusted:true) — unlike fast_click's injected JS, LWC/React widgets honor it and it c..."
     },

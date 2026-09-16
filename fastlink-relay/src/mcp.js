@@ -170,7 +170,7 @@ const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_type',
   'fast_key', 'fast_key_press', 'fast_nav', 'fast_evaluate', 'fast_drag', 'fast_drag_xy',
   'fast_select_option', 'fast_wheel', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_reload',
-  'fast_hover', 'fast_macro_run', 'fast_macro_save', 'fast_macro_delete', 'fast_network_replay',
+  'fast_hover', 'fast_network_replay',
   'fast_fill_vision', 'fast_do', 'fast_upload',
 ]);
 

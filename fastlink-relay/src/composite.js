@@ -35,10 +35,6 @@ export async function handleScout(relay, scout, args) {
   if (!scout.enabled) {
     return { disabled: true, reason: 'set GEMINI_API_KEY (relay secret) to enable the scout', brief: null, steps: [] };
   }
-  const macroRes = await relay.callExtension('fast_macro_list').catch(() => null);
-  const raw = macroRes?.result;
-  const macros = Array.isArray(raw?.macros) ? raw.macros : (Array.isArray(raw) ? raw : []);
-
   let result;
   let degraded = false; // a DOM tier timed out / came back capped|partial → go vision
   for (let t = 0; t < SNAPSHOT_TIERS.length; t++) {
@@ -52,7 +48,7 @@ export async function handleScout(relay, scout, args) {
       continue;
     }
     const heavy = !!(digest.capped || digest.partial || digest.snapshotTimedOut);
-    result = await scout.scout({ intent, digest, macros });
+    result = await scout.scout({ intent, digest });
     result.tier = tier.label;
     // READ MODE on a HEAVY page: DOM index too sparse to summarize → vision read.
     if (!intent && !result.disabled && heavy) {

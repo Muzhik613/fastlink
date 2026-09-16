@@ -142,26 +142,24 @@ const ALLOWED_STEPS = [
   'fast_nav {url}',
 ].join(' | ');
 
-export async function scout({ intent, digest, macros }) {
+export async function scout({ intent, digest }) {
   if (!SCOUT_ENABLED) {
     return { disabled: true, reason: 'set GEMINI_API_KEY to enable the scout', brief: null, steps: [] };
   }
   const slim = slimDigest(digest);
-  const saved = slimMacros(macros);
   const map = await getPageMap(slim);
   // No intent → behave like a (smarter) snapshot: return the page-map
   // comprehension itself. This is what's already warm in cache from page load,
-  // so Claude gets it straight off the socket. savedActions tells Claude which
-  // reusable recipes exist for this page.
+  // so Claude gets it straight off the socket.
   if (!intent) {
-    return { warmed: map.warmed, url: slim.url, summary: map.summary, elements: map.elements, savedActions: saved };
+    return { warmed: map.warmed, url: slim.url, summary: map.summary, elements: map.elements };
   }
   // With an intent → overlay it and return a runnable plan. plan.needMore lets
   // the caller (handlers.js) escalate to a bigger snapshot and run again.
-  const plan = await overlayIntent(map, intent, slim, saved);
+  const plan = await overlayIntent(map, intent, slim);
   return {
     warmed: map.warmed, url: slim.url, brief: plan.brief, steps: plan.steps,
-    savedActions: saved, needMore: plan.needMore, needMoreReason: plan.needMoreReason,
+    needMore: plan.needMore, needMoreReason: plan.needMoreReason,
     needsMoreInfo: plan.needsMoreInfo,
   };
 }
@@ -219,15 +217,6 @@ function cheapImageHash(img) {
   const step = Math.max(1, Math.floor(img.length / 1024));
   for (let i = 0; i < img.length; i += step) h = (h * 31 + img.charCodeAt(i)) | 0;
   return `${img.length}:${h}`;
-}
-
-// Compact the saved-action store for the model: just name, description, length.
-function slimMacros(macros) {
-  return (macros || []).map((m) => prune({
-    name: m.name,
-    description: m.description || undefined,
-    steps: (m.actions || m.steps || []).length || undefined,
-  }));
 }
 
 // Pre-warm path: build + cache the page map without an intent. Call on
@@ -318,12 +307,11 @@ async function buildPageMap(slim) {
   };
 }
 
-async function overlayIntent(map, intent, slim, saved) {
+async function overlayIntent(map, intent, slim) {
   const system = [
     'You are a fast web-automation planner AND a snapshot broker. You get a page',
     'map (summary + elements with i and purpose), raw items[] (each with i, labels,',
-    'cx/cy center coords + inFrame), savedActions[] (optional reusable macros), and',
-    'a user INTENT.',
+    'cx/cy center coords + inFrame), and a user INTENT.',
     'STEP 1 — judge sufficiency: if the element(s) needed to accomplish the intent',
     'are NOT present in this data, set "needMore":true with a short "needMoreReason"',
     '(e.g. "target likely off-screen", "in an overlay/portal", "inside an iframe")',
@@ -336,9 +324,6 @@ async function overlayIntent(map, intent, slim, saved) {
     'those step(s) and ignore unmentioned fields — do NOT invent values for fields',
     'the user did not mention.',
     'STEP 2 — steps (name + args): ' + ALLOWED_STEPS + '.',
-    'If a savedAction cleanly matches the whole intent you MAY return a single',
-    '{"name":"fast_macro_run","args":{"name":"<macro name>"}} — but prefer explicit',
-    'steps unless the macro is an obvious exact fit.',
     'TIER SELECTION: default to the cheap injected tier (fast_click, fast_fill).',
     'When a target has inFrame:true, or is inside an overlay/portal (inOverlay:true),',
     'or is a React/LWC/custom-component control where injected events are unreliable,',
@@ -349,7 +334,7 @@ async function overlayIntent(map, intent, slim, saved) {
     '"needMoreReason":string?,"brief":string,"steps":[{"name":string,"args":object}],',
     '"needsMoreInfo":string?}. Be terse.',
   ].join(' ');
-  const user = JSON.stringify({ intent, summary: map.summary, elements: map.elements, items: slim.items, savedActions: saved });
+  const user = JSON.stringify({ intent, summary: map.summary, elements: map.elements, items: slim.items });
   const out = await callModel(system, user, 1000);
   // A malformed/empty model response (safeJson → {}) must NOT look like a
   // successful empty plan. With no steps and no clarifying question, default to

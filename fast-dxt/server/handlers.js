@@ -298,10 +298,6 @@ async function handleScout(args) {
   if (!SCOUT_ENABLED) {
     return { disabled: true, reason: 'set GEMINI_API_KEY to enable the scout', brief: null, steps: [] };
   }
-  const macroRes = await callExtension('fast_macro_list').catch(() => null);
-  const raw = macroRes?.result;
-  const macros = Array.isArray(raw?.macros) ? raw.macros : (Array.isArray(raw) ? raw : []);
-
   let result;
   let degraded = false; // a DOM tier timed out / came back capped|partial → go vision
   for (let t = 0; t < SNAPSHOT_TIERS.length; t++) {
@@ -320,7 +316,7 @@ async function handleScout(args) {
       continue;
     }
     const heavy = !!(digest.capped || digest.partial || digest.snapshotTimedOut);
-    result = await scout({ intent, digest, macros });
+    result = await scout({ intent, digest });
     result.tier = tier.label;
     // READ MODE on a HEAVY page: the DOM index is too sparse/degraded to
     // summarize well, so prefer a screenshot→Gemini vision read (DOM-independent,
@@ -1393,7 +1389,6 @@ async function refinePoint(target, xCss, yCss, full) {
   }
 }
 
-// Same diagnostic-only set the extension enforces for macros — keep in sync.
 // The batch runner itself (every step runs, ifFound branches, one snapshot,
 // nav settle) lives in batch.js — shared with the relay mirror.
 const DIAGNOSTIC_ONLY_STEPS = new Set(['fast_status', 'fast_profile', 'fast_batch', 'fast_scout', 'fast_point', 'fast_point_som', 'fast_fill_vision', 'fast_do', 'fast_locate']);
