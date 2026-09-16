@@ -33,6 +33,31 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — fast_select_option: toControls' containment dedupe was O(n²) and read a rect per match
+- **What:** `toControls` (page.js) dedupes with an ancestor `Set` lookup (O(depth), crossing shadow
+  hosts) instead of `out.some(o => o.el.contains(c.el) || c.el.contains(o.el))` over every kept
+  candidate, and reads layout only for candidates that survive the dedupe. A `blocked` set of the
+  taken candidates' ancestors preserves the old rule exactly: of any containment-related group the
+  FIRST-listed wins (controls are listed before the wrappers around them).
+- **Why:** on a page whose match set runs to thousands, the pairwise scan is ~n²/2 `contains` calls —
+  57.5% of CPU in a local profile (`compareDocumentPosition` from its sort another 3.1%) — and it
+  read a `getBoundingClientRect` for every match before the dedupe could discard it. Found while
+  chasing GCP's remaining resolve cost, whose probe showed 34,409 rect reads inside one resolve.
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** this is NOT the GCP fix. Probe 3 on the live GCP tab shows the idle page has only
+  2 shadow roots, 42 pooled elements and 14 select-like ones, so its 45s resolve is something else
+  (still under investigation — the counters there scale with call DURATION, not DOM size). This
+  change matters for pages with genuinely large match sets. The first attempt at it regressed the
+  candidate semantics (10001 vs 5001 candidates) because the old scan ALSO dropped a wrapper whose
+  descendant was already kept; the `blocked` set is what restores parity, so keep it if this is
+  touched again.
+- **Status:** committed; fast-runner 56/56. On a 4,960-shadow-root repro with ~10k select-like
+  elements: wall **3768ms → 1821ms**, `contains` gone from the profile, candidate count identical
+  at 5001. Real pages unchanged: selenium web-form verified, APG select-only verified,
+  react-select.com identical refusal, select2 `index:0` still picks Alaska through the backing
+  select. hvm six-cell on the previous commit was 59/59; holdout 1 re-run 28/32 with zero
+  overclaims (the same per-pass rate as 9d18d4d's 56/64 over n=2).
+
 ## 2026-09-15 — fast_select_option on GCP, part 2: a dropdown candidate must be select-like (a `<nav>` was one); containerLabel stops at the second label
 - **What:** (a) `fast_select_option` narrows its candidate pool to `SELECTISH`
   (`DROPDOWN_SEL`, `[aria-expanded]`, or a native `select/input/textarea`) BEFORE the name-matching

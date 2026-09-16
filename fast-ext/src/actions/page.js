@@ -2784,16 +2784,40 @@ async function runPageAction(action, args) {
     // Matches → one candidate per CONTROL, document order: { el, visible, backing? }.
     // A wrapper and the control inside it are one control (the earlier-listed wins:
     // controls are listed first); a landmark/container is never a candidate.
+    // LINEAR, not O(n²). "Is a wrapper of this already kept" was a scan over every
+    // kept candidate (out.some(… contains …)); on a console SPA whose match set runs
+    // to tens of thousands that is ~a billion contains() calls — 57.5% of CPU in a
+    // profile, and it read a rect for EVERY match on the way (GCP: 34,409 rect
+    // reads in one resolve). Now: an ancestor-Set lookup (O(depth), crossing shadow
+    // hosts), and layout is read only for candidates that survive it.
     const toControls = (els) => {
+      const kept = new Set();      // candidates taken
+      const blocked = new Set();   // ancestors of a taken candidate — a later wrapper loses to it
       const out = [];
+      const upFrom = (el) => el.parentElement || (el.getRootNode && el.getRootNode().host) || null;
+      const ancestorKept = (el) => {
+        let p = upFrom(el);
+        for (let hops = 0; p && hops < 200; hops++, p = upFrom(p)) if (kept.has(p)) return true;
+        return false;
+      };
+      const take = (el) => {
+        kept.add(el);
+        let p = upFrom(el);
+        for (let hops = 0; p && hops < 200; hops++, p = upFrom(p)) blocked.add(p);
+      };
+      // Same answer as the old pairwise scan: of any containment-related group the
+      // FIRST-listed wins (controls are listed before the wrappers around them).
+      const related = (el) => kept.has(el) || blocked.has(el) || ancestorKept(el);
       for (const el of els) {
+        if (related(el)) continue;
         const role = el.getAttribute && el.getAttribute('role');
         if (role && LANDMARK_ROLES.test(role)) continue;
         if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'hidden') continue;
         let r; try { r = el.getBoundingClientRect(); } catch { continue; }
         let c = { el, visible: fieldVisible(el, r) };
         if (!c.visible && el.tagName === 'SELECT') { const w = widgetFor(el); if (w) c = { el: w, visible: true, backing: el }; }
-        if (out.some(o => o.el === c.el || o.el.contains(c.el) || c.el.contains(o.el))) continue;
+        if (c.el !== el && related(c.el)) continue;
+        take(c.el);
         out.push(c);
       }
       return out.sort((a, b) => (follows(a.el, b.el) ? -1 : follows(b.el, a.el) ? 1 : 0));
