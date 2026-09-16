@@ -305,6 +305,9 @@ export async function runCell({
       toolset: handle ? (handle.final?.toolset || toolset || 'default') : null,
       model: handle ? (handle.final?.model || null) : null,
       gate: handle ? (handle.final?.gate || null) : null, // report_done gate mode the runner ran with
+      // the runner's own recording of this run ({path, recorded, …} from fast-runner/recorder.mjs), copied
+      // from its final row so a result links to its video; the bench never records anything itself
+      video: handle ? (handle.final?.video ?? null) : null,
       notes: notes.join('; '),
     };
     appendFileSync(RESULTS, JSON.stringify(row) + '\n');
