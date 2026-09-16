@@ -715,6 +715,10 @@ export const MODEL_SCHEMA = {
     description: 'Click by `id` (a snapshot item\'s i, e.g. "42" or "f7:42") or by visible `text`. Returns what changed (url, dialog, focus) and a page preview. For a dropdown use fast_select_option.' },
   fast_fill: { drop: ['index', 'section', 'near'], params: { fields: '{label: value} for several fields.' } },
   fast_select_option: { drop: ['index', 'section'] },
+  // Images come only from `look` (live Oracle 8c427c0f: six read {screenshot:true} calls added ~50k
+  // input tokens each and took 7-22 s per turn; the DOM already had what it needed).
+  fast_snapshot: { drop: ['screenshot', 'screenshotFormat', 'overlay'] },
+  fast_screenshot: { description: 'An image of the tab, only for what read cannot show (a canvas, an image).' },
   // A wait always names what it waits for. Live dd2cf71c / 5f8343a0 sent {timeoutMs} alone (refused,
   // a wasted round trip each) and opened with {networkIdle:true} (8.3 s timed out on Azure, whose
   // long-polls never go idle). The model sees text (required), frame and timeoutMs; the server keeps
@@ -802,6 +806,19 @@ export function buildTools(mcpTools, toolset) {
 // clients and is NOT given to Grok: the tool descriptions carry what it needs.
 export function buildSystem() {
   return toModelText(`${SYSTEM}\n${todayLine()}`);
+}
+
+// Only the NEWEST image stays in the conversation; every older one becomes a short text stub. A
+// screenshot is ~50k input tokens and was re-sent on every later turn (8c427c0f grew to ~340k cached
+// tokens). Called after each user message is added, so at most one image is ever in the request.
+export const DROPPED_IMAGE = '[screenshot dropped]';
+export function keepNewestImage(messages) {
+  let newest = null;
+  const visit = (blocks, fn) => { for (let i = 0; i < blocks.length; i++) { const b = blocks[i]; if (b?.type === 'image') fn(blocks, i); else if (b?.type === 'tool_result' && Array.isArray(b.content)) visit(b.content, fn); } };
+  for (const m of messages) if (m.role === 'user' && Array.isArray(m.content)) visit(m.content, (blocks, i) => { newest = blocks[i]; });
+  let dropped = 0;
+  for (const m of messages) if (m.role === 'user' && Array.isArray(m.content)) visit(m.content, (blocks, i) => { if (blocks[i] !== newest) { blocks[i] = { type: 'text', text: DROPPED_IMAGE }; dropped++; } });
+  return dropped;
 }
 
 // Debug-only fields a tool result may carry (fast_click's `_debug` phase timings, c657fda): never
@@ -1062,6 +1079,7 @@ async function loop(run) {
       results.push({ type: 'text', text });
     }
     run.messages.push({ role: 'user', content: forModel(results) });
+    keepNewestImage(run.messages);
     run.status = 'running';
   }
 }
