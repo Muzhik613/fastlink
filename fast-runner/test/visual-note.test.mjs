@@ -5,7 +5,27 @@
 // evidence gate had nothing to catch, and the report claimed the VM name was set.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recordResult, entryFacts, unverifiedWrites, visualNoteRound, closeVisualNote, visualNoteText } from '../runner.mjs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { recordResult, entryFacts, unverifiedWrites, visualNoteRound, closeVisualNote, visualNoteText, ensureVisionEnv } from '../runner.mjs';
+import { claudeMcpEnv } from '../fastlink-client.mjs';
+
+// Vision keys are process-global: save and restore them around anything that touches them.
+const KEYS = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENROUTER_API_KEY'];
+// Works for sync AND async bodies: a plain try/finally would restore the real
+// GEMINI_API_KEY the moment an async body returned its promise, so the very test
+// that checks "no key anywhere" would run with the machine's key back in place.
+function withEnv(fn) {
+  const saved = Object.fromEntries([...KEYS, 'HOME'].map(k => [k, process.env[k]]));
+  const restore = () => { for (const [k, v] of Object.entries(saved)) { if (v == null) delete process.env[k]; else process.env[k] = v; } };
+  for (const k of KEYS) delete process.env[k];
+  let out;
+  try { out = fn(); } catch (e) { restore(); throw e; }
+  if (out && typeof out.then === 'function') return out.then(v => { restore(); return v; }, e => { restore(); throw e; });
+  restore();
+  return out;
+}
 
 const AZ = 'https://portal.azure.com/#create/Microsoft.VirtualMachine';
 const snap = (url, ...texts) => JSON.stringify({ url, content: texts.map(text => ({ text })) });
@@ -127,6 +147,58 @@ test('no vision key / no screenshot / nothing observed are each recorded, not si
   const quiet = runOf(azureRows(CROSS));
   assert.equal(await visualNoteRound(quiet, { screenshot: async () => 'QkFTRTY0', describe: async () => ({ observations: [] }) }), null);
   assert.equal(quiet.visualNote.skipped, 'nothing observed');
+});
+
+// ── the REAL key wiring, not the injected seam ───────────────────────────────
+// Live failure (owner's Chrome, a45d333): the run skipped with "no vision" on a
+// page where fast_scout and fast_fill_vision had BOTH just succeeded. Vision runs
+// in the SERVER the runner spawns, which inherits GEMINI_API_KEY from
+// ~/.claude.json mcpServers.fastlink.env; the note runs vision in the RUNNER's own
+// process, which has no such key. Injecting deps.describe hid exactly this.
+test('the vision key is resolved the way the transport resolves it, and a miss names the key', () => {
+  withEnv(() => {
+    // no key in this process, but the MCP server's env has one -> resolved
+    assert.equal(ensureVisionEnv(() => ({ GEMINI_API_KEY: 'k-from-claude-json', OPENROUTER_API_KEY: 'or' })), null);
+    assert.equal(process.env.GEMINI_API_KEY, 'k-from-claude-json');
+    assert.equal(process.env.OPENROUTER_API_KEY, 'or', 'the fallback tiers travel with it');
+  });
+  withEnv(() => {
+    assert.equal(ensureVisionEnv(() => ({})), 'GEMINI_API_KEY');
+    assert.equal(process.env.GEMINI_API_KEY, undefined);
+    // an unreadable / absent ~/.claude.json is a miss, not a crash
+    assert.equal(ensureVisionEnv(() => { throw new Error('ENOENT'); }), 'GEMINI_API_KEY');
+  });
+  withEnv(() => {
+    // a key already in the process env wins and nothing is read
+    process.env.GEMINI_API_KEY = 'already-here';
+    let reads = 0;
+    assert.equal(ensureVisionEnv(() => { reads++; return {}; }), null);
+    assert.equal(reads, 0);
+  });
+});
+
+test('the DEFAULT reader is ~/.claude.json mcpServers.fastlink.env — the same source the spawned server gets', () => {
+  const home = mkdtempSync(join(tmpdir(), 'fastrun-home-'));
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { fastlink: { env: { GEMINI_API_KEY: 'k-real-wiring' } } } }));
+  withEnv(() => {
+    process.env.HOME = home;
+    assert.deepEqual(claudeMcpEnv('fastlink'), { GEMINI_API_KEY: 'k-real-wiring' });
+    // no argument: this is the path the runner actually takes
+    assert.equal(ensureVisionEnv(), null, 'the server-side key must be found with no injection');
+    assert.equal(process.env.GEMINI_API_KEY, 'k-real-wiring');
+  });
+});
+
+test('with no key anywhere the UNINJECTED describe path skips, naming the key, and still records the unverified write', async () => {
+  const empty = mkdtempSync(join(tmpdir(), 'fastrun-nohome-'));
+  await withEnv(async () => {
+    process.env.HOME = empty;   // no .claude.json at all
+    const run = runOf(azureRows(CROSS));
+    // deps.describe NOT injected: the real key resolution runs
+    assert.equal(await visualNoteRound(run, { screenshot: async () => 'QkFTRTY0' }), null);
+    assert.match(run.visualNote.skipped, /^no vision: GEMINI_API_KEY is set neither in this process nor in ~\/\.claude\.json mcpServers\.fastlink\.env$/);
+    assert.equal(run.visualNote.unverified.length, 1, 'what could not be read back is still recorded');
+  });
 });
 
 test('both outcomes are recorded: the model acts on the note, or explains why it is expected', async () => {

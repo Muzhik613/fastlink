@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMessage, ensureProxy, MODEL } from './xai.mjs';
-import { connect } from './fastlink-client.mjs';
+import { connect, claudeMcpEnv } from './fastlink-client.mjs';
 
 const STATE_DIR = join(homedir(), '.local', 'state', 'fastrun');
 const RUNS_FILE = join(STATE_DIR, 'runs.jsonl');
@@ -486,6 +486,26 @@ async function screenshotBase64(client) {
   return null;
 }
 
+// The runner process does NOT normally carry a vision key. On the owner's machine
+// GEMINI_API_KEY lives in ~/.claude.json under mcpServers.fastlink.env and is
+// inherited ONLY by the MCP server the runner spawns (fastlink-client.mjs) — which
+// is why the in-run fast_scout / fast_fill_vision calls have a key while this
+// process has none, and why the first version of the note skipped with "no vision"
+// on a page where vision had just worked twice. The note runs vision HERE, so it
+// resolves the key from the SAME source the transport uses — one place that knows
+// where the keys are, not a second copy of the plumbing — and must do so BEFORE
+// importing scout.js, whose config module reads process.env at load time.
+// Returns the name of the key still missing, or null when vision can run.
+const VISION_KEYS = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENROUTER_API_KEY'];
+const hasVisionKey = () => !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+export function ensureVisionEnv(readEnv = () => claudeMcpEnv('fastlink')) {
+  if (hasVisionKey()) return null;
+  let mcp = {};
+  try { mcp = readEnv() || {}; } catch { mcp = {}; }
+  for (const k of VISION_KEYS) if (!process.env[k] && mcp[k]) process.env[k] = mcp[k];
+  return hasVisionKey() ? null : 'GEMINI_API_KEY';
+}
+
 // Returns the note to hand the model, or null — and records WHY on the run when
 // there is nothing to ask about, no vision key, or no interruption budget left.
 // `deps` is injectable so the whole path unit-tests with no browser and no model.
@@ -498,7 +518,11 @@ export async function visualNoteRound(run, deps = {}) {
     return null;
   }
   const shot = deps.screenshot || (() => screenshotBase64(run.client));
-  const describe = deps.describe || (async (a) => (await import('../fast-dxt/server/scout.js')).describeScreen(a));
+  const describe = deps.describe || (async (a) => {
+    const missing = ensureVisionEnv();   // must run BEFORE the import (config.js reads env at load)
+    if (missing) return { observations: [], skipped: `no vision: ${missing} is set neither in this process nor in ~/.claude.json mcpServers.fastlink.env` };
+    return (await import('../fast-dxt/server/scout.js')).describeScreen(a);
+  });
   let base64 = null;
   try { base64 = await shot(); } catch { base64 = null; }
   if (!base64) { run.visualNote = { skipped: 'no screenshot', unverified }; return null; }

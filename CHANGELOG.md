@@ -33,6 +33,27 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — visual note: the vision key comes from where the MCP server gets it (~/.claude.json), not from the runner's env
+- **What:** `ensureVisionEnv()` resolves `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `OPENROUTER_API_KEY` from
+  `claudeMcpEnv('fastlink')` — now exported from `fast-runner/fastlink-client.mjs`, the one place that
+  knows where those keys live — and applies them BEFORE the dynamic `import('../fast-dxt/server/scout.js')`,
+  because `config.js` reads `process.env` at module load. A genuine miss now says which key is missing
+  (`no vision: GEMINI_API_KEY is set neither in this process nor in ~/.claude.json mcpServers.fastlink.env`).
+- **Why:** live on the owner's Chrome (a45d333) the note skipped with `"no vision"` in a run where vision
+  had just worked TWICE on that same page (`fast_scout` 5.1s, `fast_fill_vision` 2.6s). Cause: vision in a
+  run happens inside the MCP server the runner spawns, which inherits the key from
+  `~/.claude.json mcpServers.fastlink.env`; the note runs vision in the RUNNER's own process, which has no
+  such key. The unit tests injected `deps.describe`, so the real key path was never exercised.
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/fastlink-client.mjs`, `fast-runner/test/visual-note.test.mjs`.
+- **Watch out:** the env must be applied BEFORE scout.js is imported or the key is invisible to `config.js`
+  — keep `ensureVisionEnv()` on the line above the import. Three tests now cover the REAL wiring (a temp
+  `$HOME` holding a `.claude.json`), not just the injected seam; a regression to "read only process.env"
+  fails them. Still open: over the RELAY transport the vision key lives in the Worker, so a relay run with
+  no local key skips the note — the note's prompt has to stay ours (a server tool like `fast_scout`
+  classifies widgets, which is exactly what the note must never do), so closing that needs an internal
+  server-side observe tool the lead can deploy.
+- **Status:** committed; `fast-runner` suite green.
+
 ## 2026-09-16 — fast-runner: an end-of-run VISUAL NOTE when a write was never read back (and it stays dumb)
 - **What:** at `report_done`, if `unverifiedWrites(toolLog)` is non-empty (a result that said
   `verified:false`, or a forced `fast_type` whose bypassed guard IS the missing read-back), the runner

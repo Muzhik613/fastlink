@@ -7,7 +7,11 @@ import { join } from 'node:path';
 
 const SERVER = new URL('../fast-dxt/server/index.js', import.meta.url).pathname;
 
-function claudeMcpEnv(name) {
+// The env Claude Code gives an MCP server (GEMINI_API_KEY, OPENROUTER_API_KEY, …).
+// Exported because it is the ONE place that knows where those keys live: the local
+// transport hands it to the server it spawns, and runner.mjs resolves the visual
+// note's vision key the same way instead of keeping a second copy of this.
+export function claudeMcpEnv(name) {
   try { return JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')).mcpServers?.[name]?.env || {}; }
   catch { return {}; }
 }
