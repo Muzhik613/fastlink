@@ -5,7 +5,7 @@
 // further two rounds later.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recordResult, entryFacts, unverifiedWrites, reportDecision, deliverChecks, closeVisualChecks, gateProblems, unlookedFailures, screenMismatch, writeEffect } from '../runner.mjs';
+import { recordResult, entryFacts, unverifiedWrites, reportDecision, deliverChecks, closeVisualChecks, gateProblems, unlookedFailures, screenMismatch, wrotePage, reportDone } from '../runner.mjs';
 import { startVisualCheck, settleShots, takeNotes, checkNoteText, lookNoteText, seenMap, describeWithGrok, observationPrompt, CHECK_MODEL, MAX_VISUAL_CHECKS } from '../visual-check.mjs';
 
 const AZ = 'https://portal.azure.com/#create/Microsoft.VirtualMachine';
@@ -252,7 +252,7 @@ test('the look stays out of the way: a write anywhere, a screenshot since, gate 
 const HUB = 'https://portal.azure.com/#view/Microsoft_Azure_ComputeHub/ComputeHubMenuBlade/~/getStarted/menuid/virtualMachinesBrowse';
 const HUB_SNAP = JSON.stringify({ url: HUB, title: 'Compute infrastructure - Microsoft Azure', fillable: 2, count: 27, items: [{ i: 1, tag: 'button', text: 'Show Microsoft Cloud menu' }], content: [{ text: 'Get started' }] });
 const XY_NO_EFFECT = { clickedAt: { x: 320, y: 145 }, button: 'left', clickCount: 1, focused: { tag: 'div', editable: false, label: 'bff7e63f-4107-4a43-953d-ab5fbd82d0450' }, hint: '<div> (bff7e63f-4107-4a43-953d-ab5fbd82d0450) holds focus, not an editable field — a fast_type now would be refused.' };
-const run4bf918fb = (xy = XY_NO_EFFECT, extraRows = []) => runOf([
+const run4bf918fb = (xy = XY_NO_EFFECT, extraRows = [], extra = {}) => runOf([
   ['fast_tab', { url: 'https://portal.azure.com/#browse/Microsoft.Compute%2FVirtualMachines', background: false }, JSON.stringify({ id: 1220563063, url: 'https://portal.azure.com/#browse/Microsoft.Compute%2FVirtualMachines', targetTab: 1220563063 })],
   ['fast_snapshot', { viewport: true }, JSON.stringify({ url: LOGIN, title: '', count: 0, items: [], contentCount: 0, content: [] })],
   ['fast_list', {}, JSON.stringify([{ id: 1220563056, url: HUB, title: 'Compute infrastructure - Microsoft Azure', active: false }, { id: 1220563063, url: LOGIN, active: true, targetTab: true }])],
@@ -264,12 +264,12 @@ const run4bf918fb = (xy = XY_NO_EFFECT, extraRows = []) => runOf([
   ['fast_click_xy', { x: 320, y: 145 }, JSON.stringify(xy)],
   ['fast_snapshot', { viewport: true, overlay: true }, HUB_SNAP],
   ...extraRows,
-]);
+], extra);
 const REPORT_4B = { result: 'Could not reach/create VM form: page redirected to login (already signed in elsewhere), create UI lives in cross-origin iframe unreachable by FastLink DOM tools; no "Create" button clickable. No fields filled.', evidence: '"Get started" from fast_snapshot on the Compute infrastructure page.' };
 
 test('4bf918fb: failed clicks + a click_xy that changed nothing + a screenshot only BEFORE the last failure → the look fires', async () => {
   const run = run4bf918fb();
-  assert.equal(run.toolLog[8].effect, undefined, 'focus on a non-editable div, no URL change: no effect');
+  assert.equal(run.toolLog[8].wrote, undefined, 'focus on a non-editable div, no URL change: not a write');
   const look = unlookedFailures(run);
   assert.equal(look?.idx, 7, 'anchored on the latest failure, the fast_click "Create" after the screenshot');
   assert.deepEqual(look.failures.map(f => [f.name, f.target]), [['fast_click', 'Create a virtual machine'], ['fast_click', 'Create']]);
@@ -280,28 +280,79 @@ test('4bf918fb: failed clicks + a click_xy that changed nothing + a screenshot o
   assert.ok(v.note.includes('- A "Create" button appears near the top left.'));
 });
 
-test('4bf918fb variants: an effective click, or a screenshot after the last failure, keeps the look away', () => {
-  const effective = {
-    'focus on an editable field': { ...XY_NO_EFFECT, focused: { tag: 'input', editable: true, label: 'Virtual machine name', value: '' }, hint: undefined },
-    'a URL change': { ...XY_NO_EFFECT, url: HUB + '/create', urlChanged: true },
-    'a dialog opened': { ...XY_NO_EFFECT, dialogOpened: true },
+test('4bf918fb variants: any other successful write, or a screenshot after the last failure, keeps the look away', () => {
+  const wrote = {
+    'click_xy focus on an editable field': { ...XY_NO_EFFECT, focused: { tag: 'input', editable: true, label: 'Virtual machine name', value: '' }, hint: undefined },
+    'click_xy with a URL change': { ...XY_NO_EFFECT, url: HUB + '/create', urlChanged: true },
+    'click_xy that reports no focus at all': { clickedAt: { x: 320, y: 145 } },
   };
-  for (const [label, xy] of Object.entries(effective)) {
+  for (const [label, xy] of Object.entries(wrote)) {
     const run = run4bf918fb(xy);
-    assert.equal(run.toolLog[8].effect, true, label);
+    assert.equal(run.toolLog[8].wrote, true, label);
     assert.equal(unlookedFailures(run), null, label);
   }
   const looked = run4bf918fb(XY_NO_EFFECT, [['fast_screenshot', {}, JSON.stringify({ path: '/tmp/s2.png' })]]);
   assert.equal(unlookedFailures(looked), null, 'the model looked after its last failure');
-  // the effect rule, per result shape
-  assert.equal(writeEffect('fast_click', {}, { error: 'No element matching "Create". Nothing was clicked.' }), false, 'an errored click');
-  assert.equal(writeEffect('fast_click', {}, { clicked: 1, focused: { tag: 'button', editable: false } }), false, 'clicked, nothing to show for it');
-  assert.equal(writeEffect('fast_fill', {}, { verified: false, fields: { Name: { verified: false } } }), false, 'nothing read back');
-  assert.equal(writeEffect('fast_fill', {}, { verified: false, fields: { Name: { verified: true }, Region: { verified: false } } }), true, 'one field verified');
-  assert.equal(writeEffect('fast_select_option', {}, { verified: false, results: { Region: { verified: true, picked: 'Japan East' } } }), true, 'a changed selection');
-  assert.equal(writeEffect('fast_key_press', {}, { key: 'Enter', urlChanged: true }), true);
-  assert.equal(writeEffect('fast_snapshot', {}, { verified: true }), false, 'not a write tool');
-  assert.equal(writeEffect('fast_batch', { actions: [{ name: 'fast_click' }, { name: 'fast_wait' }] }, { results: [{ step: 0, ok: true, result: { clicked: 1 } }, { step: 1, ok: true, result: { verified: true } }] }), false, 'only WRITE steps count');
+  // the write rule, per result shape: every successful write counts except the idle click_xy
+  assert.equal(wrotePage('fast_click', {}, { error: 'No element matching "Create". Nothing was clicked.' }), false, 'an errored click');
+  assert.equal(wrotePage('fast_click', {}, { clicked: { tag: 'div', text: 'Salary: Activate to sort' }, urlChanged: false }), true, 'a plain click with no signals still wrote');
+  assert.equal(wrotePage('fast_fill', {}, { verified: false, filled: 2, uncommitted: ['Choose destination...'] }), true, 'an unverified fill still wrote');
+  assert.equal(wrotePage('fast_key_press', {}, { keyDispatched: 'Enter', urlChanged: false }), true);
+  assert.equal(wrotePage('fast_click_xy', {}, XY_NO_EFFECT), false, 'the one exception');
+  assert.equal(wrotePage('fast_snapshot', {}, {}), false, 'not a write tool');
+  assert.equal(wrotePage('fast_batch', { actions: [{ name: 'fast_click_xy' }, { name: 'fast_wait' }] }, { results: [{ step: 0, ok: true, result: XY_NO_EFFECT }, { step: 1, ok: true, result: {} }] }), false, 'a batch whose only write is the idle click_xy');
+  assert.equal(wrotePage('fast_batch', { actions: [{ name: 'fast_click' }] }, { results: [{ step: 0, ok: true, result: { clicked: {} } }] }), true);
+});
+
+// ── hvm bench 2026-09-16: two false annotations that set the current rules ──
+// mapsdir b7184ddb (6/6, correct) and h_table 39d765d7: every write carried no verified/urlChanged/
+// editable-focus signal, so the old effect rule saw no write, the look fired, and the caller got
+// "[screen check] … visible, and the run did not act" on top of real work. Rows are the runs'
+// toolLogs, previews trimmed to 400 chars.
+const MAPS_B718 = [
+  ["fast_tab", {"url":"https://www.google.com/maps"}, "{\"id\":81251768,\"url\":\"https://www.google.com/maps\",\"targetTab\":81251768}"],
+  ["fast_snapshot", {"viewport":true}, "{\"url\":\"https://www.google.com/maps\",\"title\":\"Google Maps\",\"fillable\":1,\"count\":8,\"items\":[{\"i\":0,\"tag\":\"div\",\"text\":\"Map · Use arrow keys to pan the map. · Get details about a place by pressing its corresponding number key.\",\"x\":0,\"y\":0,\"w\":1599,\"h\":856,\"role\":\"application\",\"ariaLabel\":\"Map · Use arrow keys to pan the map. · Get details about a place by pressing its corresponding number key.\"},{\""],
+  ["fast_click", {"text":"Directions","role":"button"}, "{\"clicked\":{\"i\":6,\"tag\":\"button\",\"text\":\"\",\"x\":410,\"y\":12,\"w\":54,\"h\":48,\"innerText\":\"\",\"ariaLabel\":\"Directions\"},\"url\":\"https://www.google.com/maps\",\"urlChanged\":false,\"focused\":{\"tag\":\"input\",\"role\":\"combobox\",\"label\":\"Search Google Maps\",\"name\":\"q\",\"value\":\"\",\"id\":\"ucc-1\"},\"settling\":true,\"hint\":\"page was still changing when this snapshot was taken (waited 187ms) — the view below may be incomp"],
+  ["fast_wait", {"text":"Driving","timeoutMs":5000}, "{\"settling\":true,\"hint\":\"page was still changing when this snapshot was taken (waited 140ms) — the view below may be incomplete; fast_wait for text that identifies the finished state before reading or reporting\",\"found\":{\"tag\":\"div\",\"role\":\"img\",\"text\":\"Driving\",\"ariaLabel\":\"Driving\",\"placeholder\":null,\"x\":180,\"y\":30,\"w\":48,\"h\":40},\"snapshot\":{\"truncated\":true,\"dropped\":{\"items\":5},\"hint\":\"auto-sn"],
+  ["fast_fill", {"fields":{"Choose starting point, or click on the map...":"John F. Kennedy International Airport","Choose destination...":"Times Square, New York"}}, "{\"verified\":false,\"filled\":2,\"missed\":0,\"total\":2,\"summary\":\"0/2 verified; typed but no option picked (NOT set): Choose starting point, or click on the map..., Choose destination...\",\"uncommitted\":[\"Choose starting point, or click on the map...\",\"Choose destination...\"],\"hint\":\"\\\"Choose starting point, or click on the map...\\\": autocomplete is open; pick a suggestion (fast_click its text) or fast_"],
+  ["fast_key_press", {"key":"Enter"}, "{\"keyDispatched\":\"Enter\",\"target\":{\"tag\":\"input\",\"ariaLabel\":\"Destination Times Square, New York\",\"placeholder\":\"Choose destination, or click on the map...\",\"value\":\"Times Square, New York\"},\"url\":\"https://www.google.com/maps/dir///@42.0254481,-87.7068288,15z/data=!4m2!4m1!3e0?entry=ttu&g_ep=EgoyMDI2MDkxNC4wIKXMDSoASAFQAw%3D%3D\",\"urlChanged\":false,\"committed\":false,\"suggestions\":[\"Times Square New"],
+  ["fast_wait", {"text":"route options","timeoutMs":10000,"noSnapshot":false}, "{\"error\":\"Timed out waiting for \\\"route options\\\"\",\"settling\":false,\"sinceMutMs\":4046,\"sinceNetMs\":3985,\"headings\":[\"via Woodhaven Blvd and I-495 W\",\"via I-678 N and I-495 W\",\"via Grand Central Pkwy\",\"Explore Times Square\"],\"origin\":\"https://www.google.com\"}", true],
+  ["fast_text", {"selector":"[aria-label*=\"route\"],[role=\"button\"][aria-label*=\"min\"]","maxLen":200}, "{\"truncated\":false,\"text\":\"\\nSearch along the route...\\n\\nGas\\n\\nEV charging\\n\\nThings to do\\n\\nHotels\",\"length\":71,\"kind\":\"innerText\",\"from\":\"[aria-label*=\\\"route\\\"],[role=\\\"button\\\"][aria-label*=\\\"min\\\"]\",\"matches\":6}"],
+  ["fast_snapshot", {"viewport":true,"full":false}, "{\"truncated\":true,\"dropped\":{\"content\":17,\"offscreen\":8},\"hint\":\"capped view: 0 item(s) / 17 content block(s) not shown — call fast_snapshot with full:true for everything, or limit:N for more items; 8 interactive element(s) are outside the viewport (below/above the fold) and NOT listed — call fast_snapshot without viewport:true, or fast_scroll, before concluding a control is absent | 2 empty filla"],
+];
+const TABLE_39D7 = [
+  ["fast_tab", {"url":"https://datatables.net/examples/basic_init/zero_configuration.html"}, "{\"id\":81251776,\"url\":\"https://datatables.net/examples/core/basic_init/zero_configuration.html\",\"targetTab\":81251776}"],
+  ["fast_snapshot", {"full":true}, "{\"url\":\"https://datatables.net/examples/core/basic_init/zero_configuration.html\",\"title\":\"Zero configuration\",\"fillable\":2,\"hint\":\"2 empty fillable fields visible; fill them in one fast_fill {fields:{label:value}} or one fast_batch\",\"count\":213,\"items\":[{\"i\":0,\"tag\":\"a\",\"text\":\"\",\"x\":257,\"y\":36,\"w\":180,\"h\":36,\"href\":\"https://datatables.net/\"},{\"i\":2,\"tag\":\"input\",\"text\":\"Search...\",\"x\":487,\"y\":15,"],
+  ["fast_click", {"text":"Salary","role":"button","index":1}, "{\"error\":\"Only 1 matches for \\\"Salary\\\" (1 visible, 0 offscreen), index 1 out of range\",\"matches\":[{\"tag\":\"div\",\"role\":\"button\",\"text\":\"Salary: Activate to sort\"}],\"origin\":\"https://datatables.net\"}", true],
+  ["fast_click", {"text":"Salary","role":"button","index":1}, "{\"error\":\"Only 1 matches for \\\"Salary\\\" (1 visible, 0 offscreen), index 1 out of range\",\"matches\":[{\"tag\":\"div\",\"role\":\"button\",\"text\":\"Salary: Activate to sort\"}],\"origin\":\"https://datatables.net\"}", true],
+  ["fast_click", {"text":"Salary: Activate to sort","role":"button"}, "{\"clicked\":{\"i\":91,\"tag\":\"div\",\"text\":\"Salary: Activate to sort\",\"x\":1229,\"y\":351,\"w\":8,\"h\":24,\"role\":\"button\",\"ariaLabel\":\"Salary: Activate to sort\"},\"url\":\"https://datatables.net/examples/core/basic_init/zero_configuration.html\",\"urlChanged\":false,\"willNavigate\":false,\"totalMatches\":1,\"index\":0,\"snapshot\":{\"truncated\":true,\"dropped\":{\"items\":30,\"content\":52,\"offscreen\":148},\"hint\":\"auto-snapshot"],
+  ["fast_click", {"text":"Salary: Activate to sort","role":"button"}, "{\"error\":\"No element matching \\\"Salary: Activate to sort\\\". Nothing was clicked.\",\"waitedMs\":1624,\"settling\":false,\"diagnostics\":[\"Text \\\"Salary: Activate to sort\\\" not found in the first 1500 elements (page too large to scan fully). Try more specific/visible text, fast_scroll, or narrow with role/tag.\"],\"origin\":\"https://datatables.net\"}", true],
+  ["fast_click", {"text":"2","role":"link","index":1}, "{\"error\":\"Only 1 matches for \\\"2\\\" (1 visible, 0 offscreen), index 1 out of range\",\"matches\":[{\"tag\":\"button\",\"role\":\"link\",\"text\":\"2\"}],\"origin\":\"https://datatables.net\"}", true],
+  ["fast_click", {"text":"Salary","role":"button"}, "{\"clicked\":{\"i\":91,\"tag\":\"div\",\"text\":\"Salary: Activate to invert sorting\",\"x\":1229,\"y\":351,\"w\":8,\"h\":24,\"role\":\"button\",\"ariaLabel\":\"Salary: Activate to invert sorting\"},\"url\":\"https://datatables.net/examples/core/basic_init/zero_configuration.html\",\"urlChanged\":false,\"willNavigate\":false,\"totalMatches\":1,\"index\":0,\"snapshot\":{\"truncated\":true,\"dropped\":{\"items\":30,\"content\":52,\"offscreen\":148},\""],
+  ["fast_click", {"text":"Salary","role":"button"}, "{\"clicked\":{\"i\":91,\"tag\":\"div\",\"text\":\"Salary: Activate to remove sorting\",\"x\":1229,\"y\":351,\"w\":8,\"h\":24,\"role\":\"button\",\"ariaLabel\":\"Salary: Activate to remove sorting\"},\"url\":\"https://datatables.net/examples/core/basic_init/zero_configuration.html\",\"urlChanged\":false,\"settling\":true,\"hint\":\"page was still changing when this snapshot was taken (waited 159ms) — the view below may be incomplete; fa"],
+  ["fast_click", {"text":"2","role":"link"}, "{\"clicked\":{\"i\":2211,\"tag\":\"button\",\"text\":\"2\",\"x\":1042,\"y\":848,\"w\":40,\"h\":34,\"role\":\"link\",\"innerText\":\"2\",\"type\":\"button\"},\"url\":\"https://datatables.net/examples/core/basic_init/zero_configuration.html\",\"urlChanged\":false,\"settling\":true,\"hint\":\"page was still changing when this snapshot was taken (waited 151ms) — the view below may be incomplete; fast_wait for text that identifies the finished "],
+  ["fast_text", {"selector":"table#example","maxLen":200}, "{\"truncated\":true,\"dropped\":{\"chars\":552},\"hint\":\"only the first 200 of 752 chars are shown — call fast_text again with maxLen:752 (or omit maxLen), or a narrower selector, before relying on this text\",\"text\":\"Name\\n\\t\\nPosition\\n\\t\\nOffice\\n\\t\\nAge\\n\\t\\nStart date\\n\\t\\nSalary\\n\\nJena Gaines\\tOffice Manager\\tLondon\\t30\\t2008-12-19\\t$90,560\\nQuinn Flynn\\tSupport Lead\\tEdinburgh\\t22\\t2013-03-03\\t$34"],
+];
+test('b7184ddb (mapsdir) and 39d765d7 (h_table): real writes → no look, no annotation', async () => {
+  for (const [label, rows, result, evidence, seen] of [
+    ['mapsdir b7184ddb', MAPS_B718, "Destination box shows exactly \"Times Square, Manhattan, NY 10036\". Offers 3 route options.", "Destination Times Square, Manhattan, NY 10036; 1 hr 10 min15.0 milesvia Woodhaven Blvd and I-495 W; 1 hr 18 min16.8 milesvia I-678 N and I-495 W; 1 hr 16 min21.6 milesvia Grand Central Pkwy (URL https://www.google.com/maps/dir/John+F.+Kennedy+International+Airport,+Jamaica,+NY+11430/Times+Square,+Manhattan,+NY+10036/@40.7230383,-73.9654385,12z/data=!3m1!5s0x89c258f52ad45a79:0x8131f549e8af76f4!4m14!4m13!1m5!1m1!1s0x89c26650d5404947:0xec4fb213489f11f0!2m2!1d-73.7797222!2d40.6446161!1m5!1m1!1s0x89c25855c6480299:0x55194ec5a1ae072e!2m2!1d-73.9855426!2d40.7579747!3e0?entry=ttu&g_ep=EgoyMDI2MDkxNC4wIKXMDSoASAFQAw%3D%3D)", { 'route options': true }],
+    ['h_table 39d765d7', TABLE_39D7, "Jena Gaines, London, $90,560 (first row on page 2 after double-click Salary descending).", "Jena Gaines\tOffice Manager\tLondon\t30\t2008-12-19\t$90,560 (from table#example innerText)", { 'Salary: Activate to sort': true }],
+  ]) {
+    const run = runOf(rows, { startedAt: Date.now() - 30000 });
+    assert.equal(unlookedFailures(run), null, `${label}: the run wrote, so no look`);
+    const d = seenDeps(seen);
+    const v = await reportDecision(run, { result, evidence }, 30000, d);
+    assert.equal(d.seen.shots, 0, label);
+    let final = v.finish;
+    for (let i = 0; !final && i < 4; i++) final = reportDone(run, { result, evidence }, 31000 + i).finish;
+    assert.ok(final, `${label}: accepted within the refusal budget`);
+    assert.equal(final.screenMismatch, undefined, label);
+    assert.doesNotMatch(final.result, /\[screen check\]/, label);
+  }
+  // even with a look on record, a failed WAIT phrase is never annotated (the checker answers on meaning)
+  const maps = runOf(MAPS_B718, { startedAt: Date.now() - 36000 });
+  maps.visualChecks.push({ kind: 'report', idx: 6, seen: { 'route options': true }, deliveredAt: 35080, readyAt: 35079 });
+  assert.deepEqual(screenMismatch(maps), []);
 });
 
 // ── a report that contradicts its own look is annotated, never refused again ─
@@ -321,40 +372,52 @@ const runB1 = () => runOf([
 ], { startedAt: Date.now() - 41766 });   // the look lands at ~41.8s, after every row above, as it did live
 const seenDeps = (seen) => { const d = deps(B1_OBS); const inner = d.describe; d.describe = async (a) => ({ ...(await inner(a)), seen }); return d; };
 
-test('b1d84267: the look answers per target; a later report still failing on a SEEN target is accepted with a mechanical annotation', async () => {
+test('b1d84267: the look answers per target; a later report still failing on a seen WAIT phrase is accepted with NO annotation', async () => {
   const run = runB1();
   const d = seenDeps({ 'Virtual machine name': true });
   const v1 = await reportDecision(run, B1_REPORT_1, 41766, d);
   assert.equal(d.seen.described.askSeen, true, 'the look asks for per-target seen');
   assert.deepEqual(run.visualChecks[0].seen, { 'Virtual machine name': true });
   assert.ok(v1.note && v1.refuse, 'look + gate in one round, as before');
-  // the model's only move: a wait that times out again (not an action on the page)
   push(run, 'fast_wait', { text: 'Virtual machine name', timeoutMs: 10000 }, JSON.stringify({ error: 'Timed out waiting for "Virtual machine name"', settling: false, headings: ['Microsoft Azure', 'Create a virtual machine'] }), true);
   run.toolLog.at(-1).t = run.visualChecks[0].deliveredAt + 1962;
   const v2 = await reportDecision(run, B1_REPORT_2, 47000, d);
   assert.ok(v2.finish, 'accepted — no second refusal loop');
   assert.equal(d.seen.shots, 1);
-  assert.deepEqual(v2.finish.screenMismatch.map(m => [m.target, m.name]), [['Virtual machine name', 'fast_wait']]);
-  assert.ok(v2.finish.result.startsWith(B1_REPORT_2.result), 'the model\'s own words are kept');
-  assert.match(v2.finish.result, /\n\[screen check\] A screenshot taken at \d+s showed "Virtual machine name" visible, and the run did not act on the page after that\.$/);
+  assert.equal(v2.finish.screenMismatch, undefined, 'a wait phrase is model-invented: never annotated');
+  assert.equal(v2.finish.result, B1_REPORT_2.result);
 });
 
-test('no annotation: target not seen, an action after the look, the failure resolved, or no look', async () => {
-  const notSeen = runB1();
-  await reportDecision(notSeen, B1_REPORT_1, 41766, seenDeps({ 'Virtual machine name': false }));
-  assert.deepEqual(screenMismatch(notSeen), [], 'the look did not see the target');
-  const acted = runB1();
-  await reportDecision(acted, B1_REPORT_1, 41766, seenDeps({ 'Virtual machine name': true }));
-  push(acted, 'fast_click_xy', { x: 400, y: 500 }, JSON.stringify({ clickedAt: { x: 400, y: 500 } }));
+// A CLICK target the look saw, still failed at an accepted report with nothing done since: annotated.
+const LOOK_4B = ['A "Create" button appears near the top left.'];
+const lookDeps4b = (seen) => { const d = deps(LOOK_4B); const inner = d.describe; d.describe = async (a) => ({ ...(await inner(a)), seen }); return d; };
+const run4bLooked = async (seen) => {
+  const run = run4bf918fb(XY_NO_EFFECT, [], { startedAt: Date.now() - 29605 });   // the look lands after every row, as live
+  const v1 = await reportDecision(run, REPORT_4B, 29605, lookDeps4b(seen));
+  assert.ok(v1.note, 'the look went out');
+  return run;
+};
+test('4bf918fb: a report still failing on a click target the look SAW is accepted with a mechanical annotation', async () => {
+  const run = await run4bLooked({ 'Create a virtual machine': false, Create: true });
+  let final;
+  for (let i = 0; !final && i < 4; i++) final = reportDone(run, REPORT_4B, 33000 + i).finish;
+  assert.ok(final, 'accepted within the refusal budget');
+  assert.deepEqual(final.screenMismatch.map(m => [m.target, m.name]), [['Create', 'fast_click']]);
+  assert.ok(final.result.startsWith(REPORT_4B.result), 'the model\'s own words are kept');
+  assert.match(final.result, /\n\[screen check\] A screenshot taken at \d+s showed "Create" visible, and the run did not act on the page after that\.$/);
+});
+
+test('no annotation: target not seen, an action after the look, the failure resolved, no look, or malformed seen', async () => {
+  assert.deepEqual(screenMismatch(await run4bLooked({ Create: false })), [], 'the look did not see the target');
+  const acted = await run4bLooked({ Create: true });
+  push(acted, 'fast_click', { text: 'Create', role: 'button' }, JSON.stringify({ clicked: { tag: 'button', text: 'Create' } }));
   acted.toolLog.at(-1).t = acted.visualChecks[0].deliveredAt + 10;
-  assert.deepEqual(screenMismatch(acted), [], 'acted on the page after the look');
-  const resolved = runB1();
-  await reportDecision(resolved, B1_REPORT_1, 41766, seenDeps({ 'Virtual machine name': true }));
-  push(resolved, 'fast_wait', { text: 'Virtual machine name' }, JSON.stringify({ found: { text: 'Virtual machine name' } }));
-  assert.deepEqual(screenMismatch(resolved), [], 'the failure was resolved');
-  assert.deepEqual(screenMismatch(runB1()), [], 'no look, nothing to contradict');
-  const malformed = runB1();
-  await reportDecision(malformed, B1_REPORT_1, 41766, seenDeps({ 'Virtual machine name': 'yes', Other: true }));
+  assert.deepEqual(screenMismatch(acted), [], 'acted on the page after the look (and resolved the click)');
+  const resolvedEarlier = await run4bLooked({ Create: true });
+  resolvedEarlier.toolLog.splice(8, 0, { t: 7500, name: 'fast_click', args: { text: 'Create' }, ok: true, preview: '{}', wrote: true });
+  assert.deepEqual(screenMismatch(resolvedEarlier), [], 'the failure was resolved');
+  assert.deepEqual(screenMismatch(run4bf918fb()), [], 'no look, nothing to contradict');
+  const malformed = await run4bLooked({ Create: 'yes', Other: true });
   assert.deepEqual(malformed.visualChecks[0].seen, {}, 'only booleans for asked targets count');
   assert.deepEqual(screenMismatch(malformed), []);
 });
