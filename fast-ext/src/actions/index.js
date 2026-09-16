@@ -4,7 +4,7 @@ import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
 import { clickXY, typeText } from './input.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
-import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared } from './frames.js';
+import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
 import { isInjectableUrl } from '../util.js';
 
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_list', 'fast_close', 'fast_switch']);
@@ -179,7 +179,10 @@ async function runOne(action, args) {
   if (action === 'fast_frame_read') return frameRead(args);
   // DOM tools reach visible frames with their own documents (frames.js): the same page.js runs
   // inside them, results come back in top-page space
-  if (action === 'fast_snapshot') return snapshotWithFrames(await frameCtx(), args || {});
+  if (action === 'fast_snapshot') {
+    const a = args || {};
+    return capRead(await snapshotWithFrames(await frameCtx(), a), a.full ? READ_MAX_FULL : READ_MAX, { full: !!a.full });
+  }
   if (FRAME_AWARE.has(action)) { const ctx = await frameCtx(); return withAppeared(ctx, await actWithFrames(ctx, action, args || {})); }
   // fast_scroll {frame}: scroll inside one visible frame (its document or a scroller in it)
   if (action === 'fast_scroll' && args?.frame) return inNamedFrame(await frameCtx(), 'fast_scroll', args);

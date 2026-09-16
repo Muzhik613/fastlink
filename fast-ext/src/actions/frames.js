@@ -711,3 +711,60 @@ export async function framesAppeared(ctx) {
   const counts = await Promise.all(targets.map((t) => withTimeout(ctx.run(t.frameId, 'fast_snapshot', { autoCap: true, noFrameNotice: true }), 1000)));
   return `new frame(s) since your last snapshot: ${targets.map((t, k) => `${t.origin} f${t.frameId} (${counts[k] && typeof counts[k].count === 'number' ? counts[k].count : '?'} items)`).join('; ')}`;
 }
+
+
+// ── Read size ────────────────────────────────────────────────────────────────
+// A fast_snapshot result must stay a size the model digests quickly (live Oracle dd2cf71c:
+// a default read of 80,136 chars — ~50k uncached tokens — took the model 43.6s and ended
+// with no tool call). The page, its frames and any open dialog are ranked together:
+// dialog / open-menu items, then on-screen controls, then other on-screen items, then
+// offscreen items (first reduced to compact lines), content blocks last. Past `max`
+// the lowest-ranked go, and the result leads with truncated:true, the counts, and how to
+// get more. Pure.
+export const READ_MAX = 16000, READ_MAX_FULL = 40000;
+const INTERACTIVE_TAG = /^(input|select|textarea|button|a)$/;
+const itemRank = (it) => (it.inDialog || it.inOverlay ? 4 : it.offscreen ? 1 : (INTERACTIVE_TAG.test(it.tag || '') || it.role) ? 3 : 2);
+const compactItem = (it) => {
+  const { x, y, w, h, innerText, describedBy, title, ...rest } = it;
+  return rest;
+};
+export function capRead(result, max, { full = false } = {}) {
+  if (!result || typeof result !== 'object' || result.error) return result;
+  const size = () => JSON.stringify(result).length;
+  if (size() <= max) return result;
+  const limit = max - 300;   // room for the truncated / dropped / hint head
+  const docs = [result, ...(Array.isArray(result.frames) ? result.frames : [])];
+  // 1. offscreen items become compact lines
+  for (const d of docs) if (Array.isArray(d.items)) d.items = d.items.map((it) => (it && it.offscreen ? compactItem(it) : it));
+  let droppedItems = 0, droppedContent = 0;
+  if (size() > limit) {
+    // 2. drop from the bottom of the ranking, one batch at a time
+    const pool = [];
+    docs.forEach((d, di) => {
+      (d.items || []).forEach((it, k) => pool.push({ d, list: 'items', ref: it, rank: itemRank(it), k: -k }));
+      (d.content || []).forEach((c, k) => pool.push({ d, list: 'content', ref: c, rank: 0, k: -k }));
+    });
+    pool.sort((a, b) => (a.rank - b.rank) || (a.k - b.k));   // lowest rank first; within a rank, the last in document order first
+    const gone = new Set();
+    let i = 0;
+    while (i < pool.length) {
+      const over = size() - limit;
+      if (over <= 0) break;
+      const batch = pool.slice(i, i + (over > 4000 ? 10 : 1));
+      i += batch.length;
+      for (const p of batch) { gone.add(p.ref); if (p.list === 'items') droppedItems++; else droppedContent++; }
+      for (const d of docs) {
+        if (Array.isArray(d.items)) d.items = d.items.filter((x) => !gone.has(x));
+        if (Array.isArray(d.content)) d.content = d.content.filter((x) => !gone.has(x));
+        if (Array.isArray(d.items)) d.count = d.items.length;
+        if (Array.isArray(d.content)) d.contentCount = d.content.length;
+      }
+    }
+  }
+  const more = full
+    ? `limit:N, or frame:"fN" to read one frame`
+    : `full:true (up to ${Math.round(READ_MAX_FULL / 1000)}k chars), limit:N, or frame:"fN" to read one frame`;
+  const head = { truncated: true, dropped: { items: droppedItems, content: droppedContent }, hint: `read capped at ~${Math.round(max / 1000)}k chars: ${droppedItems} item(s) / ${droppedContent} content block(s) not shown (offscreen ones as short lines) — ${more}` };
+  const { truncated, dropped, hint, ...rest } = result;
+  return { ...head, ...rest };
+}
