@@ -1347,6 +1347,48 @@ const missHead = (misses, settling, settleHint) => {
   return head;
 };
 
+// An autocomplete / combobox whose typed text no option was picked for holds NO
+// value the app accepted: the input shows the text, the form's value is still
+// empty (live: fast_fill "Zones":"Zone No.2" read the input back as the typed
+// text and came back verified:true while the page's Zones value was ""). Such a
+// write is NOT verified, whatever the input reads. `ac` is the open-suggestions
+// report ({committed:false, suggestions, hint}) or null. Pure.
+const commitGate = (head, ac) => {
+  if (!ac || ac.committed !== false) return head;
+  return {
+    ...head, verified: false, committed: false,
+    reason: `the text was typed but no option was picked — the input shows ${JSON.stringify(head.value ?? '')}, the page holds no committed value; do not report it as set`,
+  };
+};
+
+// The head of a fast_fill {fields} result, from its per-field outcomes. ONE rule:
+// verified only when every field was written, held, AND committed — a missed,
+// reverted or uncommitted field makes the whole call verified:false (a batch
+// step / report gate reads this head, so a green head over a failed field is a
+// lie told to every check built on it). Each failed field is named in `summary`;
+// an uncommitted one also carries its own hint (pick the option). Pure.
+const rollUpFill = (fields, total) => {
+  const keys = Object.keys(fields);
+  const missedK = keys.filter(k => fields[k] && fields[k].error);
+  const uncommitted = keys.filter(k => fields[k] && !fields[k].error && fields[k].committed === false);
+  const reverted = keys.filter(k => fields[k] && !fields[k].error && fields[k].committed !== false && fields[k].verified !== true);
+  const bad = missedK.length + uncommitted.length + reverted.length;
+  const head = { verified: bad === 0, filled: total - missedK.length, missed: missedK.length, total };
+  if (bad) {
+    const parts = [];
+    if (missedK.length) parts.push(`missed: ${missedK.join(', ')}`);
+    if (uncommitted.length) parts.push(`typed but no option picked (NOT set): ${uncommitted.join(', ')}`);
+    if (reverted.length) parts.push(`did not hold: ${reverted.join(', ')}`);
+    head.summary = `${total - bad}/${total} verified; ${parts.join('; ')}`;
+  }
+  if (reverted.length) head.reverted = reverted;
+  if (uncommitted.length) {
+    head.uncommitted = uncommitted;
+    head.hint = uncommitted.map(k => `${JSON.stringify(k)}: ${fields[k].hint || 'pick the option (fast_select_option)'}`).join(' | ') + ' (one field at a time)';
+  }
+  return head;
+};
+
 // A field the model still has to fill: text-like input / textarea / select /
 // contenteditable with no value yet (checkbox, radio, button, file… excluded).
 const NON_FILL_TYPES = new Set(['hidden', 'checkbox', 'radio', 'button', 'submit', 'reset', 'image', 'file', 'range', 'color']);
@@ -3996,8 +4038,7 @@ async function runPageAction(action, args) {
       }
       const { el, r, ac } = written.get(sp);
       const out = await withSnap(r, snap);
-      const head = verifyOne(sp, el, r);
-      if (ac) Object.assign(head, ac);
+      const head = commitGate({ ...verifyOne(sp, el, r), ...(ac || {}) }, ac);
       return calmIfVerified(frontload(out, head));
     }
 
@@ -4011,31 +4052,23 @@ async function runPageAction(action, args) {
       withSnap(out, snap),
       new Promise((resolve) => setTimeout(() => resolve({ ...out, snapshotPartial: true, snapshotNote: 'snapshot skipped — bounded to keep fast_fill responsive' }), HANDLER_CAP_MS)),
     ]);
-    let filled = 0, missed = 0;
     for (const sp of specs) {
       if (written.has(sp)) {
         const { el, r, ac } = written.get(sp);
-        fields[sp.match] = { ...verifyOne(sp, el, r), ...(ac || {}), ...r };
-        filled++;
+        fields[sp.match] = commitGate({ ...verifyOne(sp, el, r), ...(ac || {}), ...r }, ac);
       } else {
         fields[sp.match] = enrichMiss(sp, res.misses.get(sp) || { error: 'not filled' });
-        missed++;
       }
     }
-    const reverted = Object.keys(fields).filter(k => fields[k].verified === false && !fields[k].error);
-    const head = { verified: missed === 0 && reverted.length === 0, filled, missed, total: specs.length };
-    if (missed) head.summary = `${filled}/${specs.length} filled; missed: ${Object.keys(fields).filter(k => fields[k].error).join(', ')}`;
-    if (reverted.length) head.reverted = reverted;
-    const uncommitted = Object.keys(fields).filter(k => fields[k].committed === false);
-    if (uncommitted.length) { head.uncommitted = uncommitted; head.hint = `${uncommitted.map(k => JSON.stringify(k)).join(', ')}: ${AC_OPEN_HINT} (one field at a time)`; }
-    if (missed) {
+    const head = rollUpFill(fields, specs.length);
+    if (head.missed) {
       const mh = missHead(Object.values(fields).filter(f => f.error), act.settling, SETTLE_MISS_HINT);
       if (mh.settling) head.settling = true;
       const hints = [mh.hint, head.hint].filter(Boolean);
       if (hints.length) head.hint = hints.join(' | ');
     }
     // the auto-snapshot's own settle flag must not re-add "still changing" over explained misses
-    return calmIfVerified(frontload(snapped, head), head.verified || (!head.settling && !reverted.length));
+    return calmIfVerified(frontload(snapped, head), head.verified || (!head.settling && !head.reverted && !head.uncommitted));
   }
 
   return { error: `Unknown action: ${action}` };
