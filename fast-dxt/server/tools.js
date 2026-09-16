@@ -188,12 +188,12 @@ export const TOOLS = [
   },
   {
     name: 'fast_scroll',
-    description: 'Scroll the active tab. Auto-detects the right scroll container (handles nested scrollers like claude.ai chat, not just window); container detection is time-bounded and falls back to a plain window scroll on huge ad/tracker-heavy DOMs, so this always returns within ~1s and never hangs. Pass "to" (top|bottom|"50%") or "pixels" (delta, positive=down). Optional selector to target a specific scroller. Returns include a fresh `snapshot` of the post-scroll viewport (opt out with noSnapshot:true).',
+    description: 'Scroll the active tab. Auto-detects the right scroll container (handles nested scrollers like claude.ai chat, not just window); container detection is time-bounded and falls back to a plain window scroll on huge ad/tracker-heavy DOMs, so this always returns within ~1s and never hangs. Pass "to" (top|bottom|"50%") or "pixels" (delta, positive=down); with neither, it scrolls ONE visible screenful down (the scroller\'s view height minus a small overlap). Optional selector to target a specific scroller (an element that cannot scroll itself scrolls its nearest scrollable ancestor, kind:"selector-ancestor"). Returns `moved` (pixels it actually moved, negative=up) and `atEnd` (true = it reached the end in that direction, another scroll moves nothing), plus scrollTop/max. Returns include a fresh `snapshot` of the post-scroll viewport (opt out with noSnapshot:true).',
     inputSchema: {
       type: 'object',
       properties: {
         to: { type: 'string', description: 'top, bottom, or a percentage like "50%"' },
-        pixels: { type: 'number', description: 'Pixels to scroll (positive=down, negative=up)' },
+        pixels: { type: 'number', description: 'Pixels to scroll (positive=down, negative=up). Omit (with no "to") for one screenful down.' },
         selector: { type: 'string', description: 'Optional CSS selector for the scroll container. If omitted, auto-detects by walking up from viewport center, then falling back to the largest scrollable element.' },
         noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-scroll snapshot and return just the action outcome.' },
       },

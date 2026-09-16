@@ -1347,6 +1347,30 @@ const missHead = (misses, settling, settleHint) => {
   return head;
 };
 
+// fast_scroll's destination. `to` (top|bottom|"N%") or `pixels` (a delta) when
+// given; with neither, ONE visible screenful of the scroller (its view height
+// minus a small overlap, so the last line in view stays in view) — a scroll
+// named on an element with no amount is a request to page through it, not an
+// error (holdout: fast_scroll {selector:"#demo-tree"} errored four times). Pure.
+const SCROLL_OVERLAP_PX = 40;
+const scrollDest = (args, { top, max, viewH }) => {
+  if (args.to === 'top') return { dest: 0 };
+  if (args.to === 'bottom') return { dest: max };
+  if (typeof args.to === 'string' && /^\s*-?\d+(\.\d+)?\s*%\s*$/.test(args.to)) return { dest: max * (parseFloat(args.to) / 100) };
+  if (args.to != null) return { error: `fast_scroll: to must be top, bottom or a percentage like "50%" (got ${JSON.stringify(args.to)})` };
+  if (typeof args.pixels === 'number' && Number.isFinite(args.pixels)) return { dest: top + args.pixels };
+  if (args.pixels != null) return { error: 'fast_scroll: pixels must be a number (positive = down)' };
+  const page = Math.max(1, Math.round(viewH - Math.min(SCROLL_OVERLAP_PX, viewH * 0.1)));
+  return { dest: top + page, screenful: page };
+};
+// What a scroll actually did: how far it moved and whether it is now at the end
+// it was moving toward (a second call would move nothing). Pure.
+const scrollOutcome = (before, after, max, dest) => {
+  const moved = Math.round(after - before);
+  const down = dest >= before;
+  return { moved, atEnd: down ? after >= max - 1 : after <= 0.5 };
+};
+
 // An autocomplete / combobox whose typed text no option was picked for holds NO
 // value the app accepted: the input shows the text, the form's value is still
 // empty (live: fast_fill "Zones":"Zone No.2" read the input back as the typed
@@ -3794,21 +3818,34 @@ async function runPageAction(action, args) {
     };
     const found = findScroller();
     if (found.error) return found;
-    const target = found.el;
-    const isDoc = target === document.scrollingElement || target === document.documentElement || target === document.body;
-    const max = target.scrollHeight - target.clientHeight;
-    let dest;
-    if (args.to === 'top') dest = 0;
-    else if (args.to === 'bottom') dest = max;
-    else if (typeof args.to === 'string' && args.to.endsWith('%')) dest = max * (parseFloat(args.to) / 100);
-    else if (typeof args.pixels === 'number') dest = (isDoc ? window.scrollY : target.scrollTop) + args.pixels;
-    else return { error: 'Pass either to (top|bottom|"50%") or pixels (number), optional selector to target a specific scroller' };
+    let target = found.el, kind = found.kind;
+    const docEl = document.scrollingElement || document.documentElement;
+    const isDocEl = (el) => el === document.scrollingElement || el === document.documentElement || el === document.body;
+    // A named element that cannot scroll itself (a tree/list inside the pane that
+    // does) moves nothing: scroll its nearest scrollable ancestor instead.
+    if (kind === 'selector' && !isDocEl(target) && !isScrollableBox(target)) {
+      let a = target.parentElement;
+      while (a && !isDocEl(a) && !isScrollableBox(a)) a = a.parentElement;
+      target = a && !isDocEl(a) ? a : docEl;
+      kind = 'selector-ancestor';
+    }
+    const isDoc = isDocEl(target);
+    const readTop = () => (isDoc ? window.scrollY : target.scrollTop);
+    const box = isDoc ? docEl : target;
+    const max = Math.max(0, box.scrollHeight - box.clientHeight);
+    const before = readTop();
+    const plan = scrollDest(args, { top: before, max, viewH: box.clientHeight });
+    if (plan.error) return plan;
+    const dest = Math.max(0, Math.min(max, plan.dest));
     if (isDoc) window.scrollTo({ top: dest, behavior: 'instant' });
     else target.scrollTop = dest;
-    const desc = target.tagName.toLowerCase()
+    const after = readTop();
+    const desc = isDoc ? 'document' : target.tagName.toLowerCase()
       + (target.id ? `#${target.id}` : '')
-      + (target.className && typeof target.className === 'string' ? '.' + target.className.trim().split(/\s+/).slice(0, 2).join('.') : '');
-    return withSnap({ scrolled: true, scrollTop: isDoc ? window.scrollY : target.scrollTop, max, kind: found.kind, target: desc });
+      + (target.className && typeof target.className === 'string' && target.className.trim() ? '.' + target.className.trim().split(/\s+/).slice(0, 2).join('.') : '');
+    const head = { scrolled: true, ...scrollOutcome(before, after, max, plan.dest), scrollTop: Math.round(after), max: Math.round(max), kind, target: desc };
+    if (plan.screenful) head.screenful = plan.screenful;
+    return withSnap(head);
   }
 
   if (action === 'fast_fill') {
