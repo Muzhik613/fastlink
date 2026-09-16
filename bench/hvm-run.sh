@@ -7,6 +7,8 @@
 # Fixer handoff: a fixer rsyncs its change and writes bench/FIXER_READY (commit + summary); at the
 # next pass boundary we restart Chrome (extension reload), delete the marker and record the commit.
 # The runner spawns a fresh fast-dxt/server per cell, so only Chrome needs the restart.
+# Tabs: run.js resets the rig Chrome to ONE about:blank tab before every cell (bench/rig.js), so
+# nothing a cell or a wandering model opened survives into the next cell.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 PASSES=${PASSES:-3}

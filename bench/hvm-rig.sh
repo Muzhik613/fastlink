@@ -15,6 +15,14 @@ export GROKCODE_URL=http://127.0.0.1:8791
 export GROKCODE_EFFORT=low
 export DISPLAY=:98
 RIG_PROFILE=/home/dev/.local/share/fastlink-bench-profile
+# DevTools port of the RIG Chrome ONLY. bench/rig.js resets the whole browser (every tab, every
+# window → one about:blank) before each cell through it, and treats these two exports plus a
+# listener on this port whose cmdline carries BOTH --user-data-dir=$RIG_PROFILE and this port as
+# the proof that it is on the dedicated rig. The owner's Chrome never has them, so a bench run
+# on his profile only closes that test's own tabs. Bound to 127.0.0.1 (Chrome's default); the
+# profile is signed out of everything, so a local client reaching it finds a blank browser.
+RIG_CDP_PORT=9335
+export FASTLINK_RIG_PROFILE="$RIG_PROFILE" FASTLINK_RIG_CDP_PORT="$RIG_CDP_PORT"
 RIG_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 RIG_CHROME=$(ls -d /home/dev/.local/share/fastlink-bench-chrome/chrome/linux-*/chrome-linux64/chrome 2>/dev/null | tail -1)
 # secrets live outside the repo, never committed
@@ -33,6 +41,12 @@ rig_up() {
   if ! listening "$GROKCODE_PORT"; then
     (cd "$GROKCODE_DIR" && RIG_LOG="$GROKCODE_DIR/proxy.log" daemon node proxy.mjs); sleep 2
   fi
+  # A rig Chrome started before the DevTools port existed can't be reset between cells, and
+  # run.js refuses to run on it. Restart it once with the port.
+  if pgrep -u "$USER" -f "user-data-dir=$RIG_PROFILE" > /dev/null && ! listening "$RIG_CDP_PORT"; then
+    echo "rig Chrome has no DevTools port :$RIG_CDP_PORT — restarting it"
+    pkill -u "$USER" -f "user-data-dir=$RIG_PROFILE"; sleep 2
+  fi
   if ! pgrep -u "$USER" -f "user-data-dir=$RIG_PROFILE" > /dev/null; then
     [ -x "$RIG_CHROME" ] || { echo "no Chrome for Testing under /home/dev/.local/share/fastlink-bench-chrome (npx @puppeteer/browsers install chrome@stable --path …)"; return 1; }
     mkdir -p "$RIG_PROFILE"
@@ -43,7 +57,7 @@ rig_up() {
     # script, and Chrome then fails the worker (DidStartWorkerFail :5) — 2026-09-15 overnight.
     rm -rf "$RIG_PROFILE/Default/Service Worker"
     RIG_LOG="$RIG_PROFILE/chrome.log" daemon "$RIG_CHROME" \
-      --load-extension="$RIG_REPO/fast-ext" --user-data-dir="$RIG_PROFILE" \
+      --load-extension="$RIG_REPO/fast-ext" --user-data-dir="$RIG_PROFILE" --remote-debugging-port="$RIG_CDP_PORT" \
       --no-first-run --no-default-browser-check --disable-features=ExtensionsToolbarMenu \
       --no-sandbox --disable-gpu --disable-dev-shm-usage --password-store=basic \
       --window-size=1600,1000 about:blank

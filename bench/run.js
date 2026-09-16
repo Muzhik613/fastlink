@@ -5,7 +5,8 @@
 // that drives the browser over the cloud relay, so there is no exit code and no
 // stdout to parse. A cell is:
 //
-//   1. reset       close this test's tabs — and, for sites that cache a previous
+//   1. reset       on the dedicated rig: every tab → one about:blank (bench/rig.js);
+//                  elsewhere: close this test's tabs — and, for sites that cache a previous
 //                  run's work in localStorage (aa.com), wipe that origin's storage
 //                  too — so nothing is inherited as free credit
 //   2. watermark   stamp t0 and the relay-trace watermark BEFORE the prompt is sent
@@ -28,6 +29,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { byId, TEST_IDS, ALL_TESTS, SUITES } from './suite.js';
 import { closeMatching, clearStorageFor, pinInstall, status } from './fastlink.js';
+import { rigIdentity, resetRigBrowser } from './rig.js';
 import { RelayTrace, LocalTrace, TrailWatcher, watchRun, renderTiming, summarize, resolveDeviceToken, TOKEN_HELP, DEFAULTS } from './monitor.js';
 import { scoreTest, renderScore } from './score.js';
 import * as web from './drive-web.js';
@@ -163,10 +165,24 @@ export async function runCell({
     }
 
     if (reset) {
-      const closed = await closeMatching(test.reset?.closeUrlPatterns || []);
-      if (closed.length) notes.push(`reset closed ${closed.length} tab(s)`);
+      // Storage first: clearStorageFor opens and closes its own tab, so the tab reset below is
+      // the LAST thing to touch the browser before the run.
       const wiped = await clearStorageFor(test.reset?.clearStorage || []);
       if (wiped.length) notes.push(`reset cleared site storage for ${wiped.length} origin(s)`);
+      // Tabs, two paths, never both (bench/rig.js explains how they are told apart):
+      //   • dedicated rig: close EVERY tab in every window, leave one about:blank. A cell starts
+      //     from the same state whatever ran before. Per-cell closeUrlPatterns are moot there.
+      //   • anyone else's Chrome, e.g. the owner's signed-in profile for cfworkers/Azure: close
+      //     ONLY this test's closeUrlPatterns. His other tabs are never touched. This is why
+      //     closeUrlPatterns still exists.
+      const rig = rigIdentity(); // throws if the rig is configured but unproven, and never falls back
+      if (rig.rig) {
+        const r = await resetRigBrowser(rig.port);
+        notes.push(`rig reset: ${r.before} tab(s) → 1 blank (closed ${r.closed.length})`);
+      } else {
+        const closed = await closeMatching(test.reset?.closeUrlPatterns || []);
+        if (closed.length) notes.push(`reset closed ${closed.length} tab(s)`);
+      }
     }
 
     // Trace source + watermark BEFORE anything can generate a row.
