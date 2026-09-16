@@ -39,49 +39,79 @@ rig_up() {
   if ! listening "$GROKCODE_PORT"; then
     (cd "$GROKCODE_DIR" && RIG_LOG="$GROKCODE_DIR/proxy.log" daemon node proxy.mjs); sleep 2
   fi
-  if ! pgrep -u "$USER" -f "user-data-dir=$RIG_PROFILE" > /dev/null; then
-    [ -x "$RIG_CHROME" ] || { echo "no Chrome for Testing under /home/dev/.local/share/fastlink-bench-chrome (npx @puppeteer/browsers install chrome@stable --path …)"; return 1; }
-    mkdir -p "$RIG_PROFILE"
-    # Chrome keeps the extension's service-worker script (background.js + its imports)
-    # in the profile's ScriptCache across restarts: a "restart" after rsyncing
-    # index.js/text.js ran the OLD worker while content scripts (page.js) were fresh.
-    # Whole dir, not just ScriptCache: the registration DB still points at the cached
-    # script, and Chrome then fails the worker (DidStartWorkerFail :5) — 2026-09-15 overnight.
-    rm -rf "$RIG_PROFILE/Default/Service Worker"
-    RIG_LOG="$RIG_PROFILE/chrome.log" daemon "$RIG_CHROME" \
-      --load-extension="$RIG_REPO/fast-ext" --user-data-dir="$RIG_PROFILE" \
-      --no-first-run --no-default-browser-check --disable-features=ExtensionsToolbarMenu \
-      --no-sandbox --disable-gpu --disable-dev-shm-usage --password-store=basic \
-      --window-size=1600,1000 about:blank
-    sleep 6
-  fi
+  if ! pgrep -u "$USER" -f "user-data-dir=$RIG_PROFILE" > /dev/null; then rig_chrome || return 1; fi
   # proof, not assumption: the extension must be on the broker AS THE RIG LABEL before a cell starts.
-  # A fresh or wiped profile says hello as "primary"; the first miss hands it the label (rig_label),
-  # a second try covers a hand-off that landed before the extension had loaded.
+  # A fresh or wiped profile says hello as "primary": the first poll that sees it under any other
+  # label (or the 10th poll with nothing connected) hands it the label ONCE (rig_label).
+  local st labelled=
   for i in $(seq 1 20); do
-    st=$(cd "$RIG_REPO" && timeout 20 node -e 'import("./bench/fastlink.js").then(m=>m.status()).then(s=>{const on=Object.keys(s.installs||{}).filter(k=>s.installs[k]?.connected);console.log(on.includes(process.argv[1])?"rig":"connected:"+(on.join(",")||"none"));process.exit(0)}).catch(()=>{console.log("broker-error");process.exit(0)})' "$FASTLINK_RIG_INSTALL" 2>/dev/null | tail -1)
+    st=$(rig_status)
     [ "$st" = rig ] && { echo "rig up: install \"$FASTLINK_RIG_INSTALL\" connected (display $DISPLAY, proxy $GROKCODE_URL)"; return 0; }
-    if [ "$i" = 1 ] || [ "$i" = 10 ]; then rig_label || return 1; fi
+    if [ -z "$labelled" ] && { [[ "$st" == connected:* && "$st" != connected:none ]] || [ "$i" = 10 ]; }; then
+      labelled=1; rig_label || return 1
+    fi
     sleep 3
   done
   echo "rig NOT up: install \"$FASTLINK_RIG_INSTALL\" never connected to the broker ($st)"; return 1
 }
 
-# Put the slot label on the rig profile with no click and no root: hand the running rig Chrome its
-# own options page with ?slot=<label> (fast-ext/options.js applyLaunchSlot stores it and reloads the
-# extension, or does nothing if it is already set). A second chrome with the same --user-data-dir
-# only forwards the URL to the running browser and exits. The extension id is derived from
-# manifest.json "key", so it is fixed and survives a wiped profile.
+# Launch the rig Chrome (nothing checks whether one is running; callers do).
+rig_chrome() {
+  [ -x "$RIG_CHROME" ] || { echo "no Chrome for Testing under /home/dev/.local/share/fastlink-bench-chrome (npx @puppeteer/browsers install chrome@stable --path …)"; return 1; }
+  mkdir -p "$RIG_PROFILE"
+  # Chrome keeps the extension's service-worker script (background.js + its imports)
+  # in the profile's ScriptCache across restarts: a "restart" after rsyncing
+  # index.js/text.js ran the OLD worker while content scripts (page.js) were fresh.
+  # Whole dir, not just ScriptCache: the registration DB still points at the cached
+  # script, and Chrome then fails the worker (DidStartWorkerFail :5) — 2026-09-15 overnight.
+  rm -rf "$RIG_PROFILE/Default/Service Worker"
+  RIG_LOG="$RIG_PROFILE/chrome.log" daemon "$RIG_CHROME" \
+    --load-extension="$RIG_REPO/fast-ext" --user-data-dir="$RIG_PROFILE" \
+    --no-first-run --no-default-browser-check --disable-features=ExtensionsToolbarMenu \
+    --no-sandbox --disable-gpu --disable-dev-shm-usage --password-store=basic \
+    --window-size=1600,1000 about:blank
+  sleep 6
+}
+
+# "rig" when the rig label is connected to the broker, else "connected:<labels>|none" or "broker-error".
+rig_status() {
+  (cd "$RIG_REPO" && timeout 20 node -e 'import("./bench/fastlink.js").then(m=>m.status()).then(s=>{const on=Object.keys(s.installs||{}).filter(k=>s.installs[k]?.connected);console.log(on.includes(process.argv[1])?"rig":"connected:"+(on.join(",")||"none"));process.exit(0)}).catch(()=>{console.log("broker-error");process.exit(0)})' "$FASTLINK_RIG_INSTALL" 2>/dev/null | tail -1)
+}
+
+# Put the slot label on the rig profile with no click and no root, then restart the rig Chrome so
+# the extension comes up on it. Verified on hvm (Chrome for Testing 153), 2026-09-16:
+#  1. A second chrome with the same --user-data-dir forwards the URL to the running browser
+#     ("Opening in existing browser session.") — but only with --no-sandbox. Without it, it dies at
+#     "FATAL zygote_host_impl_linux.cc No usable sandbox!" before forwarding (AppArmor userns).
+#  2. options.html?slot=<label> (fast-ext/options.js applyLaunchSlot) stores fastlinkInstallId in
+#     chrome.storage.local and calls chrome.runtime.reload() — the old label drops with close 1001.
+#  3. That reload leaves this --load-extension'ed unpacked extension DISABLED (Preferences
+#     disable_reasons [16777216]); it never reconnects on its own. A relaunch with
+#     --load-extension loads it again and it says hello with the stored label. So: wait for the
+#     old label to drop (proof the write landed), then restart the rig Chrome.
+# The extension id comes from manifest.json "key" (matched Preferences on hvm:
+# ockcjadbkdfgfllidpcoamcepahfmlpf), so it survives a wiped profile.
 # Not Chrome managed storage: Chrome for Testing reads policy only from root-owned /etc/opt.
 rig_label() {
-  local id
+  local id st before
   # Only ever a hand-off: with no rig Chrome running this would START one without the rig flags.
   pgrep -u "$USER" -f "user-data-dir=$RIG_PROFILE" > /dev/null && [ -x "$RIG_CHROME" ] \
     || { echo "rig_label: no running rig Chrome to hand the slot label to"; return 1; }
   id=$(node -e 'const k=Buffer.from(require(process.argv[1]).key,"base64");const h=require("crypto").createHash("sha256").update(k).digest("hex").slice(0,32);console.log([...h].map(c=>String.fromCharCode(97+parseInt(c,16))).join(""))' "$RIG_REPO/fast-ext/manifest.json") \
     || { echo "rig_label: cannot derive the extension id from fast-ext/manifest.json"; return 1; }
-  RIG_LOG="$RIG_PROFILE/chrome-label.log" daemon "$RIG_CHROME" --user-data-dir="$RIG_PROFILE" \
+  before=$(rig_status)
+  RIG_LOG="$RIG_PROFILE/chrome-label.log" daemon "$RIG_CHROME" --no-sandbox --user-data-dir="$RIG_PROFILE" \
     "chrome-extension://$id/options.html?slot=$FASTLINK_RIG_INSTALL"
+  # the write landed once the label that was connected drops (the reload); nothing was connected
+  # before → give the page a fixed moment instead
+  for _ in $(seq 1 10); do
+    sleep 2; st=$(rig_status)
+    [ "$st" = rig ] && return 0
+    [[ "$before" == connected:* && "$before" != connected:none && "$st" != "$before" ]] && break
+  done
+  echo "rig_label: label handed over ($before → $st); restarting the rig Chrome so the extension loads on it"
+  pkill -u "$USER" -f "user-data-dir=$RIG_PROFILE"; sleep 2
+  rig_chrome
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then rig_up; fi
