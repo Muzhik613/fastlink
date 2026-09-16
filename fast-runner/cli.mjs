@@ -50,7 +50,7 @@ const short = (o) => { const s = JSON.stringify(o); return s.length > 120 ? s.sl
 const onEvent = (e) => {
   if (e.type === 'tool') console.error(`  [${(e.ms / 1000).toFixed(1)}s] ${e.ok ? 'ok ' : 'ERR'} ${e.name} ${short(e.args)}`);
   else if (e.type === 'text') console.error(`  grok: ${e.text.replace(/\s+/g, ' ').slice(0, 200)}`);
-  else if (e.type === 'recording') console.error(e.video.recorded === false ? `  UNRECORDED: ${e.video.error}` : `  recording → ${e.video.path}${e.video.warning ? `\n  WARNING: ${e.video.warning}` : ''}`);
+  else if (e.type === 'recording') console.error(e.video.recorded === false ? `  UNRECORDED: ${e.video.error || e.video.reason}` : `  recording → ${e.video.path}${e.video.warning ? `\n  WARNING: ${e.video.warning}` : ''}`);
 };
 
 // Killed mid-run (bench ceiling / STUCK): cancel so the run's recording is finalized and its row written.

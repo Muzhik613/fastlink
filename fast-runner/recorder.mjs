@@ -2,6 +2,8 @@
 // gdigrab on WSL / x11grab on the hvm rig, and verifies the file with ffprobe on stop).
 // Neither function ever throws: a broken recorder must not fail a run, it must say the run went
 // unrecorded. Both resolve to a plain object that lands on the run's runs.jsonl row as `video`.
+// FASTRUN_RECORD=off is the ONE opt-out (default on): the row then says {recorded:false, reason:"disabled"},
+// so an unrecorded run is never silent. It exists for same-commit overhead A/Bs on the bench rig.
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -22,8 +24,11 @@ function recordSh(args, timeoutMs) {
   });
 }
 
-// { path, mode, region, warning? } or { recorded: false, error }
-export async function startRecording(runId, { maxSec = 1800 } = {}) {
+export const recordingDisabled = (env = process.env) => String(env.FASTRUN_RECORD || '').toLowerCase() === 'off';
+
+// { path, mode, region, warning? } | { recorded: false, error } | { recorded: false, reason: 'disabled' }
+export async function startRecording(runId, { maxSec = 1800, env = process.env } = {}) {
+  if (recordingDisabled(env)) return { recorded: false, reason: 'disabled' };
   const r = await recordSh(['start', runId, '--max', String(Math.ceil(maxSec))], 45_000);
   if (!r.ok) return { recorded: false, error: `recording did not start: ${r.error}` };
   const { path, mode, region, warning } = r.kv;
