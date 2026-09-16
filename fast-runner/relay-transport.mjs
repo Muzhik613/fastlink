@@ -146,7 +146,6 @@ export async function connectRelay({ browser = null, onAuthUrl = null } = {}) {
   }
   return {
     client,
-    instructions: client.getInstructions() || '',
     listTools: async () => (await client.listTools()).tools,
     callTool,
     close: () => transport.close(),

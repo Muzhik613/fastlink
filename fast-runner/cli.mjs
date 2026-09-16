@@ -30,8 +30,7 @@ if (dumpTools) {
   const { tools } = buildTools(TOOLS, ts);
   console.log(JSON.stringify({
     toolset: ts.name, file: ts.file, count: tools.length,
-    instructionsInSystemPrompt: ts.name === 'default',
-    systemPromptChars: buildSystem(ts, '').length,
+    systemPromptChars: buildSystem().length,
     tools: tools.map(t => ({ name: t.name, args: Object.keys(t.input_schema?.properties || {}), description: t.description })),
   }, null, 2));
   process.exit(0);

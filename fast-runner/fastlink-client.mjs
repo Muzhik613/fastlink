@@ -1,4 +1,4 @@
-// MCP client for FastLink. Both transports expose { listTools, callTool, close, instructions }.
+// MCP client for FastLink. Both transports expose { listTools, callTool, close }.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -26,7 +26,6 @@ export async function connect({ transport = 'relay', browser } = {}) {
     if (r?.isError || /"error"/.test(txt)) { await client.close(); throw new Error(`fast_profile ${browser}: ${txt.slice(0, 300)}`); }
   }
   return {
-    instructions: client.getInstructions() || '',
     async listTools() { return (await client.listTools()).tools; },
     async callTool(name, args) {
       return client.callTool({ name, arguments: args || {} }, undefined, { timeout: 120_000 });

@@ -12,19 +12,5 @@
     "fast_tab",
     "fast_nav",
     "fast_batch"
-  ],
-  "rename": {},
-  "describe": {
-    "fast_snapshot": "Read the current page: interactive elements (text, label, live value, coords) plus readable content blocks; visible cross-origin frames are read too, under `frames` (item ids \"f<frameId>:<i>\"). Pass overlay:true when an open menu's options are missing, full:true to lift the ~70-item cap, screenshot:true only to visually confirm.",
-    "fast_text": "Return the page's innerText (or one element's via selector; html:true for outerHTML). Use for data extraction such as tables and lists; maxLen caps the size.",
-    "fast_click": "Click the element whose text/label/placeholder matches `text` (narrow with role, tag, or index = the N-th text match, 0-based), or the exact snapshot item `id` (\"42\", or \"f7:42\" inside a frame); targets in a visible cross-origin frame are found too (`frame:\"<part of the frame URL>\"` picks the frame). Returns a fresh snapshot, so do not call fast_snapshot right after.",
-    "fast_fill": "Set fields by label/placeholder/name: one with {match, value} or a whole form with fields:{label: value | {value, index, section}} (native selects included) — a form with 2+ inputs is one call; fields in a visible cross-origin frame are found too (`frame` picks one). Returns verified + live value per field and a fresh snapshot.",
-    "fast_select_option": "Choose `option` in the dropdown labelled `field` (native, react-select, Angular, ARIA; in a visible cross-origin frame too, `frame` picks one). Use selections:{field:option} to set several in one call.",
-    "fast_key_press": "Press `key` (Enter, Escape, Tab, ArrowDown...) on the focused element.",
-    "fast_scroll": "Scroll the page, the nearest scroll container, or with `frame:\"<part of the frame URL>\"` inside that frame: to:\"top\"|\"bottom\"|\"50%\" or pixels (negative = up), with neither one screenful down. Returns moved, atEnd and a fresh snapshot.",
-    "fast_wait": "Wait until `text` appears (case-insensitive substring — use two or more words; visible cross-origin frames are searched too), or `selector` matches a visible element, or with networkIdle:true (alone) until requests settle; with text + networkIdle the text is the signal and the result reports networkIdle/pending instead of timing out. Use after an action that triggers async loading; returns the matched element and a snapshot, emptyContainer:true when only a stale/empty container matched (the view has not rendered), or the visible headings on timeout.",
-    "fast_tab": "Open `url` in a new tab, focus it and wait for it to load (waitMs, default 10s). Returns the page's snapshot preview, frame items included, so act on it directly.",
-    "fast_nav": "Go to `url` in the current tab and wait for the load (waitMs, default 10s). Returns the page's snapshot preview, frame items included, so act on it directly.",
-    "fast_batch": "Run several steps in one round-trip (actions:[{name,args}]) — every step runs even if one misses, and the result leads with a summary line (\"5/6 steps ok; step 3 (fast_fill \\\"Ocean\\\") missed: …\") plus per-step verified state or the miss with candidates; only the last step returns a snapshot. Use it whenever the next steps are already known — a whole form (fast_fill {fields}, fast_select_option, fast_key_press, fast_click) is ONE batch; a conditional step {ifFound:\"text or css selector\", then:[…], else:[…]} branches inside the batch without a model turn."
-  }
+  ]
 }

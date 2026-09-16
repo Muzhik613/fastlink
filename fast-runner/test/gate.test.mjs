@@ -1,7 +1,7 @@
 // node --test — the report_done evidence gate on synthetic tool logs (no browser, no model).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gateProblems, recordResult, corpusRow, unresolvedFailures, claimMismatch, partialFailures, entryFacts, buildSystem, loadToolset, reportDone, gateMode } from '../runner.mjs';
+import { gateProblems, recordResult, corpusRow, unresolvedFailures, claimMismatch, partialFailures, entryFacts, reportDone, gateMode, stuckReason, STUCK_ERRORS } from '../runner.mjs';
 
 const LIST = 'https://dash.cloudflare.com/acc/workers-and-pages';
 const WORKER = 'https://dash.cloudflare.com/acc/workers/services/view/fastlink-relay/production';
@@ -27,7 +27,7 @@ test('check 1 (as before): a read must follow the last action; evidence must quo
   assert.match(problems(run([['fast_fill', true], ['fast_snapshot', true]]), 'the price is right, trust me'), /evidence does not quote/);
   assert.equal(problems(run([['fast_fill', true], ['fast_snapshot', true]]), 'h1 "It\'s Only the Himalayas", price £45.17 at https://x'), '');
   assert.match(problems(run([['fast_click', true], ['fast_text', false]]), '"£45.17"'), /no tool has read/); // failed read does not count
-  assert.match(problems(run([['fast_snapshot', true], ['fast_select_option', true]]), '"£45.17"'), /fast_select_option/); // auto-snapshot is not a read-back
+  assert.match(problems(run([['fast_snapshot', true], ['fast_select_option', true]]), '"£45.17"'), /fast_select_option/); // an action whose result carried no page preview is not a read-back
   assert.match(problems(run([['fast_click', true], ['fast_wait', true, { networkIdle: true }]]), '"£45.17"'), /no tool has read/);
   assert.equal(problems(run([['fast_click', true], ['fast_wait', true, { text: 'Himalayas' }]]), '"£45.17"'), '');
   assert.match(problems({ toolLog: [], corpus: [], urlTrail: [], gateRefusals: [] }, '"£45.17"'), /no tool has been called/);
@@ -216,8 +216,68 @@ test('check 3: each missed field of fast_fill {fields} / failed batch step is it
   assert.deepEqual(batch, [{ name: 'fast_click', target: 'Add URI' }, { name: 'fast_fill', target: 'B' }]);
 });
 
-test('system prompt tells the model an unretried failure blocks report_done', () => {
-  assert.match(buildSystem(loadToolset('phase2'), ''), /A tool call that failed and was never retried also blocks report_done/);
+// ── df6a2ba2: an action's own fresh preview IS the read before report_done ────
+// Live Azure df6a2ba2 (build dab0a77-era): tab, snapshot, a fast_wait hit, one fast_batch whose last
+// step returned the page preview, then a 4.9s fast_snapshot the gate demanded before report_done.
+const AZC = 'https://portal.azure.com/#create/Microsoft.VirtualMachine';
+const BLADE = 'https://sandbox-1.reactblade.portal.azure.net';
+const preview = (items) => ({ url: AZC, omitted: { items: 12, content: 30, offscreen: 4, textTrimmed: 0 }, frames: [{ frame: BLADE, frameId: 2163, items }] });
+const df6a2ba2 = (batchResult) => runOf([
+  ['fast_tab', { url: AZC }, JSON.stringify({ id: 1220563403, url: AZC, targetTab: 1220563403, snapshot: { url: 'https://portal.azure.com/auth/login/', items: [] } })],
+  ['fast_snapshot', { full: true }, JSON.stringify({ url: 'https://portal.azure.com/auth/login/', count: 0, items: [], content: [] })],
+  ['fast_wait', { text: 'Virtual machine name', timeoutMs: 10000 }, JSON.stringify({ found: { text: 'Virtual machine name', frame: BLADE, frameId: 2163 }, snapshot: preview([{ i: 'f2163:38', tag: 'input', label: 'Virtual machine name', value: '' }]) })],
+  ['fast_batch', { actions: [{ name: 'fast_fill', args: { match: 'Virtual machine name', value: 'fastlink-bench-vm', frame: BLADE } }, { name: 'fast_select_option', args: { field: 'Region', option: '(Asia Pacific) Japan East', frame: BLADE } }] }, JSON.stringify(batchResult)],
+]);
+const BATCH_OK = { summary: '2/2 steps ok', ok: 2, missed: 0, steps: 2, results: [
+  { step: 0, name: 'fast_fill', ok: true, result: { verified: true, value: 'fastlink-bench-vm' } },
+  { step: 1, name: 'fast_select_option', ok: true, result: { verified: true, picked: '(Asia Pacific) Japan East', value: '(Asia Pacific) Japan East',
+    snapshot: preview([{ i: 'f2163:38', tag: 'input', label: 'Virtual machine name', value: 'fastlink-bench-vm' }, { i: 'f2163:44', tag: 'div', label: 'Region', value: '(Asia Pacific) Japan East' }]) } },
+] };
+const REPORT_DF = { result: 'VM name: fastlink-bench-vm; Region: (Asia Pacific) Japan East', evidence: '"Virtual machine name" value "fastlink-bench-vm", "Region" value "(Asia Pacific) Japan East" (https://portal.azure.com/#create/Microsoft.VirtualMachine)' };
+
+test('df6a2ba2: report_done is accepted right after a batch whose last step returned a fresh preview — no extra snapshot', () => {
+  const run = df6a2ba2(BATCH_OK);
+  assert.equal(run.toolLog[3].preview, true, 'the batch ended on its own page preview');
+  assert.deepEqual(gateProblems(run, REPORT_DF), []);
+  assert.ok(reportDone(Object.assign(run, { gate: 'on', turns: [] }), REPORT_DF, 20000).finish, 'accepted');
+});
+
+test('a preview only counts when it is fresh and the last batch step succeeded', () => {
+  // last step a plain click: no verified read-back of its own, so only its preview can be the read
+  const clickLast = (last) => ({ summary: '2/2 steps ok', ok: 2, missed: 0, steps: 2, results: [BATCH_OK.results[0], { step: 1, name: 'fast_click', ok: true, ...last }] });
+  const withClick = (batch) => { const run = df6a2ba2(batch); return run; };
+  const fresh = { result: { clicked: { tag: 'button', text: 'Basics' }, snapshot: BATCH_OK.results[1].result.snapshot } };
+  assert.deepEqual(gateProblems(withClick(clickLast(fresh)), REPORT_DF), [], 'fresh preview: accepted');
+  const stale = structuredClone(fresh); stale.result.snapshotStale = true;
+  assert.match(gateProblems(withClick(clickLast(stale)), REPORT_DF).join(';'), /no tool has read the page since your last fast_batch/);
+  const noPreview = structuredClone(fresh); delete noPreview.result.snapshot;
+  assert.match(gateProblems(withClick(clickLast(noPreview)), REPORT_DF).join(';'), /no tool has read the page/);
+  const failed = { ok: false, error: 'No element matching "Basics"' };
+  assert.match(gateProblems(withClick(clickLast(failed)), REPORT_DF).join(';'), /no tool has read the page/);
+});
+
+// ── 5a6edf40: a few errors in a row are recovery room, not a stuck run ────────
+// Live Azure 5a6edf40 died on "3 consecutive tool errors" (a fill and two select misses after a wrong
+// wizard tab) before the model could notice and go back.
+const log5a = () => [
+  { name: 'fast_tab', ok: true, args: { url: AZC } }, { name: 'fast_snapshot', ok: true, args: { full: true } },
+  { name: 'fast_wait', ok: true, args: { text: 'Virtual machine name' } }, { name: 'fast_fill', ok: true, args: { frame: BLADE, match: 'Virtual machine name', value: 'fastlink-bench-vm' } },
+  { name: 'fast_click', ok: false, args: { frame: BLADE, tag: 'button', index: 0 } }, { name: 'fast_click', ok: true, args: { frame: BLADE, tag: 'button', index: 11 } },
+  { name: 'fast_fill', ok: false, args: { frame: BLADE, match: 'Resource group', value: 'fastlink-bench-rg' } },
+  { name: 'fast_select_option', ok: false, args: { frame: BLADE, field: 'Region', option: '(Asia Pacific) Japan East' } },
+  { name: 'fast_select_option', ok: false, args: { frame: BLADE, field: 'Image', option: 'Debian 12' } },
+];
+test('5a6edf40: the run continues past 3 different failed calls; it stops only when truly stuck', () => {
+  const log = log5a();
+  assert.equal(stuckReason(log), null, '3 different not-found errors: keep going');
+  log.push({ name: 'fast_snapshot', ok: false, args: {} }, { name: 'fast_click', ok: false, args: { text: 'Basics' } });
+  assert.equal(stuckReason(log), null, '5 in a row, still room');
+  log.push({ name: 'fast_click', ok: false, args: { text: 'Disks' } });
+  assert.match(stuckReason(log), new RegExp(`${STUCK_ERRORS} failed calls in a row`));
+  const same = [...log5a().slice(0, 4), ...Array.from({ length: 3 }, () => ({ name: 'fast_select_option', ok: false, args: { field: 'Region', option: 'x' } }))];
+  assert.match(stuckReason(same), /the same fast_select_option call failed 3 times in a row/);
+  const recovered = [...log5a(), { name: 'fast_click', ok: true, args: { text: 'Basics' } }, { name: 'fast_select_option', ok: false, args: { field: 'Region' } }];
+  assert.equal(stuckReason(recovered), null, 'a success resets the count');
 });
 
 // ── evidence matcher: the real reports the old matcher refused ─────────────────

@@ -1,5 +1,5 @@
 {
-  "allow": ["*"],
-  "rename": {},
-  "describe": {}
+  "allow": [
+    "*"
+  ]
 }

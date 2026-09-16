@@ -11,7 +11,7 @@ import { startRecording, stopRecording } from './recorder.mjs';
 
 const STATE_DIR = join(homedir(), '.local', 'state', 'fastrun');
 const RUNS_FILE = join(STATE_DIR, 'runs.jsonl');
-const DEFAULT_BUDGETS = { maxToolCalls: 60, maxWallMs: 600_000, maxConsecutiveErrors: 3 };
+const DEFAULT_BUDGETS = { maxToolCalls: 60, maxWallMs: 600_000 };
 const RESULT_CAP = 80_000; // chars per tool result fed back to Grok
 const MAX_NUDGES = 2;      // end_turn without report_done -> nudge, then fail
 const MAX_GATE_REFUSALS = 3; // report_done refused this many times -> accepted, flagged gateOverridden
@@ -25,19 +25,18 @@ const todayLine = () => {
   const dow = d.toLocaleDateString('en-US', { timeZone: TZ, weekday: 'long' });
   return `Today is ${dow} ${date} (${TZ}). Compute relative dates from this; never guess the year.`;
 };
-const SYSTEM = `You are the operator of a real Chrome browser. The tools below drive it directly (FastLink). Work autonomously until the task is finished.
-Rules:
-- Read pages with fast_snapshot; act with DOM tools. A form with 2+ fields is ONE fast_fill {fields} or ONE fast_batch — never one call per field; use fast_batch whenever the next steps are already known.
-- Action results already include a fresh snapshot; do not re-snapshot right after an action. No artificial waits.
-- A result that starts with truncated:true is partial: never answer or report_done from it — call fast_snapshot full:true / fast_text / limit:N first.
-- Call ask_caller ONLY when a decision genuinely needs the caller (missing info, ambiguous choice, risky/irreversible action). Never ask for things you can find on the page.
-- Never claim success without reading it back from the page (snapshot/text/value).
-- Do every step the task names, in order, before report_done; if you cannot do a step, say which and why in result.
-- When finished call report_done with a concise result and evidence (what you read back, URL). report_done is refused unless a read (fast_snapshot/fast_text) followed your last action and evidence quotes that result verbatim. A tool call that failed and was never retried also blocks report_done — retry it, or say in result why it is not needed. So does a result that claims an action (opened, clicked, selected, filled, submitted…) no successful tool call performed — say what you observed, not what you intended. Do not end your turn without calling report_done or ask_caller.`;
+const SYSTEM = `You operate a real Chrome browser through the tools below. Work until the task is done.
+- When the next steps are known, do them in one call: fast_batch, or one fast_fill {fields}.
+- An action's result ends with a page preview; act on it. A preview's omitted counts are normal. truncated:true means an explicit read was cut: read again with full:true before relying on it.
+- When a step fails, read the error, fix the call, and continue.
+- Only claim what a tool result shows (a write's read-back value or a preview counts).
+- Finish with report_done: result, plus evidence quoting a tool result verbatim with its URL. Use ask_caller only when the caller must decide.`;
 
 // Evidence gate for report_done (a caller-facing contract, every toolset):
 //  1. the run must have READ the page after its last state-changing call (that
-//     call's own verified:true read-back counts — readBack below);
+//     call's own verified:true read-back counts — readBack below — and so does the
+//     fresh page preview an action returns, so a batch that ends on a preview needs
+//     no extra fast_snapshot);
 //  2. `evidence` must quote a tool result of this run, taken on the CURRENT
 //     (last-seen) URL — a quote from an earlier page is not evidence for this one;
 //  3. a failed call never retried (same tool+target, or another tool on that
@@ -276,6 +275,16 @@ function readBack(name, args, o) {
   }
   return false;
 }
+// An action result that ends with its own fresh page preview (a \`snapshot\` not flagged stale; for
+// fast_batch, the last step's) is a read of the page taken after that action: the model acts on it
+// and quotes it, so the gate must not ask for another fast_snapshot (live df6a2ba2: tab, wait, batch,
+// then a redundant 4.9s re-read before report_done).
+function freshPreview(name, o) {
+  const fresh = (r) => !!r && typeof r === 'object' && r.snapshot && typeof r.snapshot === 'object' && r.snapshotStale !== true;
+  if (name !== 'fast_batch') return fresh(o);
+  const last = Array.isArray(o?.results) ? o.results[o.results.length - 1] : null;
+  return !!last && last.ok !== false && fresh(last.result);
+}
 // What the gate needs from one result, stored on its toolLog entry (parsed once):
 // `partial` (missed fields / failed batch steps), `sections` (where writes landed),
 // `verified` (its own read-back, above), `url` (the page it reports), and for a
@@ -291,6 +300,7 @@ export function entryFacts(name, args, text, ok) {
     return out;
   }
   if (wrotePage(name, args, o)) out.wrote = true;
+  if (freshPreview(name, o)) out.preview = true;
   const partial = partialFailures(name, args, text);
   const sections = resultSections(text);
   if (partial.length) out.partial = partial;
@@ -460,7 +470,7 @@ export function gateProblems(run, args) {
   else {
     let last = -1;
     for (let i = log.length - 1; i >= 0; i--) if (isStateChanging(log[i])) { last = i; break; }
-    const selfVerified = last >= 0 && log[last].ok && (log[last].verified === true || log[last].seen === true);
+    const selfVerified = last >= 0 && log[last].ok && (log[last].verified === true || log[last].seen === true || log[last].preview === true);
     if (!selfVerified && !log.slice(last + 1).some(e => e.ok && isRead(e))) {
       problems.push(last >= 0
         ? `no tool has read the page since your last ${log[last].name}; call fast_snapshot or fast_text (its own auto-snapshot is not a read-back) and cite what it returned`
@@ -652,12 +662,12 @@ const gateFields = (run) => run.gate === 'off' ? { gate: 'off' } : {
 const NATIVE_TOOLS = [
   {
     name: 'ask_caller',
-    description: 'Pause and ask the caller (the person/agent who dispatched this task) one question. Resumes with their answer. Use only when a decision genuinely needs them.',
+    description: 'Ask the caller one question and wait for the answer. Only when the caller must decide.',
     input_schema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
   },
   {
     name: 'report_done',
-    description: 'Finish the task. result = concise outcome/answer. evidence = what you read back from the page that proves it (quote + URL).',
+    description: 'Finish. result: the outcome, quoting values exactly as the page shows them. evidence: a short verbatim quote from a tool result, plus its URL.',
     input_schema: { type: 'object', properties: { result: { type: 'string' }, evidence: { type: 'string' } }, required: ['result', 'evidence'] },
   },
 ];
@@ -668,7 +678,7 @@ const runs = new Map();
 //   unset or "default" -> ./toolset.json           (all tools, the A/B baseline)
 //   a bare name        -> ./toolset.<name>.json    (e.g. "phase2", "no-cdp")
 //   anything with "/" or ending in .json -> that file path
-// Returns { name, file, allow, rename, describe }. `name` is what runs.jsonl records.
+// Returns { name, file, allow }. `name` is what runs.jsonl records.
 export function loadToolset(spec = process.env.FASTRUN_TOOLSET || 'default') {
   spec = String(spec || 'default');
   const isPath = spec.includes('/') || spec.endsWith('.json');
@@ -680,7 +690,7 @@ export function loadToolset(spec = process.env.FASTRUN_TOOLSET || 'default') {
   try { ts = JSON.parse(readFileSync(file, 'utf8')); }
   catch (e) { throw new Error(`toolset "${spec}": cannot read ${file} (${e.message})`); }
   if (!Array.isArray(ts.allow) || !ts.allow.length) throw new Error(`toolset "${spec}": "allow" must be a non-empty array (use ["*"] for all)`);
-  return { name, file, allow: ts.allow, rename: ts.rename || {}, describe: ts.describe || {} };
+  return { name, file, allow: ts.allow };
 }
 
 // Server tools that are NEVER model-facing, whatever a toolset says ("*" or an explicit allow).
@@ -694,9 +704,8 @@ export function loadToolset(spec = process.env.FASTRUN_TOOLSET || 'default') {
 // owner's A/B, bench/hvm-queue-feedback.sh), and phase2/no-cdp already leave it out.
 export const HIDDEN_TOOLS = new Set(['fast_frame_read', 'fast_ext_reload']);
 
-// allow-filter, rename (Grok-facing name -> real name on call), describe overrides (keyed by REAL
-// name; ask_caller/report_done accept one too, so a toolset can tighten the report without
-// touching the baseline). A HIDDEN_TOOLS entry is dropped last, so it is also never in `back`.
+// The toolset's allow-filter, then HIDDEN_TOOLS. Descriptions come from the server only (one short
+// set in fast-dxt/server/tools.js); a toolset chooses tools, never rewrites them.
 export function buildTools(mcpTools, toolset) {
   const allowAll = toolset.allow.includes('*');
   const back = new Map();
@@ -704,19 +713,16 @@ export function buildTools(mcpTools, toolset) {
   for (const t of mcpTools) {
     if (!allowAll && !toolset.allow.includes(t.name)) continue;
     if (HIDDEN_TOOLS.has(t.name)) continue;
-    const name = toolset.rename[t.name] || t.name;
-    back.set(name, t.name);
-    tools.push({ name, description: toolset.describe[t.name] || t.description || '', input_schema: t.inputSchema || { type: 'object', properties: {} } });
+    back.set(t.name, t.name);
+    tools.push({ name: t.name, description: t.description || '', input_schema: t.inputSchema || { type: 'object', properties: {} } });
   }
-  const native = NATIVE_TOOLS.map(t => toolset.describe[t.name] ? { ...t, description: toolset.describe[t.name] } : t);
-  return { tools: [...tools, ...native], back };
+  return { tools: [...tools, ...NATIVE_TOOLS], back };
 }
 
-// The server's MCP `instructions` essay rides along ONLY on the default toolset, so the baseline
-// stays byte-identical; a triaged toolset carries its own tight descriptions instead.
-export function buildSystem(toolset, instructions) {
-  const base = `${SYSTEM}\n${todayLine()}`;
-  return toolset.name === 'default' && instructions ? `${base}\n\nTool guidance from FastLink:\n${instructions}` : base;
+// The same short prompt for every toolset. The server's MCP `instructions` essay is for Claude
+// clients and is NOT given to Grok: the tool descriptions carry what it needs.
+export function buildSystem() {
+  return `${SYSTEM}\n${todayLine()}`;
 }
 
 function toolResultContent(res) {
@@ -839,6 +845,23 @@ function hold(run, holdMs) {
   });
 }
 
+// When a run is stuck rather than recovering. A few failed calls in a row are normal: a wrong tab,
+// then a couple of not-found errors while the model finds its way back (live 5a6edf40 was killed at
+// 3 such errors before it could). So stop only on (a) the SAME call (tool + arguments) failing 3
+// times in a row, which no reading of the error changes, or (b) 6 failed calls with no success in
+// between. The call and time budgets still bound everything else.
+export const STUCK_SAME_CALL = 3;
+export const STUCK_ERRORS = 6;
+export function stuckReason(log) {
+  let n = 0;
+  for (let i = log.length - 1; i >= 0 && !log[i].ok; i--) n++;
+  if (n >= STUCK_ERRORS) return `${n} failed calls in a row with no success between`;
+  const tail = log.slice(-STUCK_SAME_CALL);
+  const key = (e) => `${e.name}\0${JSON.stringify(e.args ?? {})}`;
+  if (tail.length === STUCK_SAME_CALL && tail.every((e) => !e.ok && key(e) === key(tail[0]))) return `the same ${tail[0].name} call failed ${STUCK_SAME_CALL} times in a row`;
+  return null;
+}
+
 async function loop(run) {
   const { budgets, onEvent } = run;
   const t0 = run.startedAt;
@@ -920,11 +943,12 @@ async function loop(run) {
       run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview, ...entryFacts(real || u.name, args, firstText, ok) });
       startVisualCheck(run, run.toolLog.length - 1);   // no-op unless this call left a write unread
       onEvent?.({ type: 'tool', name: real || u.name, args, ms, ok, preview });
-      run.consecutiveErrors = ok ? 0 : run.consecutiveErrors + 1;
+
       results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResultContent(res), ...(ok ? {} : { is_error: true }) });
-      if (run.consecutiveErrors >= budgets.maxConsecutiveErrors) {
+      const stop = stuckReason(run.toolLog);
+      if (stop) {
         run.messages.push({ role: 'user', content: results });
-        return finish(run, 'error', { error: `${budgets.maxConsecutiveErrors} consecutive tool errors` });
+        return finish(run, 'error', { error: stop });
       }
     }
     // checks from EARLIER batches have been running while the model thought and
@@ -961,9 +985,9 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
   const run = {
     id, video, task, transport, browser, toolset, gate, status: 'running',
     messages: [{ role: 'user', content: [{ type: 'text', text: `TASK: ${task}` }] }],
-    system: buildSystem(toolset, client.instructions),
+    system: buildSystem(),
     tools, back, client, toolLog: [], turns: [], corpus: [], urlTrail: [], gateRefusals: [], gateOverridden: null, gateWouldRefuse: null, unresolvedFailures: null, visualChecks: [], pendingChecks: [], question: null, waiters: [], pendingAnswer: null,
-    budgets: runBudgets, onEvent, startedAt: Date.now(), consecutiveErrors: 0,
+    budgets: runBudgets, onEvent, startedAt: Date.now(),
     usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, modelMs: 0 }, abort: new AbortController(), cancelled: false, done: false,
   };
   runs.set(run.id, run);
