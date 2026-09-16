@@ -290,6 +290,7 @@ export function entryFacts(name, args, text, ok) {
     if (o?.selectField && typeof o.selectField === 'object') out.redirect = 'fast_select_option';
     return out;
   }
+  if (writeEffect(name, args, o)) out.effect = true;
   const partial = partialFailures(name, args, text);
   const sections = resultSections(text);
   if (partial.length) out.partial = partial;
@@ -539,7 +540,7 @@ export async function reportDecision(run, args, t, deps = {}) {
   return verdict.refuse ? { note: notes.join('\n\n'), refuse: verdict.refuse } : { note: notes.join('\n\n') };
 }
 
-// A report accepted while it still carries a failed wait/read on a target the report look answered
+// A report accepted while it still carries a failed call (wait, read, click…) on a target the report look answered
 // seen:true (the checker's own per-target boolean, never its prose), with no successful
 // state-changing call since that look was handed over. Not a refusal and no judgement of the
 // report: the caller's result gets one mechanical line per target and the row gets
@@ -553,7 +554,7 @@ export function screenMismatch(run, unresolved = unresolvedFailures(run.toolLog 
     if (log.some(e => e.ok && isStateChanging(e) && e.t >= c.deliveredAt)) continue;
     for (const [tg, seen] of Object.entries(c.seen)) {
       if (seen !== true || out.some(o => sameTarget(o.target, tg))) continue;
-      const f = unresolved.find(u => !u.unverified && isReadOrWait(u) && sameTarget(u.target, tg));
+      const f = unresolved.find(u => !u.unverified && sameTarget(u.target, tg));
       if (f) out.push({ target: tg, name: f.name, failedAt: f.t, seenAt: c.readyAt ?? c.deliveredAt });
     }
   }
@@ -566,21 +567,48 @@ const annotate = (result, mismatches) => !mismatches?.length ? result : [
 
 // When a report_done gets ONE look at the screen, decided on structure alone, never the report's
 // wording (phrase lists for "didn't load / blank / not there" were rejected as fragile):
-//   - a wait or read failed and is still unresolved (errored, never retried or overtaken),
-//   - nothing wrote to the page in the whole run (navigation does not count: fast_tab loaded it),
-//   - no screenshot succeeded after the latest of those failures, and
+//   - a call failed and is still unresolved (errored, never retried or overtaken): a wait or read
+//     that did not find its text, or a click/fill whose target was not there ("Nothing was
+//     clicked") — both are the run failing to see something on the page. Unread writes are not
+//     in this set: they have their own check at the write;
+//   - nothing had an EFFECT on the page in the whole run (writeEffect below; navigation does not
+//     count: fast_tab loaded it);
+//   - no screenshot succeeded after the latest of those failures (a screenshot the model took
+//     earlier shows a page the later failure is not about), and
 //   - this run has not had that look yet.
-// A run that gave up without writing, after looks that errored, has only its report to say what
-// is on the screen; a screenshot answers it in ~2s. Conservative both ways: one write anywhere or
-// one screenshot since the failure and it never fires, and it fires at most once.
-// Returns { idx, failures } or null.
+// A run that gave up without changing anything, after attempts that found nothing, has only its
+// report to say what is on the screen; a screenshot answers it in ~2s. Conservative both ways:
+// one effective write anywhere or one screenshot since the failure and it never fires, and it
+// fires at most once. Returns { idx, failures } or null.
+//
+// Live miss that set the effect rule (Azure 4bf918fb): two fast_clicks errored ("No element
+// matching"), the model's own screenshot sat between them, then a fast_click_xy returned ok with
+// focused:{tag:"div", editable:false} and no URL change. That click changed nothing, yet counted
+// as a write, and the report ("redirected to login") went out unlooked.
 const WRITE_TOOLS = new Set(['fast_click', 'fast_click_xy', 'fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_key_press', 'fast_type']);
-const stepNames = (steps) => (Array.isArray(steps) ? steps : []).flatMap(s => [s?.name, ...stepNames(s?.then), ...stepNames(s?.else)]);
-const wrotePage = (e) => e.ok && (WRITE_TOOLS.has(e.name) || (e.name === 'fast_batch' && stepNames(e.args?.actions || e.args?.steps).some(n => WRITE_TOOLS.has(n))));
+// A write counts only when its OWN result shows it changed something: a value read back verified
+// (a fill, a pick, a toggled check — per field or per selection too), a navigation / URL change, a
+// dialog opened or closed, or focus now on an editable target. An errored call never counts. A
+// fast_batch counts when one of its write steps does.
+function resultEffect(o) {
+  if (!o || typeof o !== 'object' || typeof o.error === 'string') return false;
+  if (o.verified === true || o.urlChanged === true || o.navigated === true || o.willNavigate === true) return true;
+  if (o.dialogOpened || o.dialogClosed || o.focused?.editable === true) return true;
+  for (const bag of [o.fields, o.results]) {
+    if (bag && typeof bag === 'object' && !Array.isArray(bag) && Object.values(bag).some(v => v?.verified === true)) return true;
+  }
+  return false;
+}
+export function writeEffect(name, args, o) {
+  if (WRITE_TOOLS.has(name)) return resultEffect(o);
+  if (name !== 'fast_batch' || !Array.isArray(o?.results)) return false;
+  const steps = args?.actions || args?.steps || [];
+  return o.results.some(r => r && r.ok !== false && WRITE_TOOLS.has(steps[r.step]?.name || r.name) && resultEffect(r.result));
+}
 export function unlookedFailures(run) {
   const log = run.toolLog || [];
-  if (run.gate === 'off' || (run.visualChecks || []).some(c => c.kind === 'report') || log.some(wrotePage)) return null;
-  const failures = unresolvedFailures(log).filter(f => !f.unverified && isReadOrWait(f));
+  if (run.gate === 'off' || (run.visualChecks || []).some(c => c.kind === 'report') || log.some(e => e.ok && e.effect === true)) return null;
+  const failures = unresolvedFailures(log).filter(f => !f.unverified);
   if (!failures.length) return null;
   const last = Math.max(...failures.map(f => f.t));
   const idx = log.findLastIndex(e => !e.ok && e.t === last);

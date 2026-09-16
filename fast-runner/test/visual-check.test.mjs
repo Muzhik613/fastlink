@@ -5,7 +5,7 @@
 // further two rounds later.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recordResult, entryFacts, unverifiedWrites, reportDecision, deliverChecks, closeVisualChecks, gateProblems, unlookedFailures, screenMismatch } from '../runner.mjs';
+import { recordResult, entryFacts, unverifiedWrites, reportDecision, deliverChecks, closeVisualChecks, gateProblems, unlookedFailures, screenMismatch, writeEffect } from '../runner.mjs';
 import { startVisualCheck, settleShots, takeNotes, checkNoteText, lookNoteText, seenMap, describeWithGrok, observationPrompt, CHECK_MODEL, MAX_VISUAL_CHECKS } from '../visual-check.mjs';
 
 const AZ = 'https://portal.azure.com/#create/Microsoft.VirtualMachine';
@@ -219,7 +219,7 @@ test('68c8d227: failed waits + no write + no screenshot → ONE look, handed ove
 test('the look stays out of the way: a write anywhere, a screenshot since, gate off, nothing failed, or the cap', async () => {
   const cases = {
     'a write landed': run68c8d227([['fast_fill', { fields: { Name: 'x' } }, JSON.stringify({ verified: true, fields: { Name: { verified: true } } })]]),
-    'a batch with a click step': run68c8d227([['fast_batch', { actions: [{ ifFound: 'Basics', then: [{ name: 'fast_click', args: { text: 'Basics' } }] }] }, JSON.stringify({ summary: '1/1 steps ok', results: [] })]]),
+    'a batch whose click step changed the URL': run68c8d227([['fast_batch', { actions: [{ name: 'fast_click', args: { text: 'Basics' } }] }, JSON.stringify({ summary: '1/1 steps ok', results: [{ step: 0, name: 'fast_click', ok: true, result: { url: AZ + '/basics', urlChanged: true } }] })]]),
     'a screenshot after the last failure': run68c8d227([['fast_screenshot', {}, JSON.stringify({ path: '/tmp/s.png' })]]),
     'gate off': run68c8d227([], { gate: 'off' }),
     'no failed look': runOf([['fast_tab', { url: AZ }, `{"id":1,"url":"${AZ}"}`], ['fast_snapshot', { full: true }, HEADER_ONLY]]),
@@ -241,6 +241,67 @@ test('the look stays out of the way: a write anywhere, a screenshot since, gate 
   assert.equal(v.note, undefined);
   assert.match(capped.visualChecks.at(-1).skipped, /check cap/);
   assert.equal(unlookedFailures(capped), null, 'recorded, so never retried');
+});
+
+// ── 4bf918fb: a click that changed nothing is not a write ──────────────────
+// Azure 4bf918fb (~/.local/state/fastrun/runs.jsonl, build 670e8f2): two fast_clicks errored ("No
+// element matching"), the model's own screenshot came BETWEEN them, then a fast_click_xy returned ok
+// with focus on a non-editable div and no URL change. The report ("redirected to login… no Create
+// button clickable") went out unlooked; the model's screenshot showed the Compute infrastructure
+// page fully rendered. Rows are that run's toolLog, previews trimmed.
+const HUB = 'https://portal.azure.com/#view/Microsoft_Azure_ComputeHub/ComputeHubMenuBlade/~/getStarted/menuid/virtualMachinesBrowse';
+const HUB_SNAP = JSON.stringify({ url: HUB, title: 'Compute infrastructure - Microsoft Azure', fillable: 2, count: 27, items: [{ i: 1, tag: 'button', text: 'Show Microsoft Cloud menu' }], content: [{ text: 'Get started' }] });
+const XY_NO_EFFECT = { clickedAt: { x: 320, y: 145 }, button: 'left', clickCount: 1, focused: { tag: 'div', editable: false, label: 'bff7e63f-4107-4a43-953d-ab5fbd82d0450' }, hint: '<div> (bff7e63f-4107-4a43-953d-ab5fbd82d0450) holds focus, not an editable field — a fast_type now would be refused.' };
+const run4bf918fb = (xy = XY_NO_EFFECT, extraRows = []) => runOf([
+  ['fast_tab', { url: 'https://portal.azure.com/#browse/Microsoft.Compute%2FVirtualMachines', background: false }, JSON.stringify({ id: 1220563063, url: 'https://portal.azure.com/#browse/Microsoft.Compute%2FVirtualMachines', targetTab: 1220563063 })],
+  ['fast_snapshot', { viewport: true }, JSON.stringify({ url: LOGIN, title: '', count: 0, items: [], contentCount: 0, content: [] })],
+  ['fast_list', {}, JSON.stringify([{ id: 1220563056, url: HUB, title: 'Compute infrastructure - Microsoft Azure', active: false }, { id: 1220563063, url: LOGIN, active: true, targetTab: true }])],
+  ['fast_switch', { tabId: 1220563056 }, JSON.stringify({ id: 1220563056, url: HUB, title: 'Compute infrastructure - Microsoft Azure', targetTab: 1220563056 })],
+  ['fast_snapshot', { viewport: true }, HUB_SNAP],
+  ['fast_click', { text: 'Create a virtual machine', role: 'button' }, JSON.stringify({ error: 'No element matching "Create a virtual machine". Nothing was clicked.', waitedMs: 1888, settling: false }), true],
+  ['fast_screenshot', { format: 'png', fresh: true }, JSON.stringify({ path: '/tmp/fastlink-screenshot-1789588763212.png', format: 'png', bytes: 302010 })],
+  ['fast_click', { text: 'Create', role: 'button' }, JSON.stringify({ error: 'No element matching "Create". Nothing was clicked.', waitedMs: 1633, settling: false }), true],
+  ['fast_click_xy', { x: 320, y: 145 }, JSON.stringify(xy)],
+  ['fast_snapshot', { viewport: true, overlay: true }, HUB_SNAP],
+  ...extraRows,
+]);
+const REPORT_4B = { result: 'Could not reach/create VM form: page redirected to login (already signed in elsewhere), create UI lives in cross-origin iframe unreachable by FastLink DOM tools; no "Create" button clickable. No fields filled.', evidence: '"Get started" from fast_snapshot on the Compute infrastructure page.' };
+
+test('4bf918fb: failed clicks + a click_xy that changed nothing + a screenshot only BEFORE the last failure → the look fires', async () => {
+  const run = run4bf918fb();
+  assert.equal(run.toolLog[8].effect, undefined, 'focus on a non-editable div, no URL change: no effect');
+  const look = unlookedFailures(run);
+  assert.equal(look?.idx, 7, 'anchored on the latest failure, the fast_click "Create" after the screenshot');
+  assert.deepEqual(look.failures.map(f => [f.name, f.target]), [['fast_click', 'Create a virtual machine'], ['fast_click', 'Create']]);
+  const d = deps(['The page shows "Compute infrastructure" with a "Get started" section.', 'A "Create" button appears near the top left.']);
+  const v = await reportDecision(run, REPORT_4B, 29605, d);
+  assert.equal(d.seen.shots, 1);
+  assert.deepEqual(d.seen.described.targets, ['Create a virtual machine', 'Create']);
+  assert.ok(v.note.includes('- A "Create" button appears near the top left.'));
+});
+
+test('4bf918fb variants: an effective click, or a screenshot after the last failure, keeps the look away', () => {
+  const effective = {
+    'focus on an editable field': { ...XY_NO_EFFECT, focused: { tag: 'input', editable: true, label: 'Virtual machine name', value: '' }, hint: undefined },
+    'a URL change': { ...XY_NO_EFFECT, url: HUB + '/create', urlChanged: true },
+    'a dialog opened': { ...XY_NO_EFFECT, dialogOpened: true },
+  };
+  for (const [label, xy] of Object.entries(effective)) {
+    const run = run4bf918fb(xy);
+    assert.equal(run.toolLog[8].effect, true, label);
+    assert.equal(unlookedFailures(run), null, label);
+  }
+  const looked = run4bf918fb(XY_NO_EFFECT, [['fast_screenshot', {}, JSON.stringify({ path: '/tmp/s2.png' })]]);
+  assert.equal(unlookedFailures(looked), null, 'the model looked after its last failure');
+  // the effect rule, per result shape
+  assert.equal(writeEffect('fast_click', {}, { error: 'No element matching "Create". Nothing was clicked.' }), false, 'an errored click');
+  assert.equal(writeEffect('fast_click', {}, { clicked: 1, focused: { tag: 'button', editable: false } }), false, 'clicked, nothing to show for it');
+  assert.equal(writeEffect('fast_fill', {}, { verified: false, fields: { Name: { verified: false } } }), false, 'nothing read back');
+  assert.equal(writeEffect('fast_fill', {}, { verified: false, fields: { Name: { verified: true }, Region: { verified: false } } }), true, 'one field verified');
+  assert.equal(writeEffect('fast_select_option', {}, { verified: false, results: { Region: { verified: true, picked: 'Japan East' } } }), true, 'a changed selection');
+  assert.equal(writeEffect('fast_key_press', {}, { key: 'Enter', urlChanged: true }), true);
+  assert.equal(writeEffect('fast_snapshot', {}, { verified: true }), false, 'not a write tool');
+  assert.equal(writeEffect('fast_batch', { actions: [{ name: 'fast_click' }, { name: 'fast_wait' }] }, { results: [{ step: 0, ok: true, result: { clicked: 1 } }, { step: 1, ok: true, result: { verified: true } }] }), false, 'only WRITE steps count');
 });
 
 // ── a report that contradicts its own look is annotated, never refused again ─
