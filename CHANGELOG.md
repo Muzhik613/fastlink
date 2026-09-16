@@ -33,6 +33,32 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — a row you can READ is a row you can CLICK: plain text targets, container narrowing, and a named virtualized scroller
+- **What:** four rules in `fast_click`, all generic. (1) The last-resort target (`pointerTargetByText` →
+  `textTargetByText`) no longer requires `cursor:pointer`: the SMALLEST visible element whose own text /
+  aria-label / title / alt IS the query is clicked with the full pointer sequence (`via:"text"`); a
+  pointer-cursor target still wins when one exists (`via:"pointer-cursor"`). (2) A match that is a
+  CONTAINER — its own text does not carry the query, it merely contains a row that does — is narrowed to
+  the smallest visible descendant whose own text does (`via:"text-leaf"`); real controls are never narrowed,
+  so `<button><span>Save</span></button>` keeps the button's own activation. (3) `pointerContent`'s
+  "this text belongs to a control" test uses a REAL-control selector instead of `SELECTOR`, whose
+  `[tabindex]:not([tabindex="-1"])` arm let one focusable host swallow every row inside it. (4) A 0-match
+  miss names the scroll containers that hold far more content than they show (`scrollers` + a `hint`),
+  because in a virtualized view the row is not in the DOM until that container is scrolled.
+- **Why:** holdout-2 by-hand pass: Wunderbaum rows and Syncfusion grid rows "cannot be found by text at all;
+  only coordinates reach them". Live on the rig, `fast_click` on a rendered Wunderbaum row clicked the whole
+  1270×635 tree host (the row text is only INSIDE it), and a DataTables cell missed outright — both are
+  `cursor:auto`, role-less, ARIA-less text inside a `tabindex=0` host.
+- **Files:** `fast-ext/src/actions/page.js`, `fast-dxt/server/tools.js`, `fastlink-relay/tools.js`.
+- **Watch out:** (2) changes WHICH element receives the click on container matches — the guard that keeps
+  real controls out of it is what stops a narrowed click from silently skipping a form submit. (1) can now
+  "click" a plain text node's element that does nothing; the result says `via:"text"` and still reports
+  url/dialog/focus so nothing is claimed for it. NOT solved, and not solvable generically here: bringing a
+  row that has never been rendered into the DOM (a 100k-node virtual tree) — the tool names the scroller and
+  the caller scrolls; and an icon-only checkbox (`<i class="wb-checkbox">`: no role, no label, no text)
+  cannot be addressed by text at all — coordinates or vision remain the honest answer there.
+- **Status:** committed; proven live on Syncfusion EJ2 + Wunderbaum (holdout-2) and DataTables (outside it).
+
 ## 2026-09-16 — only a typeahead's own popup is a "suggestion": a selectable grid row is not one
 - **What:** `suggestionByText` (the path `fast_click` takes when the text is not an indexed control) now
   requires the FOCUSED element to be an autocomplete (`isAutocomplete`: a typeable control that is an ARIA
@@ -83,6 +109,41 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   internal `fast_click_xy` calls inside `fast_fill_vision` / `fast_do` too; they ignore the extra fields.
   The two `tools.js` copies must stay byte-identical.
 - **Status:** committed; proven live on the hvm rig (see below).
+
+## 2026-09-16 — the visual note's checker is a FRESH grok-4.6 conversation given the goal, and an unread write is found by WALKING the result
+- **What:** two changes. (1) **The checker changes model and shape.** At `report_done` the one screenshot now
+  goes to a **brand-new `grok-4.6` conversation** through the grokcode proxy the run already drives on
+  (`createMessage` takes a per-call `model`; no second client, no second key). It is handed the **task text**
+  and the image and nothing else — no plan, no history, no claimed results, no tool vocabulary
+  (`observationPrompt` strips every `fast_*` token out of the task text). The model is configurable —
+  `FASTRUN_NOTE_MODEL`, default `grok-4.6`, `gemini` keeps the old vision tier — because same-model checking
+  shares blind spots and we want to A/B it. The run row records `checker` and `checkerMs`. (2) **The detector
+  stops matching shapes.** `partialFailures` now WALKS the result for any node saying its value was not read
+  back (`verified:false`, an `unverified` marker, an `unreadable`/`cross-origin` reason) and reports it at the
+  deepest node that names a target; a wrapper over a bag of per-field/per-step/per-action results is never the
+  report. Bags are recognised structurally (an array of objects, or a map of objects), so a shape we have not
+  seen behaves correctly.
+- **Why:** (1) a fresh instance cannot be anchored by the reasoning that produced the mistake, and describing
+  is the only thing it can do — the note is dumb BY CONSTRUCTION instead of by our restraint. The intent is
+  what makes the observations useful: "the boxes the goal names read empty" instead of "some boxes look empty".
+  It also **unblocks the relay transport**: the note no longer needs a `GEMINI_API_KEY` in the runner's
+  process, which was the one thing keeping it Gemini-only there (that key lives in the Worker). (2) live on
+  Azure (04ca273) Grok used `fast_do`, whose unread write sat in `executed[]` one level below anything the
+  per-tool matching inspected: `unverifiedWrites` returned empty and the row recorded `visualNote:null`. That
+  was the THIRD distinct reason the note had not fired on a real page (no key → budget spent → detector blind
+  spot), so the fixtures now include that exact payload, a nested `fast_batch` step, and a test asserting that
+  a `verified:false` ANYWHERE produces a note.
+- **Files:** `fast-runner/runner.mjs`, `fast-runner/xai.mjs`, `fast-dxt/server/scout.js`,
+  `fast-runner/test/visual-note.test.mjs`, `fast-dxt/test/describe-screen.test.mjs`, `fast-runner/README.md`.
+- **Watch out:** the checker is SLOW next to the vision tier — measured on the same screenshot: grok-4.6
+  ~27–52s, grok-4.3 ~8s, Gemini Flash-Lite ~1.2s. It only runs on a report whose write went unread, so it is
+  off on every clean run, but a run that trips it pays half a minute. If that matters more than the fresh-eyes
+  property, `FASTRUN_NOTE_MODEL=grok-4.3` is the cheap A/B and `gemini` is the old path. Also: the walk's
+  suppression rule is what keeps a fill's wrapper from being reported as one nameless entry — the gate's
+  `check 3` and the h_repeat replay both fail if it goes wrong (they did, mid-change).
+- **Status:** committed; `fast-runner` 85/85, `fast-dxt` 12/12. Checker verified live against grok-4.6 through
+  the proxy (routing proof: requested `grok-4.6` while `FASTRUN_MODEL=grok-4.3`, answered by `grok-4.6`), with
+  real observation lists from public forms rendered on the hvm rig.
 
 ## 2026-09-16 — the visual note gets an observation BUDGET, keeps the claimed values at the front, and stays in register
 - **What:** four changes to `describeScreen` (`fast-dxt/server/scout.js`), on top of 076e0a6's "describe every

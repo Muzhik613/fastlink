@@ -190,12 +190,19 @@ const showsValue = (shown, want) => {
 // cursor:pointer, not inside an indexed control (a <span> in a <button> inherits
 // the button's pointer — that one is the button's). The days of a calendar drawn
 // as <td>/<span>, a "Next" <div>. Listed and matchable as a WEAK click target.
+// An ancestor whose text genuinely BELONGS to it: a real control. A container
+// that is merely focusable (`[tabindex]` on a tree/list host) or carries an
+// onclick is NOT one — the rows drawn inside it keep their own text. The old
+// rule tested SELECTOR, whose `[tabindex]:not([tabindex="-1"])` arm made one
+// focusable host swallow every row in it (a 100k-node tree is a single
+// tabindex=0 div; nothing inside it was ever a click candidate).
+const CONTROL_ANCESTOR_SEL = 'a[href],button,input:not([type="hidden"]),select,textarea,label,summary,[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="switch"],[role="tab"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="combobox"],[role="textbox"],[role="searchbox"]';
 const pointerContent = (el) => {
   try {
     if (getComputedStyle(el).cursor !== 'pointer') return false;
     const lbl = el.closest('label');
     if (lbl && lbl.control) return false;   // a label's text belongs to its control (listed as the control)
-    return !(el.parentElement && el.parentElement.closest(SELECTOR));
+    return !(el.parentElement && el.parentElement.closest(CONTROL_ANCESTOR_SEL));
   } catch { return false; }
 };
 
@@ -2466,22 +2473,31 @@ async function runPageAction(action, args) {
   // own text / aria-label / title / alt IS the query and whose computed cursor is
   // pointer — something the page made clickable by script without any control
   // semantics (an icon <div aria-label="Next">, an <img alt>). Bounded walk.
-  const pointerTargetByText = (queryText) => {
+  // A pointer cursor still WINS when the page has one (the script-made <div>
+  // "Next"), but a plain one is taken too: a grid cell, a tree row or a list row
+  // with no role, no ARIA and no pointer cursor is exactly what a person clicks,
+  // and refusing it left coordinates as the only way in (Syncfusion EJ2 grid
+  // rows, Wunderbaum tree rows). The smallest such element wins, so a row beats
+  // the pane that contains it. Returns { el, via } or null.
+  const textTargetByText = (queryText) => {
     const q = cleanLabel(queryText).toLowerCase();
     if (!q) return null;
     const start = nowMs();
-    let n = 0, hit = null;
+    let n = 0, pointerHit = null, plainHit = null, plainArea = Infinity;
     walkDeep(document, '*', (el) => {
-      if (hit || n > 4000 || ((++n & 63) === 0 && nowMs() - start > 120)) return;
+      if (pointerHit || n > 4000 || ((++n & 63) === 0 && nowMs() - start > 120)) return;
       let own = '';
       for (const c of el.childNodes) if (c.nodeType === 3) own += c.data;
       const names = [own, el.getAttribute('aria-label'), el.getAttribute('title'), el.tagName === 'IMG' ? el.getAttribute('alt') : null];
       if (!names.some(s => s && cleanLabel(s).toLowerCase() === q)) return;
       let r; try { r = el.getBoundingClientRect(); } catch { return; }
       if (!visible(el, r)) return;
-      try { if (getComputedStyle(el).cursor === 'pointer') hit = el; } catch {}
+      let cursor = ''; try { cursor = getComputedStyle(el).cursor; } catch {}
+      if (cursor === 'pointer') { pointerHit = el; return; }
+      const area = r.width * r.height;
+      if (area < plainArea) { plainArea = area; plainHit = el; }
     });
-    return hit;
+    return pointerHit ? { el: pointerHit, via: 'pointer-cursor' } : plainHit ? { el: plainHit, via: 'text' } : null;
   };
   const DIAG_MAX_EXAMINE = 1500;
   const DIAG_BUDGET_MS = 150;
@@ -3551,7 +3567,7 @@ async function runPageAction(action, args) {
       // exactly this text is a (weak) click target — never "nothing to click".
       if (pointerOk && (!pointerTried || nowMs() - t0 >= AUTO_WAIT_MS)) {
         pointerTried = true;
-        pointerHit = pointerTargetByText(args.text);
+        pointerHit = textTargetByText(args.text);
         if (pointerHit) break;
       }
       if (nowMs() - t0 >= AUTO_WAIT_MS) {
@@ -3577,7 +3593,38 @@ async function runPageAction(action, args) {
         // react-select) is not clickable — say which tool takes that name.
         let secHint = null;
         try { const sec = resolveSection(String(args.text || '').toLowerCase(), DROPDOWN_SEL); if (sec.matched && sec.items.length) secHint = { hint: `"${args.text}" is a heading over a dropdown, not a control; use fast_select_option {field:${JSON.stringify(args.text)}, option:"<choice>"}` }; } catch {}
-        return { error: `No element matching "${args.text}". Nothing was clicked.`, ...tail, ...(secHint || {}), diagnostics: diagnoseNoMatch(args.text) };
+        // VIRTUALIZED VIEW: a scroll container holding far more content than it
+        // shows renders only the rows in view, so "no element" can also mean "not
+        // scrolled there yet" — that row is not in the DOM at all, and no amount of
+        // re-matching will find it. Name the containers (hit-test a few viewport
+        // points and climb — the cheap path fast_scroll already uses) so the miss
+        // says what to do next instead of reading as "absent".
+        const scrollHosts = () => {
+          const out = [], seen = new Set();
+          const W = window.innerWidth, H = window.innerHeight;
+          for (const [px, py] of [[W / 2, H / 2], [W / 2, H / 4], [W / 2, H * 3 / 4], [W / 4, H / 2], [W * 3 / 4, H / 2]]) {
+            let e = null; try { e = document.elementFromPoint(px, py); } catch {}
+            for (let d = 0; e && d < 20 && out.length < 3; d++, e = e.parentElement) {
+              if (seen.has(e)) continue;
+              seen.add(e);
+              let cs = null; try { cs = getComputedStyle(e); } catch { continue; }
+              if (!cs || !/(auto|scroll|overlay)/.test(cs.overflowY)) continue;
+              if (e.clientHeight < 100 || e.scrollHeight < e.clientHeight * 2) continue;
+              const cls = typeof e.className === 'string' ? e.className.trim() : '';
+              out.push({
+                selector: e.id ? `#${e.id}` : e.tagName.toLowerCase() + (cls ? '.' + cls.split(/\s+/).slice(0, 2).join('.') : ''),
+                contentPx: e.scrollHeight, viewPx: e.clientHeight, scrollTop: Math.round(e.scrollTop),
+              });
+            }
+          }
+          return out;
+        };
+        let hosts = []; try { hosts = scrollHosts(); } catch {}
+        const scrollHint = hosts.length
+          ? `the view sits inside a scroll container (${hosts.map(h => `${h.selector}: ${h.contentPx}px of content in ${h.viewPx}px`).join('; ')}) that may render only the rows in view — a row further down is NOT in the DOM yet: fast_scroll {selector:"${hosts[0].selector}", pixels:400}, repeat, and click again`
+          : null;
+        const missTail = scrollHint ? { ...tail, hint: [tail.hint, scrollHint].filter(Boolean).join(' | ') } : tail;
+        return { error: `No element matching "${args.text}". Nothing was clicked.`, ...missTail, ...(secHint || {}), ...(hosts.length ? { scrollers: hosts } : {}), diagnostics: diagnoseNoMatch(args.text) };
       }
       await wait(150);
     }
@@ -3589,10 +3636,10 @@ async function runPageAction(action, args) {
     const idxGiven = typeof args.index === 'number';
     let ordered, idx, item, el;
     if (pointerHit) {
-      el = pointerHit;
+      el = pointerHit.el;
       let pr = null; try { pr = el.getBoundingClientRect(); } catch {}
       const po = offsetFor(el);
-      item = { tag: el.tagName.toLowerCase(), text: cleanLabel(args.text).slice(0, 120), clickable: 'script', via: 'pointer-cursor',
+      item = { tag: el.tagName.toLowerCase(), text: cleanLabel(args.text).slice(0, 120), clickable: 'script', via: pointerHit.via,
         ...(pr ? { x: Math.round(pr.x + po.ox), y: Math.round(pr.y + po.oy), w: Math.round(pr.width), h: Math.round(pr.height) } : {}) };
       ordered = [item]; idx = 0;
     } else {
@@ -3648,6 +3695,39 @@ async function runPageAction(action, args) {
       item = ordered[idx];
       el = elAt(item);
       if (!el) return { error: 'Element not at expected coords' };
+      // CONTAINER MATCH → click the ROW, not the pane. A match whose OWN text does
+      // not carry the query only CONTAINS it: a focusable tree/list host matches
+      // "Stop not lading" because one of its rendered rows reads that, and clicking
+      // the host (1270×635 on a Wunderbaum tree) is not what was asked for. Narrow
+      // to the smallest visible descendant whose own text carries the query. A real
+      // control is NEVER narrowed: <button><span>Save</span></button> must keep the
+      // button's own activation (a synthetic click on the span submits no form).
+      if (!item.clickable && !isControlItem(item) && !NATIVE_CLICK.test(el.tagName)) {
+        const q = cleanLabel(args.text).toLowerCase();
+        const ownTextOf = (e) => { let s = ''; try { for (const c of e.childNodes) if (c.nodeType === 3) s += c.data; } catch {} return cleanLabel(s).toLowerCase(); };
+        if (q && !ownTextOf(el).includes(q)) {
+          let best = null, bestArea = Infinity, n = 0;
+          try {
+            for (const d of el.querySelectorAll('*')) {
+              if (++n > 4000) break;
+              if (!ownTextOf(d).includes(q)) continue;
+              let r; try { r = d.getBoundingClientRect(); } catch { continue; }
+              if (!visible(d, r)) continue;
+              const area = r.width * r.height;
+              if (area < bestArea) { best = d; bestArea = area; }
+            }
+          } catch {}
+          if (best && best !== el) {
+            let br = null; try { br = best.getBoundingClientRect(); } catch {}
+            const bo = offsetFor(best);
+            el = best;
+            // the snapshot id belonged to the CONTAINER — drop it rather than
+            // point the caller at an element this click did not touch.
+            item = { ...item, i: undefined, tag: best.tagName.toLowerCase(), text: cleanLabel(best.textContent).slice(0, 120), via: 'text-leaf',
+              ...(br ? { x: Math.round(br.x + bo.ox), y: Math.round(br.y + bo.oy), w: Math.round(br.width), h: Math.round(br.height) } : {}) };
+          }
+        }
+      }
     }
     const scrolledIntoView = revealIfOffscreen(item, el);
     const sel = selectHintFor(el);
