@@ -656,33 +656,6 @@ const unindexElement = (el) => {
   }
 };
 
-// Walk a subtree and apply `onEl` to every element (including shadow + iframe).
-// Iterative to handle deeply-nested DOMs without blowing the JS stack.
-const walkSubtree = (root, onEl) => {
-  const stack = [root];
-  while (stack.length) {
-    const el = stack.pop();
-    if (!el || el.nodeType !== 1) continue;
-    const tag = el.tagName.toLowerCase();
-    if (SKIP_SUBTREE.has(tag)) continue;
-    onEl(el);
-    if (el.children) for (let i = el.children.length - 1; i >= 0; i--) stack.push(el.children[i]);
-    if (el.shadowRoot && el.shadowRoot.children) {
-      for (let i = el.shadowRoot.children.length - 1; i >= 0; i--) stack.push(el.shadowRoot.children[i]);
-    }
-    if (tag === 'iframe') {
-      let doc = null;
-      try { doc = el.contentDocument; } catch {}
-      if (doc) {
-        const inner = doc.body || doc.documentElement;
-        if (inner && inner.children) {
-          for (let i = inner.children.length - 1; i >= 0; i--) stack.push(inner.children[i]);
-        }
-      }
-    }
-  }
-};
-
 // Shared initial-walk state, persisted on INDEX so the async (idle-time) build
 // and the snapshot-time build (buildIndexAsync) advance the SAME cursor and
 // converge — instead of each restarting DFS from <body>. `walked` is a monotonic
