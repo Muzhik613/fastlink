@@ -169,23 +169,16 @@ export function recordUsage(handle, { client, testId, toolset = null }) {
     wallMs: handle.exited ? handle.exited.at - handle.startedAt : null,
     toolLog: handle.toolLog.map(({ t, name, ms, ok, args }) => ({ t, name, ms, ok, target: targetOf(name, args) })),
   }) + '\n');
-  writeFileSync(USAGE_MD, renderUsage(loadUsage()));
+  // Append only. tool-usage.md is rendered per pass (bench/hvm-run.sh) or on demand
+  // (`node bench/drive-runner.js usage`), not after every cell: re-rendering here cost 3.5s per cell.
 }
 
 export function loadUsage(file = USAGE_JSONL) {
   let raw;
   try { raw = readFileSync(file, 'utf8'); } catch { return []; }
-  const rows = raw.trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  // Rows written before `target` / `toolset` existed get them from the run store.
-  for (const r of rows) {
-    const old = !r.toolLog.length || !('target' in r.toolLog[0]) || !r.toolset || !r.model;
-    if (!old) continue;
-    const rec = r.runId ? readRun(r.runId) : null;
-    if (rec && !('target' in (r.toolLog[0] || { target: null }))) r.toolLog = r.toolLog.map((e, i) => ({ ...e, target: targetOf(e.name, rec.toolLog?.[i]?.args) }));
-    r.toolset ||= rec?.toolset || 'default';
-    r.model ||= rec?.model || null;
-  }
-  return rows;
+  // Every row carries target / toolset / model: rows written before those fields existed were
+  // backfilled into the file once (2026-09-16), so nothing is looked up in the run store here.
+  return raw.trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 }
 
 /** What a call was aimed at, as a comparable string; null when the call has no
