@@ -4,6 +4,7 @@ import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
 import { clickXY, typeText } from './input.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
+import { frameRead, waitTextAnyFrame } from './frames.js';
 import { isInjectableUrl } from '../util.js';
 
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_list', 'fast_close', 'fast_switch']);
@@ -120,11 +121,21 @@ async function runOne(action, args) {
   if (action === 'fast_evaluate')   return evaluate(args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
+  if (action === 'fast_frame_read') return frameRead(args);   // hidden: the scorer's read-back, no toolset offers it
+  if (action === 'fast_wait' && args?.text && !args?.selector) {
+    // A text wait searches the top document (page.js) AND every rendered
+    // sub-frame, cross-origin included (frames.js). With networkIdle/domready
+    // the text is still the real signal (SPAs long-poll, so pure idle can time
+    // out forever): resolve on it and REPORT the network state.
+    const idle = !!(args.networkIdle || args.domready);
+    const a = { ...args, timeoutMs: args.timeoutMs || (idle ? 10000 : 5000) };
+    const r = await waitTextAnyFrame(a, () => injectPageAction('fast_wait', a), { cancelTop: cancelPageWaits });
+    if (idle && r && typeof r === 'object' && !r.error) { const pending = await pendingNow(); return { ...r, networkIdle: pending === 0, pending }; }
+    return r;
+  }
   if (action === 'fast_wait' && (args?.networkIdle || args?.domready)) {
-    // text/selector + networkIdle: the text is the real signal (SPAs long-poll,
-    // so pure idle can time out forever); resolve on it and REPORT the network
-    // state instead of waiting for it. A bare networkIdle wait still times out.
-    if (args.text || args.selector) {
+    // selector + networkIdle: the selector is the signal, the network state is reported
+    if (args.selector) {
       const r = await injectPageAction('fast_wait', { ...args, timeoutMs: args.timeoutMs || 10000 });
       if (r && typeof r === 'object' && !r.error) { const pending = await pendingNow(); return { ...r, networkIdle: pending === 0, pending }; }
       return r;
@@ -133,6 +144,19 @@ async function runOne(action, args) {
   }
   if (PAGE_ACTIONS.has(action))     return injectPageAction(action, args);
   return { error: `Unknown action: ${action}` };
+}
+
+// Stop page.js's still-running fast_wait polls in the target tab (a sub-frame
+// answered first). Best-effort: a tab that navigated has nothing to stop.
+async function cancelPageWaits() {
+  const target = await getTargetTab();
+  if (!target?.id) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: target.id }, world: 'MAIN',
+      func: () => (window.__fastlink && window.__fastlink.cancelWaits ? window.__fastlink.cancelWaits() : 0),
+    });
+  } catch {}
 }
 
 // Tiny bridge: page.js is pre-injected as a MAIN-world content script and

@@ -97,7 +97,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_list',
-    description: 'List all open tabs in the current Chrome window with id, url, title, and active state. A tab whose URL changed while the extension was running also carries `trail:[{t,url}]` — its last 50 URL changes with ms-epoch timestamps, recorded passively — so a watcher polling every few seconds still sees every stop.',
+    description: 'List the open tabs in EVERY Chrome window (the current window\'s tabs first), each with id, windowId, url, title, and active state (`active` is per window: windowId says which window a tab is active in). A tab whose URL changed while the extension was running also carries `trail:[{t,url}]` — its last 50 URL changes with ms-epoch timestamps, recorded passively — so a watcher polling every few seconds still sees every stop.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
@@ -113,7 +113,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_wait',
-    description: 'Wait for the page to reach a state. Modes: (1) `text` — a case-insensitive substring appears in the rendered DOM (use two or more words: a single common word matches elsewhere); (2) `selector` — a CSS selector matches a visible element; (3) `networkIdle: true` — in-flight requests settle for `idleMs` (default 500ms). With text/selector AND networkIdle the text is the signal: it resolves as soon as the text is visible and reports `networkIdle:false, pending:N` when the network is still busy (SPAs long-poll forever) — only a bare networkIdle wait times out. On a match it returns `{ found: { i, tag, text, x, y, w, h, … }, snapshot }` — the matched element PLUS a fresh snapshot of the settled view (noSnapshot:true to skip). A match on an element with NO visible box or whose text is gone (a stale/emptied container) does not count: it keeps waiting, and at the deadline returns `emptyContainer:true` with a hint instead of a false "found". On text timeout the result includes `headings: [...]` (the visible h1/h2/h3 texts) so you can tell whether you landed on the wrong page.',
+    description: 'Wait for the page to reach a state. Modes: (1) `text` — a case-insensitive substring appears in the rendered DOM (use two or more words: a single common word matches elsewhere); (2) `selector` — a CSS selector matches a visible element; (3) `networkIdle: true` — in-flight requests settle for `idleMs` (default 500ms). With text/selector AND networkIdle the text is the signal: it resolves as soon as the text is visible and reports `networkIdle:false, pending:N` when the network is still busy (SPAs long-poll forever) — only a bare networkIdle wait times out. On a match it returns `{ found: { i, tag, text, x, y, w, h, … }, snapshot }` — the matched element PLUS a fresh snapshot of the settled view (noSnapshot:true to skip). A match on an element with NO visible box or whose text is gone (a stale/emptied container) does not count: it keeps waiting, and at the deadline returns `emptyContainer:true` with a hint instead of a false "found". On text timeout the result includes `headings: [...]` (the visible h1/h2/h3 texts) so you can tell whether you landed on the wrong page. A `text` wait also searches every rendered sub-frame, cross-origin iframes included: a hit there resolves with `inFrame:true` and `found.frame` (the frame URL) — DOM tools (fast_click/fast_fill/fast_select_option) act on the top document only, so act on it with fast_click_xy + fast_type. A text timeout on a page with frames adds `frames:{searched, unsearched}` (origins), and a hint when some frame could not be searched.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -136,6 +136,18 @@ export const TOOLS = [
         args: { type: 'array', description: 'Arguments to pass to the function (avoid string interpolation pitfalls)', items: {} },
       },
       required: ['fn'],
+    },
+  },
+  {
+    name: 'fast_frame_read',
+    description: 'SCORER ONLY — not offered to a driving model. Reads labelled form fields inside the frames of the active tab whose URL contains `frame`. Returns {frames:[matching frame URLs], fields:{<label>:{found, count, value, tag, role}}}. value: input/textarea .value exactly, untrimmed; <select> the selected option text; combobox the text it shows; "" when that is its placeholder; null for a password field or when count > 1. Labels are matched via <label>, then aria-labelledby, then aria-label, then the text of the field\'s form row. No frame matches → {error, frames:[every frame URL]}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        frame: { type: 'string', description: 'Substring of the frame URL.' },
+        fields: { type: 'array', items: { type: 'string' }, description: 'Visible label texts of the fields to read.' },
+      },
+      required: ['frame', 'fields'],
     },
   },
   {
@@ -250,13 +262,13 @@ export const TOOLS = [
   },
   {
     name: 'fast_type',
-    description: 'Trusted typing into whatever element currently has focus, via CDP Input.insertText — React/LWC accept it because it\'s a real input event (unlike setting .value). Does NOT target a selector; it goes to the focused element, so focus first (e.g. fast_click_xy on the field\'s coordinates). Pairs with fast_click_xy: read field coords via fast_evaluate getBoundingClientRect, fast_click_xy to focus, then fast_type to enter the text. ERRORS with {error:"fast_type: no editable element focused — click/focus the field first"} if nothing editable has focus (so a mis-aimed focus click no longer silently types into the void). EVERY return says whether the value was READ BACK — never silence: verified:true with typedInto:{tag,type,label,value} when the focused field could be re-read and now holds the text, or verified:false with a machine-readable reason ("cross-origin: value not readable", "unreadable: …", or what the field reads instead). Pass clear:true to REPLACE a pre-filled value instead of appending to it (select-all + delete first — use this when a field has a default like "API key 4"). clear is REFUSED unless an EDITABLE element is focused: with the document, <body> or a cross-origin <iframe> focused a select-all would select the WHOLE PAGE (the Azure portal blade went entirely blue while the name field stayed empty), so nothing is typed and the error names what had focus. To replace a value inside a cross-origin iframe, triple-click it (fast_click_xy {x,y,clickCount:3}) — that selects only that field\'s own contents — then fast_type {text, force:true} with no clear. Pass force:true (alias allowIframe) to BYPASS the editable-focus guard: the probe reads the top frame and follows SAME-ORIGIN iframes down to the real element, but focus inside a CROSS-ORIGIN iframe (e.g. appleid.apple.com embedded in account.apple.com) looks like the <iframe> itself and the guard wrongly refuses — yet CDP insertText DOES reach the inner input. This is the lifeline for cross-origin forms: fast_click_xy on cached coords to focus, then fast_type {force:true} to fill — and it comes back verified:false, reason:"cross-origin: value not readable", because nothing in the page can confirm it landed: read it back some other way (a screenshot) before reporting it as set. Only use force right after a click that focused the field.',
+    description: 'Trusted typing into whatever element currently has focus, via CDP Input.insertText — React/LWC accept it because it\'s a real input event (unlike setting .value). Does NOT target a selector; it goes to the focused element, so focus first (e.g. fast_click_xy on the field\'s coordinates). Focus is followed from the top document into the frame that holds it, cross-origin iframes included, so a field inside a cross-origin frame is found, typed into and READ BACK like any other. ERRORS with {error:"fast_type: no editable element focused — …", code:"no_editable_focus"} if nothing editable has focus (so a mis-aimed focus click never silently types into the void). EVERY return says whether the value was READ BACK — never silence: verified:true with typedInto:{tag,type,label,value,frames?} when the focused field now holds the text, or verified:false with a machine-readable reason ("unreadable: …", or what the field reads instead). Pass clear:true to REPLACE a pre-filled value instead of appending to it (select-all + delete the focused field first — use this when a field has a default like "API key 4"); it works inside cross-origin iframes and is REFUSED (code clear_without_editable_focus, nothing typed) unless an editable field is verifiably focused, because a select-all with the document focused selects the WHOLE PAGE. Pass force:true (alias allowIframe) to say "a coordinate click just focused this field": nothing is typed unless the focused field is the element under the pointer (code focus_not_on_clicked_target — the click landed on something that takes no focus, e.g. a dropdown, and focus stayed on an earlier field); where focus is in a frame the extension cannot inject into, it types anyway, unverified (verified:false) — confirm that value some other way before reporting it as set.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Text to insert into the currently-focused element.' },
-        clear: { type: 'boolean', description: 'If true, select-all + delete the focused field before typing so the value is REPLACED, not appended (default false). Use for fields with a pre-filled default. Refused (nothing typed) unless an EDITABLE element is focused — a select-all with the document, <body> or a cross-origin <iframe> focused selects the whole page; triple-click the field instead (fast_click_xy clickCount:3) and type without clear.' },
-        force: { type: 'boolean', description: 'If true, skip the "no editable element focused" guard so typing reaches an input inside a CROSS-ORIGIN iframe that a prior fast_click_xy already focused (the guard can\'t see into cross-origin frames). Alias: allowIframe. Use only right after a focusing click.' },
+        clear: { type: 'boolean', description: 'If true, select-all + delete the focused field first so the value is REPLACED, not appended (default false). Works inside cross-origin iframes. Refused (nothing typed) unless an editable field is verifiably focused.' },
+        force: { type: 'boolean', description: 'A coordinate click (fast_click_xy) just focused this field. Nothing is typed unless the focused field is the element under the pointer (code focus_not_on_clicked_target); where focus is in a frame the extension cannot inject into, types anyway, unverified. Alias: allowIframe.' },
       },
       required: ['text'],
     },
