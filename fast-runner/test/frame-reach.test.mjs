@@ -212,7 +212,7 @@ test('SAFETY: after the frame re-renders and reorders its buttons, an old id is 
   // (2) the bar re-renders: every node replaced, order swapped
   const snap2 = await call('fast_snapshot', {});
   const back = snap2.frames[0].items.find((it) => it.text === 'Back');
-  d.getElementById('bar').innerHTML = '<button id="del">Delete</button><button id="back2">Back</button>';
+  d.getElementById('bar').innerHTML = '<button id="del">Delete</button><button id="cancel">Cancel</button>';   // no "Back" any more
   d.getElementById('del').addEventListener('click', () => hits.push('delete'));
   const r2 = await call('fast_click', { id: back.i, noSnapshot: true });
   assert.equal(r2.idStale, true, JSON.stringify(r2));
@@ -547,4 +547,56 @@ test('live Azure 0a0b5258: fast_nav waits out a login redirect chain and reports
     assert.ok(ms >= 2900 && ms < 4500, `sign-in page took ${ms}ms`);
     assert.equal(r.url, 'https://login.example/signin');
   } finally { chrome.tabs.get = saved.get; chrome.tabs.update = saved.update; }
+});
+
+
+// A picker panel whose option list is rebuilt (new nodes, same labels) after the model's read.
+function pickerPanel(win, labels) {
+  const d = win.document;
+  const list = d.getElementById('opts');
+  const hits = [];
+  const render = (ls) => { list.innerHTML = ls.map((l) => `<div role="option" tabindex="0">${l}</div>`).join(''); for (const o of list.children) o.addEventListener('click', () => hits.push(o.textContent)); };
+  render(labels);
+  return { hits, render };
+}
+
+test('live Oracle dd2cf71c: an id whose option was re-rendered is re-resolved by its label when exactly one visible option carries it', async () => {
+  const { pay } = setup({ payHtml: '<div role="listbox" id="opts"></div>' });
+  const p = pickerPanel(pay, ['Oracle Linux 9', 'Ubuntu', 'Windows']);
+  const snap = await call('fast_snapshot', {});
+  const ub = snap.frames[0].items.find((it) => it.text === 'Ubuntu');
+  p.render(['Oracle Linux 9', 'Ubuntu', 'Windows', 'Rocky Linux']);   // rebuilt: every node new
+  const r = await call('fast_click', { id: ub.i, noSnapshot: true });
+  assert.equal(r.reResolved, true, JSON.stringify(r));
+  assert.equal(r.clicked, 'Ubuntu');
+  assert.deepEqual(p.hits, ['Ubuntu']);
+});
+
+test('re-resolve refuses when two visible options now carry the label, and when the label is gone', async () => {
+  const { pay } = setup({ payHtml: '<div role="listbox" id="opts"></div>' });
+  const p = pickerPanel(pay, ['Oracle Linux 9', 'Ubuntu']);
+  const snap = await call('fast_snapshot', {});
+  const ub = snap.frames[0].items.find((it) => it.text === 'Ubuntu');
+  p.render(['Ubuntu', 'Ubuntu']);
+  const two = await call('fast_click', { id: ub.i, noSnapshot: true });
+  assert.equal(two.idStale, true, JSON.stringify(two));
+  const snap2 = await call('fast_snapshot', {});
+  const ub2 = snap2.frames[0].items.find((it) => it.text === 'Ubuntu');
+  p.render(['Oracle Linux 9', 'Debian']);
+  const gone = await call('fast_click', { id: ub2.i, noSnapshot: true });
+  assert.equal(gone.idStale, true, JSON.stringify(gone));
+  assert.deepEqual(p.hits, []);
+});
+
+test('a text click that misses while the document is mid-render gets one short retry', async () => {
+  const { pay } = setup({ payHtml: '<div role="listbox" id="opts"><div role="option">Loading…</div></div>' });
+  const d = pay.document;
+  let n = 0;
+  const tick = setInterval(() => { const el = d.createElement('span'); el.textContent = `spinner ${n++}`; d.body.appendChild(el); }, 100);
+  setTimeout(() => { const o = d.createElement('div'); o.setAttribute('role', 'option'); o.textContent = 'Ampere A1'; d.getElementById('opts').appendChild(o); }, 1800);
+  const t0 = Date.now();
+  const r = await call('fast_click', { frame: 'pay.provider', text: 'Ampere A1', noSnapshot: true });
+  clearInterval(tick);
+  assert.equal(r.clicked, 'Ampere A1', JSON.stringify(r));
+  assert.ok(Date.now() - t0 < 2600, `took ${Date.now() - t0}ms`);
 });

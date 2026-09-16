@@ -1076,12 +1076,14 @@ const collectOverlayEls = () => {
 // A field is identified by its NAME (a dropdown's shown text is its value, which changes
 // legitimately); anything else by its aria-label, else its text.
 const servedLabel = (it) => cleanLabel(String(it.label || it.ariaLabel || it.text || '')).slice(0, 200);
+// An item's kind for re-resolving an id: its role, else its tag (+ input type). Pure.
+const itemKind = (it) => String(it.role || (it.tag === 'input' ? `input:${it.type || 'text'}` : it.tag) || '').toLowerCase();
 // Record the items a result returns (every snapshot / preview goes out through markTruncated).
 const noteServed = (items) => {
   if (!Array.isArray(items)) return;
   if (!INDEX.served) INDEX.served = new Map();
   if (INDEX.served.size > 20000) INDEX.served.clear();
-  for (const it of items) if (it && typeof it.i === 'number') INDEX.served.set(it.i, servedLabel(it));
+  for (const it of items) if (it && typeof it.i === 'number') INDEX.served.set(it.i, { label: servedLabel(it), kind: itemKind(it) });
 };
 
 // The dialog the user is in, or null. A declared one (<dialog open>, role=dialog /
@@ -3767,13 +3769,15 @@ async function runPageAction(action, args) {
       return { error: `fast_click needs a target — pass id:"${idP}<i>" (an item's i from fast_snapshot) or text:"<label>"${typeof args.index === 'number' ? '; index only picks among matches of text, it is not an item id' : ''}; nothing was clicked`, code: 'no_target' };
     }
     let preMatched = null;
+    let missAt = AUTO_WAIT_MS, missExtended = false;
     if (hasId) {
       // An id acts only on the element a snapshot SHOWED under that id, still carrying the
       // label it showed: an id no snapshot of this document listed (a guess, or one from a
       // page since reloaded), an element since removed, or one the page re-labelled in place
       // (a reused "Next" that now reads "Create") is refused — never clicked.
       const want = Number(args.id);
-      const shown = INDEX.served ? INDEX.served.get(want) : undefined;   // read BEFORE anything re-serializes
+      const shownRec = INDEX.served ? INDEX.served.get(want) : undefined;   // read BEFORE anything re-serializes
+      const shown = shownRec ? shownRec.label : undefined;
       const el0 = Number.isFinite(want) ? elById(want) : null;
       snap = await serializeSnapshot(false, { matchAll: true });
       const it = el0 && el0.isConnected ? snap.items.find((x) => x.i === want) : null;
@@ -3789,6 +3793,15 @@ async function runPageAction(action, args) {
         : (wantRole && !roleOk(it)) ? `id ${idP}${want} is a <${it.tag}>${it.role ? ` role=${it.role}` : ''}, not role "${args.role}"`
         : null;
       if (!why) preMatched = [it];
+      else if (!it && shownRec && shown) {
+        // RE-RESOLVE a re-rendered element (a picker panel rebuilds its option list between the
+        // read and the click): act only on exactly ONE element now visible in this document
+        // with the SAME label and the same kind (role, else tag). Zero or several: refused as
+        // before. A relabelled node never matches, so this cannot act on "Create" for "Next".
+        const same = snap.items.filter((x) => !x.offscreen && servedLabel(x) === shown && itemKind(x) === shownRec.kind);
+        if (same.length === 1) { preMatched = same; args.__reResolved = true; }
+      }
+      if (preMatched) { /* acted below */ }
       else if (!hasText) return { error: `${why} — nothing was clicked; take a fresh fast_snapshot and pass the id it lists, or text:"<label>"`, idStale: true, ...(now ? { labelNow: now } : {}) };
       else args.__idStale = true;
     }
@@ -3850,7 +3863,15 @@ async function runPageAction(action, args) {
         pointerHit = textTargetByText(args.text);
         if (pointerHit) break;
       }
-      if (nowMs() - t0 >= AUTO_WAIT_MS) {
+      if (nowMs() - t0 >= missAt) {
+        // the document is visibly mid-render (a mutation in the last 300ms): one more short
+        // look, ≤800ms, before answering "No element matching" (a picker panel rebuilding)
+        if (!missExtended && INDEX.lastMutMs && nowMs() - INDEX.lastMutMs < 300) {
+          missExtended = true;
+          missAt = Math.round(nowMs() - t0) + 800;
+          await wait(100);
+          continue;
+        }
         const act = pageActivity();
         const tail = { waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing when this gave up — the element may not be rendered yet: fast_wait for text that identifies its view, then click again' } : {}) };
         const preFilter = matchItems(snap.items, args.text);
@@ -4647,8 +4668,13 @@ const withChanged = (r, list, partial = false) => {
   return out;
 };
 
-// A click whose id had gone stale and fell back to text says so.
-const withIdStale = (r, args) => (r && typeof r === 'object' && args && args.__idStale && !r.idStale ? frontload(r, { idStale: true }) : r);
+// A click whose id had gone stale and fell back to text says so; one re-resolved by its label says that.
+const withIdStale = (r, args) => {
+  if (!r || typeof r !== 'object' || !args) return r;
+  if (args.__idStale && !r.idStale) return frontload(r, { idStale: true });
+  if (args.__reResolved && !r.error) return frontload(r, { reResolved: true });
+  return r;
+};
 
 // Set for the duration of a call made with noFrameNotice (a frame document the
 // background reads itself).
