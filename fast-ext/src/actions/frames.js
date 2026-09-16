@@ -177,3 +177,70 @@ export async function frameRead({ frame, fields } = {}) {
   }
   return { frames: matched.map((a) => a.url), fields: out };
 }
+
+// ── Text wait across frames ──────────────────────────────────────────────────
+// Runs in every frame. The top frame reports only the iframes it holds (its own
+// text is page.js's fast_wait, which keeps doing that job). A sub-frame reports
+// whether its rendered-document text contains `needle` (lowercased, whitespace
+// collapsed; script/style/template/noscript text does not count).
+function textInFrame(needle) {
+  const url = location.href;
+  const iframes = [...document.querySelectorAll('iframe,frame')].map((f) => {
+    try { return new URL(f.getAttribute('src') || '', location.href).href; } catch { return ''; }
+  }).filter((u) => /^https?:/.test(u));
+  if (window === window.top) return { url, top: true, iframes };
+  let text = '';
+  if (document.body) {
+    const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let t = tw.nextNode(); t; t = tw.nextNode()) {
+      const p = t.parentElement;
+      if (p && p.closest('script,style,template,noscript,[hidden]')) continue;
+      text += t.nodeValue;
+    }
+  }
+  return { url, top: false, iframes, found: text.replace(/\s+/g, ' ').toLowerCase().includes(needle) };
+}
+
+const originOf = (u) => { try { return new URL(u).origin; } catch { return ''; } };
+
+// fast_wait {text} that can see inside frames. `topWait` is page.js's own
+// top-frame wait (a promise-returning function); it runs untouched, so slow
+// content in the top document resolves exactly as before. Meanwhile every
+// sub-frame is polled: text rendered inside one resolves the wait at once
+// (inFrame:true + the frame URL) instead of burning the whole timeout. If the
+// top wait times out, its result gains `frames: {searched, unsearched}` —
+// the origins that were searched, and those of iframes that could not be.
+export async function waitTextAnyFrame(args, topWait, { pollMs = 250 } = {}) {
+  const text = String((args && args.text) || '');
+  const needle = text.replace(/\s+/g, ' ').trim().toLowerCase();
+  const got = await getInjectableTab();
+  if (got.error || !needle) return topWait();
+  const t0 = Date.now();
+  const deadline = t0 + ((args && args.timeoutMs) || 5000);
+  let settled = null;
+  const top = Promise.resolve(topWait()).then((r) => { settled = { r }; return r; });
+  let last = null;
+  while (!settled) {
+    try { last = (await inAllFrames(got.tab.id, textInFrame, [needle])).map((a) => a.result); } catch {}
+    if (settled) break;
+    const hit = last && last.find((a) => !a.top && a.found);
+    if (hit) {
+      return {
+        found: { text, frame: hit.url }, inFrame: true, waitedMs: Date.now() - t0,
+        note: `"${text}" is inside a sub-frame (${hit.url}); fast_click/fast_fill act on the top document only — act on it with fast_click_xy + fast_type`,
+      };
+    }
+    if (Date.now() >= deadline) break;
+    await Promise.race([top, new Promise((r) => setTimeout(r, pollMs))]);
+  }
+  const r = await top;
+  if (!r || r.found || !r.error || !last) return r;
+  const answered = new Set(last.filter((a) => !a.top).map((a) => originOf(a.url)));
+  const unsearched = [...new Set(last.flatMap((a) => a.iframes).map(originOf))].filter((o) => o && !answered.has(o));
+  if (!answered.size && !unsearched.length) return r;
+  return {
+    ...r,
+    frames: { searched: [...answered], unsearched },
+    ...(unsearched.length ? { framesHint: `not found in the top document or any searchable frame; frames from ${unsearched.join(', ')} could not be searched, so the text may be there` } : {}),
+  };
+}
