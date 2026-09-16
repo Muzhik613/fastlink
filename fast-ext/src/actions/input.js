@@ -1,4 +1,4 @@
-import { getInjectableTab, injectInTab } from '../util.js';
+import { getInjectableTab } from '../util.js';
 
 const CDP_VERSION = '1.3';
 
@@ -98,17 +98,14 @@ export async function clickXY({ x, y, button, clickCount }) {
   // vocabulary as fast_type's guard. Best-effort: a navigating click tears the
   // frame down mid-probe, and that is simply no focus report.
   try {
-    const probe = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
-    const f = probe && !probe.error ? probe.result : null;
-    if (f) {
-      out.focused = { tag: f.tag, editable: !!f.editable };
-      if (f.type) out.focused.type = f.type;
-      if (f.label) out.focused.label = f.label;
-      if (f.editable) out.focused.value = f.value;
-      if (!f.editable) {
-        const named = f.tag === 'none' ? 'nothing' : f.tag === 'body' || f.tag === 'html' ? 'the document itself' : `<${f.tag}>${f.label ? ` (${f.label})` : ''}`;
-        out.hint = `${named} holds focus, not an editable field — a fast_type now would be refused (pass force:true only for a cross-origin iframe input). Click the field's own box, or read its rect and click that center, before typing.`;
-      }
+    const f = await probeFocus(tabId);
+    out.focused = { tag: f.tag, editable: !!f.editable };
+    if (f.type) out.focused.type = f.type;
+    if (f.label) out.focused.label = f.label;
+    if (f.frames.length) out.focused.frames = f.frames;
+    if (f.editable) out.focused.value = f.value;
+    if (!f.editable) {
+      out.hint = `${describeFocus(f)} holds focus, not an editable field — a fast_type now would be refused. Click the field's own box, or read its rect and click that center, before typing.`;
     }
   } catch {}
   return out;
@@ -125,53 +122,55 @@ export async function wheelScroll({ x, y, deltaX, deltaY }) {
   return { wheeled: { deltaX: deltaX || 0, deltaY: deltaY || 0, at: { x: x || 0, y: y || 0 } } };
 }
 
-// Runs in the page MAIN world: describe the focused element so we can (a) refuse
-// to type (or select-all) when nothing editable is focused and (b) read the value
-// back after typing. Self-contained (no closures) — chrome.scripting serializes it.
+// Runs in EVERY frame of the tab (chrome.scripting allFrames, MAIN world) and
+// describes that frame's focused element. Self-contained (no closures) —
+// chrome.scripting serializes it.
 //
-// ALWAYS returns a descriptor, never null: "the document has focus" and "an
-// <iframe> has focus" are exactly the facts the caller must be able to name, and
-// a null told it nothing. Focus inside a SAME-ORIGIN iframe is followed down to
-// the real element (so those fills stay verifiable); a CROSS-ORIGIN iframe is
-// where the top frame's knowledge ends — reported as readable:false with
-// reason:"cross-origin: value not readable".
-function inspectActiveElement() {
+// The extension holds <all_urls>, so a CROSS-ORIGIN iframe is injectable like
+// any other frame: its field can be read, verified and selected from inside
+// that frame. The page's own same-origin policy stops the TOP document from
+// reaching in; it does not stop the extension. What IS unreachable is a frame
+// the extension may not inject into at all (another extension's page, the web
+// store) — resolveFocus names that case.
+//
+// Each frame reports its PATH from the top (its index in each ancestor's
+// window list — WindowProxy identity and indexing are allowed cross-origin),
+// and a frame whose focus sits on an <iframe> reports WHICH child it is, so the
+// chain top → child → … → the real field is followed exactly, with no guessing
+// from document.hasFocus() (false whenever the Chrome window is in the
+// background, which is the normal state while an agent drives it).
+function inspectFocusInFrame() {
   const NON_TEXT = ['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'image', 'range', 'color', 'hidden'];
   const trim = (s, n) => (typeof s === 'string' && s.length > n ? s.slice(0, n) + '…' : (s || ''));
-  let doc = document;
-  let el = document.activeElement;
-  const frames = [];
-  // Descend through same-origin iframes to the element that really has focus.
-  for (let depth = 0; depth < 10; depth++) {
-    if (!el || (el.tagName || '').toLowerCase() !== 'iframe') break;
-    let inner = null;
-    try { inner = el.contentDocument; } catch { inner = null; }
-    if (!inner) {
-      // cross-origin: the top frame cannot see, read or verify anything inside it
-      let src = '';
-      try { src = new URL(el.src || '', location.href).host; } catch {}
-      return {
-        tag: 'iframe', type: '', editable: false, readable: false,
-        reason: 'cross-origin: value not readable',
-        label: src || (el.getAttribute && el.getAttribute('title')) || '',
-        value: '', valueLen: 0, frames: frames.concat(src ? [src] : ['iframe']),
-      };
+  const path = [];
+  try {
+    for (let w = window; w !== w.parent; w = w.parent) {
+      const p = w.parent;
+      let idx = -1;
+      for (let i = 0; i < p.length; i++) if (p[i] === w) { idx = i; break; }
+      path.unshift(idx);
     }
-    let host = '';
-    try { host = new URL(el.src || '', location.href).host; } catch {}
-    frames.push(host || 'iframe');
-    doc = inner;
-    el = inner.activeElement;
+  } catch { return null; }
+  let el = document.activeElement;
+  // an open shadow root keeps its own focused element — follow it down
+  for (let depth = 0; depth < 20 && el && el.shadowRoot && el.shadowRoot.activeElement; depth++) el = el.shadowRoot.activeElement;
+  const tag = el ? (el.tagName || '').toLowerCase() : 'none';
+  const host = location.host || '';
+  if (tag === 'iframe' || tag === 'frame') {
+    let child = -1;
+    try { for (let i = 0; i < window.length; i++) if (window[i] === el.contentWindow) { child = i; break; } } catch {}
+    let src = '';
+    try { src = new URL(el.src || '', location.href).host; } catch {}
+    return { path, host, child, tag: 'iframe', label: src || (el.getAttribute && el.getAttribute('title')) || '' };
   }
-  if (!el || el === doc.body || el === doc.documentElement) {
+  if (!el || el === document.body || el === document.documentElement) {
     return {
-      tag: el === doc.documentElement ? 'html' : el ? 'body' : 'none',
+      path, host, tag: el === document.documentElement ? 'html' : el ? 'body' : 'none',
       type: '', editable: false, readable: true,
       reason: 'the document itself has focus — no field is focused',
-      label: '', value: '', valueLen: 0, frames,
+      label: '', value: '', valueLen: 0,
     };
   }
-  const tag = (el.tagName || '').toLowerCase();
   const editable =
     (tag === 'input' && !NON_TEXT.includes((el.type || 'text').toLowerCase())) ||
     tag === 'textarea' ||
@@ -185,12 +184,58 @@ function inspectActiveElement() {
   if (tag === 'input' || tag === 'textarea') value = el.value == null ? '' : String(el.value);
   else if (el.isContentEditable) value = el.textContent || '';
   const out = {
-    tag, type: el.type || '', editable, readable: editable,
-    label: trim(label, 80), value: trim(value, 300), valueLen: value.length, frames,
+    path, host, tag, type: el.type || '', editable, readable: editable,
+    label: trim(label, 80), value: trim(value, 300), valueLen: value.length,
   };
   if (!editable) out.reason = `focus is on a <${tag}>, which holds no editable value`;
   else if (el.type === 'password') { out.value = '•'.repeat(Math.min(value.length, 32)); out.readable = false; out.reason = 'password field: value not readable'; }
   return out;
+}
+
+// Follow the per-frame reports from the top frame down to the element that
+// really has focus. Returns one descriptor: { tag, type, editable, readable,
+// reason?, label, value, valueLen, frames, frameId, reachable? } — `frames` is
+// the host of every iframe crossed on the way down, `frameId` is the frame the
+// field lives in (for a follow-up injection into exactly that frame).
+function resolveFocus(injections) {
+  const byPath = new Map();
+  for (const r of injections || []) {
+    if (r && r.result && Array.isArray(r.result.path)) byPath.set(r.result.path.join('/'), { ...r.result, frameId: r.frameId });
+  }
+  const frames = [];
+  let cur = byPath.get('');
+  if (!cur) {
+    return { tag: 'none', type: '', editable: false, readable: false, reachable: false, reason: 'unreadable: the page could not be inspected', label: '', value: '', valueLen: 0, frames };
+  }
+  for (let depth = 0; depth < 20 && cur.tag === 'iframe'; depth++) {
+    frames.push(cur.label || 'iframe');
+    const next = cur.child >= 0 ? byPath.get([...cur.path, cur.child].join('/')) : null;
+    if (!next) {
+      return {
+        tag: 'iframe', type: '', editable: false, readable: false, reachable: false,
+        reason: `unreadable: focus is inside a frame (${cur.label || 'iframe'}) the extension cannot inject into`,
+        label: cur.label || '', value: '', valueLen: 0, frames, frameId: cur.frameId,
+      };
+    }
+    cur = next;
+  }
+  const { path, child, host, ...d } = cur;
+  return { ...d, frames };
+}
+
+async function probeFocus(tabId) {
+  const injections = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true }, world: 'MAIN', func: inspectFocusInFrame,
+  });
+  return resolveFocus(injections);
+}
+
+// How a refusal names what had focus.
+function describeFocus(d) {
+  if (!d || d.tag === 'none') return 'nothing';
+  if (d.tag === 'body' || d.tag === 'html') return 'the document itself';
+  if (d.tag === 'iframe') return `an uninspectable <iframe>${d.label ? ` (${d.label})` : ''}`;
+  return `<${d.tag}>${d.label ? ` (${d.label})` : ''}`;
 }
 
 // Detect macOS so keyboard chords use the platform-correct select-all modifier:
@@ -228,29 +273,21 @@ async function selectAllAndDelete(tabId) {
 // React accepts it because it's a real input event (unlike setting .value).
 //   args.text   : string to insert (required)
 //   args.clear  : when true, select-all + Delete first so the value is REPLACED,
-//                 not appended (default false → legacy append-to-focused).
-//   args.force  : (alias allowIframe) SKIP the editable-focus guard. The guard's
-//                 probe runs only in the TOP frame, so when focus is inside a
-//                 CROSS-ORIGIN iframe (e.g. appleid.apple.com embedded in
-//                 account.apple.com) the top doc's activeElement is the <iframe>
-//                 element — not editable — and the guard refuses, even though a
-//                 prior fast_click_xy DID focus the inner input. CDP
-//                 Input.insertText is browser-level and DOES reach that focused
-//                 cross-origin input, so force:true lets the read-coords →
-//                 fast_click_xy → fast_type playbook fill cross-origin forms with
-//                 NO vision/Gemini. Only use after a click that focused the field.
+//                 not appended (default false → append at the caret).
+//   args.force  : (alias allowIframe) type even when focus sits in a frame the
+//                 extension cannot inject into, so nothing can confirm a field
+//                 has focus. Every other frame — cross-origin iframes included —
+//                 is probed directly (probeFocus), so force is not needed to
+//                 reach a cross-origin form.
 // Before inserting we verify an EDITABLE element is actually focused — a bare
 // insertText goes to document.activeElement, so with nothing useful focused the
 // text vanishes or lands in the wrong field (live: a URL appended into a Name
 // field, "FastLink relayhttps://…").
 //
 // EVERY return says whether the value was READ BACK: `verified:true` with the
-// live value, or `verified:false` with a machine-readable `reason`
-// ("cross-origin: value not readable", "unreadable: …", or what the field reads
-// instead) plus `typedInto`. A forced write into a cross-origin iframe is
-// exactly the case nothing in the page can confirm, so it must never come back
-// looking like a success — the Azure portal blade reported "set VM name" while
-// the field was empty.
+// live value, or `verified:false` with a machine-readable `reason` plus
+// `typedInto`. A forced write into an uninspectable frame is exactly the case
+// nothing can confirm, so it must never come back looking like a success.
 export async function typeText({ text, clear, force, allowIframe } = {}) {
   if (typeof text !== 'string') return { error: 'fast_type: text is required (string)' };
   const got = await getInjectableTab();
@@ -258,55 +295,50 @@ export async function typeText({ text, clear, force, allowIframe } = {}) {
   const tabId = got.tab.id;
   const forced = force === true || allowIframe === true;
 
-  const probe = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
-  if (probe.error) return probe;
-  const el = probe.result;
-  const where = (d) => (d ? {
+  let el;
+  try { el = await probeFocus(tabId); } catch (e) {
+    return { error: `fast_type: could not inspect focus — ${(e && e.message) || e}` };
+  }
+  const where = (d) => ({
     tag: d.tag, type: d.type, label: d.label, value: d.value,
-    ...(d.frames && d.frames.length ? { frames: d.frames } : {}),
-  } : null);
-  const named = (d) => (!d || d.tag === 'none' ? 'nothing'
-    : d.tag === 'iframe' ? `a cross-origin <iframe>${d.label ? ` (${d.label})` : ''}`
-    : `<${d.tag}>${d.label ? ` (${d.label})` : ''}`);
+    ...(d.frames.length ? { frames: d.frames } : {}),
+  });
+  const uninspectable = el.reachable === false;
 
-  // Normal mode: refuse when nothing editable is focused (catches the "typed into
-  // the wrong field" class of bug). Force mode: trust the caller's prior focusing
-  // click — the editable element may be inside a cross-origin iframe the top-frame
-  // probe can't see, so don't refuse on a non-editable/<iframe> activeElement.
-  if (!forced && (!el || !el.editable)) {
-    return { error: 'fast_type: no editable element focused — click/focus the field first (or pass force:true for a cross-origin iframe input you already clicked)', focused: where(el) };
+  // Refuse when nothing editable is focused (catches the "typed into the wrong
+  // field" class of bug). force only lifts this where the probe could not look.
+  if (!el.editable && !(forced && uninspectable)) {
+    return {
+      error: `fast_type: no editable element focused — ${describeFocus(el)} has focus; click/focus the field first, nothing was typed`,
+      code: 'no_editable_focus', focused: where(el),
+      ...(uninspectable ? { hint: 'the focused frame cannot be inspected — if a coordinate click just focused a field inside it, fast_type {text, force:true} types there unverified' } : {}),
+    };
   }
 
   // clear:true is a SELECT-ALL, and a select-all only means "this field" when a
-  // field has focus. With the document, <body> or a CROSS-ORIGIN <iframe>
-  // focused, Ctrl/Cmd+A selects the whole PAGE and the Delete that follows can
-  // hit anything — the Azure create-VM blade turned entirely blue while the name
-  // field stayed empty. So clear is REFUSED there, force or not, and nothing is
-  // typed: the caller is told what had focus.
-  if (clear && (!el || !el.editable)) {
+  // field has focus. Where focus could not be inspected, Ctrl/Cmd+A may select
+  // the whole PAGE and the Delete that follows can hit anything (the Azure
+  // create-VM blade turned entirely blue while the name field stayed empty,
+  // back when cross-origin frames were not probed). So clear is REFUSED there.
+  if (clear && !el.editable) {
     return {
-      error: `fast_type: clear:true needs an editable field focused, but ${named(el)} has focus — a select-all there selects the WHOLE PAGE, not a field, so nothing was typed`,
+      error: `fast_type: clear:true needs an editable field focused, but ${describeFocus(el)} has focus — a select-all there can select the WHOLE PAGE, not a field, so nothing was typed`,
       code: 'clear_without_editable_focus',
       focused: where(el),
-      hint: 'triple-click the field first (fast_click_xy {x, y, clickCount:3}) — that selects only that field\'s own contents, including inside a cross-origin iframe — then fast_type {text, force:true} with no clear',
+      hint: 'triple-click the field first (fast_click_xy {x, y, clickCount:3}) — that selects only that field\'s own contents — then fast_type {text, force:true} with no clear',
     };
   }
 
   if (clear) await selectAllAndDelete(tabId);
   await cdp(tabId, 'Input.insertText', { text });
 
-  // Read the (post-insert) focused element back. Best-effort — fall back to the
-  // pre-insert probe. Across a cross-origin iframe boundary this is the <iframe>
-  // element itself: the inner input is unreadable from the top frame, so the
-  // result says verified:false with that reason rather than echoing a success.
+  // Read the (post-insert) focused element back, in whatever frame it lives.
+  // Best-effort — fall back to the pre-insert probe.
   let after = el;
-  try {
-    const p2 = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
-    if (p2.result) after = p2.result;
-  } catch {}
+  try { after = await probeFocus(tabId); } catch {}
   const tail = { typed: text.length, cleared: !!clear, forced: forced || undefined, typedInto: where(after) };
-  if (!after || !after.readable) {
-    return { verified: false, reason: (after && after.reason) || 'unreadable: value not readable', ...tail };
+  if (!after.readable) {
+    return { verified: false, reason: after.reason || 'unreadable: value not readable', ...tail };
   }
   const live = String(after.value == null ? '' : after.value);
   const holds = clear ? live === text : live.includes(text);
