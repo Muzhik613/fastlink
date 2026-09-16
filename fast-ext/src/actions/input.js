@@ -1,4 +1,5 @@
 import { getInjectableTab } from '../util.js';
+import { inAllFrames } from './frames.js';
 
 const CDP_VERSION = '1.3';
 
@@ -250,10 +251,7 @@ function resolveFocus(injections) {
 }
 
 async function probeFocus(tabId) {
-  const injections = await chrome.scripting.executeScript({
-    target: { tabId, allFrames: true }, world: 'MAIN', func: inspectFocusInFrame,
-  });
-  return resolveFocus(injections);
+  return resolveFocus(await inAllFrames(tabId, inspectFocusInFrame, [], 'MAIN'));
 }
 
 // How a refusal names what had focus.

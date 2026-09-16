@@ -11,8 +11,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const src = readFileSync(new URL('../../fast-ext/src/actions/input.js', import.meta.url), 'utf8')
-  .replace(/^import[^\n]*\n/m, '')
+  .replace(/^import[^\n]*\n/gm, '')
   .replace(/^export /gm, '');
+
+// the real frames.js enumeration, bound to a stubbed chrome
+const { inAllFrames: realInAllFrames } = await import('../../fast-ext/src/actions/frames.js');
+const inAllFramesVia = (chrome) => (...a) => { const prev = globalThis.chrome; globalThis.chrome = chrome; try { return realInAllFrames(...a); } finally { globalThis.chrome = prev; } };
 
 // One sandbox per test: CDP commands are recorded; each executeScript call pops
 // the next scripted list of per-frame injection results.
@@ -29,9 +33,9 @@ function sandbox({ injections = [], window: win, document: doc, location: loc } 
     scripting: { executeScript: async () => (queue.length ? queue.shift() : []) },
   };
   const getInjectableTab = async () => ({ tab: { id: 1 } });
-  const api = new Function('chrome', 'getInjectableTab', 'window', 'document', 'location', 'navigator',
+  const api = new Function('chrome', 'getInjectableTab', 'inAllFrames', 'window', 'document', 'location', 'navigator',
     `${src}\nreturn { typeText, clickXY, inspectFocusInFrame, resolveFocus };`)(
-    chrome, getInjectableTab, win, doc, loc, { platform: 'Linux x86_64' });
+    chrome, getInjectableTab, inAllFramesVia(chrome), win, doc, loc, { platform: 'Linux x86_64' });
   return { ...api, cdpCalls };
 }
 
@@ -293,8 +297,8 @@ test('REGRESSION doubled text: filling the same field twice with clear:true leav
     storage: { local: { get: async () => ({}) } },
     scripting: { executeScript: async () => probe() },
   };
-  const { typeText } = new Function('chrome', 'getInjectableTab', 'window', 'document', 'location', 'navigator',
-    `${src}\nreturn { typeText };`)(chrome, async () => ({ tab: { id: 1 } }), undefined, undefined, undefined, { platform: 'Linux' });
+  const { typeText } = new Function('chrome', 'getInjectableTab', 'inAllFrames', 'window', 'document', 'location', 'navigator',
+    `${src}\nreturn { typeText };`)(chrome, async () => ({ tab: { id: 1 } }), inAllFramesVia(chrome), undefined, undefined, undefined, { platform: 'Linux' });
   for (let i = 0; i < 2; i++) {
     const r = await typeText({ text: 'fastlink-bench-vm', clear: true, force: true });
     assert.equal(r.verified, true);
