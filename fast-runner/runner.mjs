@@ -49,7 +49,7 @@ const STATE_TOOLS = new Set([
   'fast_type', 'fast_nav', 'fast_tab', 'fast_reload', 'fast_scroll', 'fast_wheel', 'fast_drag', 'fast_drag_xy',
   'fast_upload', 'fast_hover', 'fast_switch', 'fast_close', 'fast_batch', 'fast_do', 'fast_fill_vision',
 ]);
-const READ_TOOLS = new Set(['fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_evaluate', 'fast_marks', 'fast_scout', 'fast_list', 'fast_console', 'fast_network']);
+const READ_TOOLS = new Set(['fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_evaluate', 'fast_marks', 'fast_scout', 'fast_list']);
 const isStateChanging = (e) => STATE_TOOLS.has(e.name);
 const isRead = (e) => READ_TOOLS.has(e.name) || (e.name === 'fast_wait' && !!(e.args && e.args.text));
 // ONE normalization for both sides of the evidence match (tool results and the

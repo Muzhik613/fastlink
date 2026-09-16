@@ -3,7 +3,7 @@
   "name": "fastlink",
   "display_name": "FastLink",
   "version": "1.2.0",
-  "description": "FastLink — page snapshots, clicks, console/network capture, and batch automation via a paired Chrome extension",
+  "description": "FastLink — page snapshots, clicks, form fills, and batch automation via a paired Chrome extension",
   "icon": "icons/icon-256.png",
   "author": {
     "name": "FastLink"
@@ -124,14 +124,6 @@
     {
       "name": "fast_batch",
       "description": "Run multiple FastLink actions in sequence with ONE tool call."
-    },
-    {
-      "name": "fast_console",
-      "description": "Read recent console messages (log/warn/error/info) from the active Chrome tab."
-    },
-    {
-      "name": "fast_network",
-      "description": "List recent network requests from the active Chrome tab (URL, method, status, type, duration)."
     },
     {
       "name": "fast_hover",

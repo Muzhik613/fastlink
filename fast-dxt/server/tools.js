@@ -376,33 +376,6 @@ export const TOOLS = [
     },
   },
   {
-    name: 'fast_console',
-    description: 'Read recent console messages (log/warn/error/info) from the active Chrome tab. Captures messages from the moment the page loaded. Useful for debugging errors after a click or to see app state.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        level: { type: 'string', enum: ['log', 'warn', 'error', 'info', 'all'], description: 'Filter by level (default all)' },
-        limit: { type: 'number', description: 'Max messages to return (default 50, newest first)' },
-        clear: { type: 'boolean', description: 'If true, clear the buffer after returning' },
-      },
-    },
-  },
-  {
-    name: 'fast_network',
-    description: 'List recent network requests from the active Chrome tab (URL, method, status, type, duration). Useful for inspecting API calls a page makes, debugging failures, or seeing what data drives a UI. Pass responseBody:true to also include captured response bodies (text/JSON) from fetch/XHR — so e.g. a Google Maps "REQUEST_DENIED" error message comes back in one call, no need to re-fetch via fast_evaluate.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        filter: { type: 'string', description: 'Optional URL substring to filter by' },
-        status: { type: 'string', enum: ['all', 'failed', 'ok'], description: 'Filter by status (failed=4xx/5xx/error, ok=2xx/3xx, default all)' },
-        limit: { type: 'number', description: 'Max requests to return (default 50, newest first)' },
-        clear: { type: 'boolean', description: 'If true, clear the buffer after returning' },
-        responseBody: { type: 'boolean', description: 'If true, include captured response bodies for fetch/XHR requests (binary/non-text response types return null body). Bodies are matched by URL + timestamp.' },
-        maxBodyBytes: { type: 'number', description: 'Truncate each returned body to at most this many characters (default 16384). Item gets bodyTruncated:true when trimmed.' },
-      },
-    },
-  },
-  {
     name: 'fast_hover',
     description: 'Hover over an element matching text/label/aria-label/placeholder. Fires mouseenter/mouseover/mousemove. Useful for triggering tooltips, hover-only menus, lazy hover-loaded content. Returns include a FRESH POST-hover `snapshot` (opt out with noSnapshot:true): a re-walk taken AFTER the hover settles, so a tooltip/menu it JUST revealed IS captured — fast_wait for its text if the tooltip is slow to appear.',
     inputSchema: {

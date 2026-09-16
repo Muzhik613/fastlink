@@ -200,10 +200,3 @@ export async function captureViewport(opts = {}) {
   throw err;
 }
 
-export const pushRing = (map, key, entry, max) => {
-  if (!key) return;
-  let buf = map.get(key);
-  if (!buf) { buf = []; map.set(key, buf); }
-  buf.push(entry);
-  if (buf.length > max) buf.splice(0, buf.length - max);
-};

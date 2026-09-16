@@ -4,8 +4,6 @@ import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
 import { clickXY, typeText, pressKeyChord, wheelScroll, dragXY } from './input.js';
 import { uploadFile }      from './upload.js';
-import { readConsole }     from './console.js';
-import { readNetwork }     from './network.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { captureMarks }    from './marks.js';
 import { visionCapture, annotateBoxes } from './vision.js';
@@ -136,8 +134,6 @@ async function runOne(action, args) {
   if (action === 'fast_wheel')      return wheelScroll(args);
   if (action === 'fast_drag_xy')    return dragXY(args);
   if (action === 'fast_upload')     return uploadFile(args);
-  if (action === 'fast_console')    return readConsole(args);
-  if (action === 'fast_network')    return readNetwork(args);
   if (action === 'fast_wait' && (args?.networkIdle || args?.domready)) {
     // text/selector + networkIdle: the text is the real signal (SPAs long-poll,
     // so pure idle can time out forever); resolve on it and REPORT the network
@@ -173,12 +169,9 @@ function pageBridge(action, argsJson) {
   return Promise.resolve(window.__fastlink.run(action, args)).then((r) => (r === undefined ? null : JSON.stringify(r)));
 }
 
-// Fallback re-injection list when the pre-injected page.js went stale/missing
-// (extension reloaded after the tab opened). ONLY page.js — it's the one DOM
-// tools need (window.__fastlink). The console/network hooks are deliberately
-// NOT re-injected: they wrap console/fetch, so re-running them double-wraps
-// (duplicated capture). They re-run on their own via the manifest on any real
-// document load. (Mirrors MAIN_WORLD_FILES in tab.js.)
+// Fallback re-injection list for when the pre-injected page.js went stale or
+// missing (the extension was reloaded after the tab opened). ONLY page.js —
+// it is the one file DOM tools need (window.__fastlink).
 const MAIN_WORLD_FILES = ['src/actions/page.js'];
 
 // Run the page bridge in the target tab's MAIN world. Returns the bridge's

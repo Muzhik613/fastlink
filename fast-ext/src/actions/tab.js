@@ -21,11 +21,9 @@ export async function getTargetTabId() {
   return (await getTargetTab())?.id;
 }
 
-// Fallback re-injection list for when the pre-injected page.js went stale.
-// Only page.js — it's the one DOM tools need (window.__fastlink). The console/
-// network hooks are deliberately NOT re-injected here: they wrap console/fetch,
-// so re-running them could double-wrap (duplicated console/network capture).
-// They re-run on their own via the manifest on any real document load.
+// Fallback re-injection list for when the pre-injected page.js went stale or
+// missing (the extension was reloaded after the tab opened). ONLY page.js —
+// it is the one file DOM tools need (window.__fastlink).
 const MAIN_WORLD_FILES = ['src/actions/page.js'];
 
 export async function handleTabAction(action, args = {}) {
