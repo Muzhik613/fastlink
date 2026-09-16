@@ -3479,12 +3479,26 @@ async function runPageAction(action, args) {
       // starved timer on a storming page is reported, never run past budget).
       const budgetMs = args.timeoutMs || 3000;
       const tStart = nowMs();
+      // A list that has stopped changing (same options for LIST_SETTLED_MS) will not
+      // grow the wanted one: stop there instead of polling out the whole budget
+      // (live Azure: 3.1s on a one-entry list that had settled at once).
+      const LIST_SETTLED_MS = 600;
       let target = null, via = null, found = panel || optionEls(), starved = false;
+      let sig = '', sigAt = nowMs();
       for (let tick = 0; ; tick++) {
         if (tick) { drainPendingSync(2000, 30); found = optionEls(); }
         target = pickOption(found.els);
         if (target) { via = found.via; break; }
         if (!opened || nowMs() - tStart >= budgetMs) break;   // nothing opened: report now, no 3s poll
+        const nowSig = found && found.els.length ? `${found.els.length}|${(found.els[found.els.length - 1].textContent || '').trim()}` : '';
+        if (nowSig !== sig) { sig = nowSig; sigAt = nowMs(); }
+        else if (nowSig && nowMs() - sigAt >= LIST_SETTLED_MS) {
+          // …unless the list says it is still loading (async search lists show a
+          // "Loading…" row or aria-busy until the results arrive)
+          let busy = false;
+          try { busy = found.els.some((el) => /^\s*(loading|searching)\b/i.test(el.textContent || '')) || !!document.querySelector('[aria-busy="true"]'); } catch {}
+          if (!busy) break;
+        }
         const before = nowMs();
         await wait(50);
         if (nowMs() - before > 1000) starved = true;   // the timer slept far past its 50ms: main thread starved
@@ -3498,6 +3512,17 @@ async function runPageAction(action, args) {
       const available = found ? found.els.slice(0, 10).map(el => (el.textContent || '').trim()).filter(Boolean) : [];
       const base = { tried: optionText, field: describeField(field), opened, elapsedMs: Math.round(nowMs() - t0), timing, panelIds: ariaPanelIds(field), available };
       if (!opened) return { error: `could not open the dropdown "${fieldRaw}" — no options appeared after ${tried.join(' / ')} on its trigger (${trigger.tagName.toLowerCase()}${trigger.getAttribute('role') ? ` role=${trigger.getAttribute('role')}` : ''}); nothing was changed`, triedOpen: tried, ...base, hint: 'fast_click the control and read the auto-snapshot for what opened; if the options are drawn on canvas / in a cross-origin frame, take fast_screenshot and use fast_click_xy' };
+      if (available.length && !starved) {
+        // the list opened, settled, and the value is not in it: close it again (an open
+        // list would swallow the next action) and say what it does offer
+        try { if (expanded()) key(trigger, 'Escape'); } catch {}
+        const total = found.els.filter((el) => (el.textContent || '').trim()).length;
+        return {
+          error: `${JSON.stringify(optionText)} is not an option of ${JSON.stringify(fieldRaw)} — the open list offers ${total} option(s); nothing was selected`,
+          ...base,
+          hint: `pick one of \`available\`${total > available.length ? ` (the first ${available.length} of ${total})` : ''}; a value that does not exist yet has to be created first — use the page's own create control for this field (e.g. a "Create new" link next to it), then select it`,
+        };
+      }
       return { error: 'no matching option in the open list', ...base, ...(starved ? { starved: true, hint: 'the page was re-rendering so heavily that timers starved; retry once the view settles (fast_wait for text of the finished state), or fast_click the option text directly' } : {}) };
     };
 

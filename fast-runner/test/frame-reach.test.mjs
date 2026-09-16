@@ -217,3 +217,24 @@ test('a click in a frame that lands on a dropdown trigger carries the fast_selec
   assert.equal(r.inFrame.frameId, 7, JSON.stringify(r));
   assert.match(r.hint || '', /fast_select_option/, JSON.stringify(r));
 });
+
+test('fast_select_option on a portalled listbox inside the frame (Fluent-shaped) picks and reads back there', async () => {
+  const { pay } = setup({ payHtml: '<label id="rl">Region</label><div role="combobox" id="Dropdown90" tabindex="0" aria-labelledby="rl" aria-haspopup="listbox" aria-expanded="false"><span class="t">(US) East US</span></div>' });
+  const d = pay.document, cb = d.getElementById('Dropdown90');
+  pay.Element.prototype.scrollIntoView = function () {};
+  cb.addEventListener('click', () => {
+    if (cb.getAttribute('aria-expanded') === 'true') return;
+    const layer = d.createElement('div'); layer.className = 'ms-Layer';
+    const lb = d.createElement('div'); lb.setAttribute('role', 'listbox'); lb.id = 'Dropdown90-list';
+    for (const text of ['(US) East US', '(Asia Pacific) Japan East']) {
+      const o = d.createElement('button'); o.setAttribute('role', 'option'); o.textContent = text;
+      o.addEventListener('click', () => { cb.querySelector('.t').textContent = text; layer.remove(); cb.setAttribute('aria-expanded', 'false'); });
+      lb.appendChild(o);
+    }
+    layer.appendChild(lb); d.body.appendChild(layer); cb.setAttribute('aria-expanded', 'true');
+  });
+  const r = await call('fast_select_option', { field: 'Region', option: '(Asia Pacific) Japan East', noSnapshot: true });
+  assert.equal(cb.querySelector('.t').textContent, '(Asia Pacific) Japan East', JSON.stringify(r).slice(0, 500));
+  assert.equal(r.verified, true);
+  assert.equal(r.inFrame.frameId, 7);
+});
