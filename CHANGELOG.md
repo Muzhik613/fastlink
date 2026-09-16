@@ -33,6 +33,21 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — `fast_click_xy` says where focus landed
+- **What:** every `fast_click_xy` return now carries `focused` {tag, type, label, editable} — the field's
+  live `value` too when it is editable — read with the SAME probe `fast_type`'s guard uses, plus a `hint`
+  naming what holds focus when nothing editable does. Best-effort: a navigating click that tears the frame
+  down mid-probe simply reports no focus.
+- **Why:** holdout-2 by-hand pass (National Rail): the first `fast_click_xy` on the origin combobox right
+  after the consent banner closed left focus on the page's `main-content` wrapper, and the `fast_type` after
+  it was refused — with no way to have seen it coming, because the click reported only its own coordinates.
+  A second click focused the box.
+- **Files:** `fast-ext/src/actions/input.js`, `fast-dxt/server/tools.js`, `fastlink-relay/tools.js`.
+- **Watch out:** the probe costs one MAIN-world injection per coordinate click (~10ms) and runs on the
+  internal `fast_click_xy` calls inside `fast_fill_vision` / `fast_do` too; they ignore the extra fields.
+  The two `tools.js` copies must stay byte-identical.
+- **Status:** committed; proven live on the hvm rig (see below).
+
 ## 2026-09-16 — the visual note gets an observation BUDGET, keeps the claimed values at the front, and stays in register
 - **What:** four changes to `describeScreen` (`fast-dxt/server/scout.js`), on top of 076e0a6's "describe every
   empty box". (1) A **budget**: at most 8 observations, asked for in the prompt (with "name the ones nearest

@@ -88,7 +88,30 @@ export async function clickXY({ x, y, button, clickCount }) {
     await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
     await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, buttons: 0 });
   }
-  return { clickedAt: { x, y }, button: btn, clickCount: count };
+  const out = { clickedAt: { x, y }, button: btn, clickCount: count };
+  // WHERE FOCUS LANDED. A coordinate click is how a caller focuses a field it
+  // cannot name, and the fast_type that follows REFUSES when nothing editable
+  // has focus — so a click that reports only its own coordinates leaves the
+  // caller with no way to see the refusal coming (live: the first click on a
+  // combobox right after a consent overlay closed left focus on the page's
+  // main-content wrapper, and the next fast_type was refused). Same probe, same
+  // vocabulary as fast_type's guard. Best-effort: a navigating click tears the
+  // frame down mid-probe, and that is simply no focus report.
+  try {
+    const probe = await injectInTab({ world: 'MAIN', func: inspectActiveElement });
+    const f = probe && !probe.error ? probe.result : null;
+    if (f) {
+      out.focused = { tag: f.tag, editable: !!f.editable };
+      if (f.type) out.focused.type = f.type;
+      if (f.label) out.focused.label = f.label;
+      if (f.editable) out.focused.value = f.value;
+      if (!f.editable) {
+        const named = f.tag === 'none' ? 'nothing' : f.tag === 'body' || f.tag === 'html' ? 'the document itself' : `<${f.tag}>${f.label ? ` (${f.label})` : ''}`;
+        out.hint = `${named} holds focus, not an editable field — a fast_type now would be refused (pass force:true only for a cross-origin iframe input). Click the field's own box, or read its rect and click that center, before typing.`;
+      }
+    }
+  } catch {}
+  return out;
 }
 
 // Trusted mouse-wheel scroll at a point via CDP — real wheel events that
