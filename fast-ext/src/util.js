@@ -48,29 +48,6 @@ export async function injectInTab({ world = 'MAIN', func, args = [] }) {
   return { tab: got.tab, result };
 }
 
-// chrome.tabs.captureVisibleTab copies the rendered surface out of the GPU
-// compositor and intermittently throws "image readback failed" when that
-// process stalls/wedges (page renders fine, DOM fine, only the bitmap copy
-// fails). It ALSO enforces a ~2 calls/sec quota (MAX_CAPTURE_VISIBLE_TAB_
-// CALLS_PER_SECOND) — so fast retries make things WORSE, tripping the quota and
-// prepending a misleading quota string to the GPU error. So: at most 2 attempts,
-// spaced ≥750ms to stay under the quota. Returns a DEVICE-px dataUrl (CSS px ×
-// dpr), so callers that map coordinates by dpr stay correct. Throws on failure.
-export async function captureVisibleRetry(capOpts = { format: 'png' }, attempts = 2) {
-  let lastErr;
-  for (let i = 0; i < attempts; i++) {
-    if (i > 0) await new Promise((r) => setTimeout(r, 750)); // stay under the per-second quota
-    try {
-      const dataUrl = await chrome.tabs.captureVisibleTab(undefined, capOpts);
-      if (dataUrl) return dataUrl;
-      lastErr = new Error('captureVisibleTab returned empty');
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr || new Error('captureVisibleTab failed');
-}
-
 // Capture via CDP Page.captureScreenshot — NOT subject to the captureVisibleTab
 // per-second quota, and able to read from the window surface (fromSurface:false)
 // rather than the GPU compositor. CRITICAL: it reuses the SHARED persistent
@@ -125,20 +102,8 @@ export async function pinnedBackgroundTab() {
   return pinned.id === visibleId ? null : pinned;
 }
 
-// Pin-aware drop-in for captureVisibleRetry: when Claude's pinned target tab is
-// backgrounded, captureVisibleTab would capture the wrong (on-screen) tab, so
-// capture the pinned tab via CDP instead (getActiveTab() inside captureViaDebugger
-// resolves to the pin). Otherwise use the normal quota-aware visible-tab path.
-// Returns a DEVICE-px dataUrl string, same contract as captureVisibleRetry, so
-// the dpr-based coordinate math in marks/vision is unchanged.
-export async function captureVisiblePinAware(capOpts = { format: 'png' }) {
-  const bg = await pinnedBackgroundTab();
-  if (bg) return captureViaDebugger(capOpts);
-  return captureVisibleRetry(capOpts);
-}
-
-// Robust viewport capture for callers that only need pixels (not dpr-accurate
-// coordinate mapping, e.g. fast_screenshot). Order matters because the GPU
+// Robust viewport capture (DEVICE pixels; takeScreenshot resizes every capture to
+// CSS pixels). Order matters because the GPU
 // wedge is INTERMITTENT and captureVisibleTab is quota-limited:
 //   1. one captureVisibleTab — fast, no banner, works when the GPU is healthy
 //   2. CDP Page.captureScreenshot — dodges the quota and the wedged compositor

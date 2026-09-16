@@ -22,12 +22,55 @@ export async function takeScreenshot(args = {}) {
   try {
     // Companion screenshots stay pin-aware (show the tab the action actually drove).
     if (args.preferTarget && typeof args.tabId !== 'number') {
-      return await captureViewport(args);
+      const shot = await captureViewport(args);
+      return await toCssPixels(shot, await getActiveTab(), args);
     }
-    return await captureForeground(args);
+    const { tab, ...shot } = await captureForeground(args);
+    return await toCssPixels(shot, tab, args);
   } catch (e) {
     return { error: e?.message || String(e), hint: e?.hint };
   }
+}
+
+// ONE coordinate space for the model: a screenshot's pixels ARE the CSS pixels
+// fast_click_xy takes. Both capture paths (captureVisibleTab and CDP
+// Page.captureScreenshot) return DEVICE pixels — CSS px × devicePixelRatio — so
+// on a HiDPI screen (dpr 2) a point read off the image clicked twice as far out
+// (live Azure: a 2880x1530 image of a ~1440px viewport; the click at 320,145
+// hit the page title). Every capture is resized here to the tab's CSS viewport.
+// There is no device-resolution mode: nothing downstream maps coordinates by dpr.
+// The scale comes from the WIDTH (the tab's width in DIPs over its page zoom =
+// the CSS viewport width); the height follows the image at that same scale, so
+// the aspect ratio is never distorted by a tab height that disagrees with the
+// captured surface. Pure.
+export function cssFrame({ imgW, imgH, tabW, zoom }) {
+  const z = zoom > 0 ? zoom : 1;
+  if (!(tabW > 0) || !(imgW > 0)) return { cssWidth: imgW, cssHeight: imgH, dpr: 1 };
+  const cssWidth = Math.round(tabW / z);
+  const dpr = imgW / cssWidth;
+  return { cssWidth, cssHeight: Math.round(imgH / dpr), dpr: Math.round(dpr * 1000) / 1000 };
+}
+
+async function toCssPixels(shot, tab, args = {}) {
+  if (!shot || !shot.dataUrl) return shot;
+  const format = shot.format || 'png';
+  const blob = await (await fetch(shot.dataUrl)).blob();
+  const bmp = await createImageBitmap(blob);
+  let zoom = 1;
+  try { if (tab?.id != null) zoom = await chrome.tabs.getZoom(tab.id); } catch {}
+  const f = cssFrame({ imgW: bmp.width, imgH: bmp.height, tabW: tab?.width, zoom });
+  const meta = { cssWidth: f.cssWidth, cssHeight: f.cssHeight, dpr: f.dpr, scale: 1 };
+  if (bmp.width === f.cssWidth && bmp.height === f.cssHeight) { bmp.close?.(); return { ...shot, ...meta }; }
+  const canvas = new OffscreenCanvas(f.cssWidth, f.cssHeight);
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bmp, 0, 0, f.cssWidth, f.cssHeight);
+  bmp.close?.();
+  const out = await canvas.convertToBlob({ type: `image/${format}`, ...(format === 'jpeg' ? { quality: (typeof args.quality === 'number' ? args.quality : 90) / 100 } : {}) });
+  const bytes = new Uint8Array(await out.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return { ...shot, dataUrl: `data:image/${format};base64,${btoa(bin)}`, ...meta };
 }
 
 // Resolve the tab to capture: an explicit tabId override, else the user's REAL
@@ -71,7 +114,7 @@ async function captureForeground(args = {}) {
       const active = await getActiveTab();
       if (active?.id === tab.id) {
         const dataUrl = await captureViaDebugger(capOpts);
-        if (dataUrl) return { dataUrl, format, fresh: true };
+        if (dataUrl) return { dataUrl, format, fresh: true, tab };
       }
     } catch (_) { /* fall through to captureVisibleTab */ }
   }
@@ -86,7 +129,7 @@ async function captureForeground(args = {}) {
     if (i > 0) await new Promise((r) => setTimeout(r, 750));
     try {
       const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, capOpts);
-      if (dataUrl) return { dataUrl, format };
+      if (dataUrl) return { dataUrl, format, tab };
       lastErr = new Error('captureVisibleTab returned empty');
     } catch (e) { lastErr = e; }
   }
@@ -102,7 +145,7 @@ async function captureForeground(args = {}) {
     const active = await getActiveTab();
     if (active?.id === tab.id) {
       const dataUrl = await captureViaDebugger(capOpts);
-      if (dataUrl) return { dataUrl, format };
+      if (dataUrl) return { dataUrl, format, tab };
     }
   } catch (e) { lastErr = e; }
 

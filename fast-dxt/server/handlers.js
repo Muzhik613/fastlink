@@ -176,7 +176,9 @@ function saveScreenshot(result) {
   const bytes = Buffer.from(base64, 'base64');
   writeFileSync(path, bytes);
   sweepOldScreenshots();
-  return { path, format: ext, bytes: bytes.length };
+  // cssWidth/cssHeight/dpr/scale:1 — the image's pixels are fast_click_xy's CSS pixels
+  const { cssWidth, cssHeight, dpr, scale } = result;
+  return { path, format: ext, bytes: bytes.length, ...(cssWidth ? { width: cssWidth, height: cssHeight, cssWidth, cssHeight, dpr, scale } : {}) };
 }
 
 // Delete fastlink-screenshot-* files older than 24h. Cheap readdir on
