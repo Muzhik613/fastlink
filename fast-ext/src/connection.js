@@ -145,7 +145,6 @@ export function startConnection(handle, opts = {}) {
     // Generic "the worker just woke" hook (onStartup/onInstalled): re-arm the
     // alarm and reconnect the previously-active transport.
     wake: () => { beginFastRetry(); ensureAlarm(); checkHealth(); connect(); },
-    sendEvent,
   };
 }
 
@@ -338,14 +337,6 @@ function startPingLoop(ws) {
 
 function stopPingLoop() {
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
-}
-
-// Push an unsolicited event to the broker (→ MCP server), e.g. a page-load
-// signal so the scout can pre-warm its page map. No-op if the socket is down.
-export function sendEvent(payload) {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    try { socket.send(JSON.stringify({ type: 'event', installId, ...payload })); } catch {}
-  }
 }
 
 // 0 clients → red, 1 → yellow, 2+ → green. Reflects MCP sessions reaching

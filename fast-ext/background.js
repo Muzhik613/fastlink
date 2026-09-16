@@ -1,4 +1,4 @@
-import { startConnection, sendEvent }           from './src/connection.js';
+import { startConnection }                      from './src/connection.js';
 import { startRelayConnection, sendRelayEvent, stopRelay }  from './src/relayClient.js';
 import { startBufferListeners }                  from './src/buffers.js';
 import { dispatchAction }                         from './src/actions/index.js';
@@ -438,22 +438,14 @@ chrome.storage.session.get(RELAY_GATE_KEY).then((o) => {
 // Transports + persistent event wiring.
 // ---------------------------------------------------------------------------
 const transports = [];          // active transport hook objects (onAlarm/wake/…)
-const senders = [];             // active event senders (sendEvent / sendRelayEvent)
-let emitNavigated = () => {};    // fan-out 'navigated' event to all active senders
 let localStarted = false;
 let relayStarted = false;
-
-function rebuildEmit() {
-  emitNavigated = (p) => senders.forEach((s) => { try { s(p); } catch {} });
-}
 
 // Start the local broker transport once. Idempotent.
 function startLocal() {
   if (localStarted) return;
   localStarted = true;
   transports.push(startConnection((a, ar) => trackedDispatch(a, ar, 'local'), { onState: reportLocal }));
-  senders.push(sendEvent);
-  rebuildEmit();
 }
 
 // Start the cloud-relay transport once, from the given config. Idempotent —
@@ -465,8 +457,6 @@ function startRelay(c) {
   relayStarted = true;
   const wssUrl = c.relayWssUrl || `${String(c.relayBase).replace(/^http/, 'ws')}/ext`;
   transports.push(startRelayConnection((a, ar) => trackedDispatch(a, ar, 'relay'), { wssUrl, deviceToken: c.deviceToken, onState: reportRelay }));
-  senders.push(sendRelayEvent);
-  rebuildEmit();
 }
 
 // Persistent event listeners MUST be registered synchronously at the top level
@@ -487,15 +477,7 @@ chrome.windows.onRemoved.addListener(()     => transports.forEach((t) => t.onWin
 chrome.runtime.onStartup.addListener(()   => transports.forEach((t) => t.wake?.()));
 chrome.runtime.onInstalled.addListener(() => transports.forEach((t) => t.wake?.()));
 
-// Tell every active transport when the active tab finishes loading, so the scout
-// can pre-warm its page map before Claude ever asks. Fires once per full load
-// (SPA route changes don't trigger onUpdated 'complete').
 installTrail();   // per-tab URL trail for fast_list (trail.js)
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== 'complete') return;
-  if (!tab || !tab.active || !/^https?:/.test(tab.url || '')) return;
-  emitNavigated({ event: 'navigated', url: tab.url, tabId });
-});
 
 // The toolbar action now opens popup.html (manifest action.default_popup), which
 // shows per-transport status and a "Reload extension" button. This onClicked

@@ -3,7 +3,7 @@ import { state } from './state.js';
 import { EXT_PORTS, EXT_BIND } from './config.js';
 import { log, onFatalListenError } from './lifecycle.js';
 import { onExtensionResponse, failPendingForSocket } from './router.js';
-import { mcpClientCount, broadcastToMcp } from './mcpBridge.js';
+import { mcpClientCount } from './mcpBridge.js';
 import { attachHeartbeat, startHeartbeatLoop } from './heartbeat.js';
 
 // Binds EXT_PORTS. 'primary' 9876 = shared port for custom labels (demuxed by
@@ -108,12 +108,6 @@ function startOne(defaultId, port) {
         // for >N ping cycles => dead path) and self-heal. Additive + backward
         // compatible: older extensions ignore unknown inbound frames.
         try { ws.send(JSON.stringify({ pong: true })); } catch {}
-        return;
-      }
-      // Unsolicited extension events (e.g. page-load) fan out to MCP servers,
-      // which decide what to do (the scout pre-warms on 'navigated').
-      if (msg.type === 'event') {
-        broadcastToMcp(msg);
         return;
       }
       onExtensionResponse(msg);

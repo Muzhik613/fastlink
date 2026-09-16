@@ -105,7 +105,6 @@ export function startRelayConnection(handle, { wssUrl, deviceToken, onState } = 
     onWindowRemoved: () => disconnectIfIdle(),
     // Generic "the worker just woke" hook (onStartup/onInstalled).
     wake: () => { ensureAlarm(); checkHealth(); connect(); },
-    sendEvent: sendRelayEvent,
   };
 }
 
@@ -287,8 +286,8 @@ function stopPingLoop() {
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
 }
 
-// Push an unsolicited event up to the relay DO (e.g. a 'navigated' page-load
-// signal for future pre-warm). No-op if the socket is down.
+// Push an unsolicited event up to the relay DO (the popup's driving_paused /
+// driving_resumed toggle). No-op if the socket is down.
 export function sendRelayEvent(payload) {
   if (socket && socket.readyState === WebSocket.OPEN) {
     try { socket.send(JSON.stringify({ type: 'event', ...payload })); } catch {}

@@ -516,7 +516,7 @@ async function handlePairClaim(request, env) {
 // ===========================================================================
 // /settings/gemini-key — device-token-authed BYO Gemini key (SIGNUP-SPEC §5.3, P1).
 // The onboarding page (ext-auth, step 2) POSTs the user's own Gemini key so the
-// scout/vision/prewarm tier works for extension-only users without leaving the
+// scout/vision tier works for extension-only users without leaving the
 // browser. The device token the extension already holds IS the auth — no extra
 // OAuth. Key is stored AES-GCM encrypted at rest (db.setUserGeminiKey). FastLink is
 // fully usable DOM-only WITHOUT a key; this is purely the optional speed tier.

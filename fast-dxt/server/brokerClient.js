@@ -23,7 +23,6 @@ const HEARTBEAT_DEAD_MS = 32_000;
 let ws = null;
 let connectingPromise = null;
 const pending = new Map();
-const eventHandlers = new Set();
 
 // Per-session routed install (BUG-5). fast_profile sets this label; we tag every
 // call envelope with it so routing is deterministic across the label-keyed slots
@@ -36,9 +35,6 @@ let explicitAuto = false;
 export const setSelectedInstall = (id) => { selectedInstall = id || null; explicitAuto = !id; };
 export const getSelectedInstall = () => selectedInstall;
 const envelopeInstall = () => selectedInstall ?? (explicitAuto ? 'auto' : null);
-
-// Subscribe to unsolicited broker→server events (e.g. page-load 'navigated').
-export function onBrokerEvent(fn) { eventHandlers.add(fn); }
 
 // Surfaced through fast_status so the LLM can tell "just reconnected,
 // retry once" from "steady-state failure".
@@ -128,10 +124,6 @@ function wireSocket(socket) {
   socket.on('message', (data) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
-    if (msg.type === 'event') {
-      for (const h of eventHandlers) { try { h(msg); } catch {} }
-      return;
-    }
     const entry = pending.get(msg.id);
     if (!entry) return;
     pending.delete(msg.id);

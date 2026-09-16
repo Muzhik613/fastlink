@@ -246,7 +246,7 @@ async function dispatchTool(params, relay, session) {
 
   // N2 kill-switch (SAFETY): if the user paused driving from the extension popup,
   // refuse every browser-touching tool until they resume. Human-only — there is no
-  // tool to un-pause, so prompt-injection can't override it. fast_status/prewarm
+  // tool to un-pause, so prompt-injection can't override it. fast_status/profile
   // stay available so the paused state is observable.
   if (!PAUSE_EXEMPT.has(name) && (await relay.isDrivingPaused())) {
     return textResult({
@@ -271,7 +271,7 @@ async function dispatchTool(params, relay, session) {
 
   // Per-origin consent gate (M4) — applies to every page-touching tool, incl. the
   // vision tiers and fast_evaluate (both in MUTATING_TOOLS). Exempt relay-native
-  // tools (status/profile/prewarm/batch) pass through; batch steps are gated in runBatch.
+  // tools (status/profile/batch) pass through; batch steps are gated in runBatch.
   {
     const verdict = await consentVerdict(relay, name, ws);
     if (verdict) return textResult(verdict);
