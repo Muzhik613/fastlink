@@ -33,6 +33,31 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — walkDeep guards: iterative (never RangeError), budgeted, and a miss says the page was too big to scan
+- **What:** `walkDeep` walks a root QUEUE instead of recursing, so frame/shadow nesting can never
+  blow the JS stack. It carries budgets — `WALK_MAX_NODES` 300000, `WALK_MAX_ROOTS` 4000,
+  `WALK_MAX_MS` 600 — checked both between roots AND after counting each root's nodes, and returns
+  `{roots, nodes, ms, truncated}`. A `fast_select_option` miss whose scan was truncated now carries
+  a structured `scan` block plus a hint naming what to do instead (an id from `fast_snapshot`,
+  `section:"<heading>"`, or `index:N`).
+- **Why:** GCP's create-client page is 9,995,921 composed nodes across 47,646 roots behind 38,116
+  same-origin iframes. Two distinct failure modes, not one: the settled page made a plain recursive
+  composed-tree walk throw **RangeError: Maximum call stack size exceeded** (it CRASHED, it did not
+  merely hang), and walking it to completion cost ~45s that the caller only ever saw as the bridge's
+  "page busy" 20s timeout with no explanation of why.
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** the in-root budget check matters as much as the between-roots one — with only the
+  latter, a SINGLE enormous root (one 400k-node document) is walked to completion and the guard
+  never fires. That was a real gap in the first version of this change, caught by testing a
+  single-root 400k tree; keep both checks. A legitimately huge page can now return a truncated scan
+  rather than a match, which is the intended trade: a structured miss beats a 45s hang.
+- **Status:** committed; fast-runner 56/56. Proven both ways: at 20,000 nested roots the recursive
+  walker throws after 9,356 roots while the queue walk completes 20,001 roots / 40,014 nodes in
+  **21ms**; a 400k-node single root now aborts in **106ms** with
+  `scan:{truncated:"more than 300000 composed nodes", rootsScanned:1, nodesScanned:400008}`.
+  Normal pages unchanged (selenium, APG, select2 `index:0`, react-select refusal, nested-iframe
+  page byte-identical, gcpscale2 candidate parity 5001).
+
 ## 2026-09-16 — walkDeep: the per-iframe forced layout is opt-in, and a root is never walked twice
 - **What:** `walkDeep(root, sel, visit, opts)` computes the iframe offset passed to `visit` only when
   a caller asks (`{offsets:true}`), and carries a `seen` Set so a root reachable by more than one
@@ -51,8 +76,19 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 - **Status:** committed; fast-runner 56/56. 600-iframe repro: warm call **202ms → 48ms** (4.2×).
   Behaviour identical — a nested-iframe page returns a byte-identical result before and after, and
   gcpscale2's candidate count stays 5001 (wall 1878 → 1493ms). selenium web-form, APG select-only
-  and select2 `index:0` all still verify. NOT the GCP fix: at ~0.15ms per frame you would need
-  ~200,000 iframes to account for its 45s resolve, and the cause there is still open.
+  and select2 `index:0` all still verify.
+- **THIS IS THE GCP FIX — resolved.** Live in the owner's Chrome on 13f9cff, the full `gcpform`
+  cell runs **6/6 in 18.6s over 10 calls**, and `fast_select_option` takes 0.8s with
+  `{resolveMs: 7, rowsMs: 1, openMs: 191, pickMs: 134, readbackMs: 6, snapshotMs: 162}`.
+  **Resolve went 45,619ms → 7ms.** The run before it (e629ec4) was 88.7s and 4/6 with both batch
+  steps timing out. Do not re-litigate this: the cause was the per-iframe forced synchronous layout,
+  because probe 5 measured that page at **9,995,921 composed nodes, 47,646 roots and 38,116
+  same-origin iframes** behind only 5 top-level ones. I originally dismissed this fix as
+  insufficient by pricing ~0.15ms/frame against ~600 frames; at 38,116 frames — each layout
+  invalidated by the next in a continuously re-rendering document — it was the entire 45s. The
+  lesson worth keeping: a per-element forced layout is not a constant cost, it is O(frames) with a
+  re-render multiplier, and the composed tree behind a handful of top-level iframes can be three
+  orders of magnitude larger than the document you can see.
 
 ## 2026-09-16 — fast_select_option: toControls' containment dedupe was O(n²) and read a rect per match
 - **What:** `toControls` (page.js) dedupes with an ancestor `Set` lookup (O(depth), crossing shadow

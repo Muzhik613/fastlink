@@ -299,21 +299,53 @@ const containerLabel = (el) => {
 // ox/oy today, so on a page with many same-origin frames that layout was the bulk
 // of the walk — 600 frames measured 98ms with the rect vs 6ms without. `seen` means
 // a root reachable by more than one path is walked once, never repeatedly.
+// ITERATIVE and BUDGETED. Two failure modes seen on GCP's create-client page, whose
+// composed tree is 9,995,921 nodes across 47,646 roots behind 38,116 same-origin
+// iframes (5 top-level):
+//   • a recursive walk threw RangeError: Maximum call stack size exceeded — the frame
+//     nesting alone is deeper than the JS stack, so the walk CRASHED;
+//   • walking it to completion costs ~45s, which the caller only ever saw as the
+//     bridge's "page busy" 20s timeout with no explanation.
+// A root queue removes the depth limit, and the budgets stop the walk in well under a
+// second. Returns a status so the caller can say WHY it could not answer instead of
+// silently returning a short list: { roots, nodes, ms, truncated }.
+const WALK_MAX_NODES = 300000;  // composed elements visited before giving up
+const WALK_MAX_ROOTS = 4000;    // documents + shadow roots entered
+const WALK_MAX_MS    = 600;     // wall clock
 const walkDeep = (root, selector, visit, opts) => {
-  const offsets = !!(opts && opts.offsets);
+  const o = opts || {};
+  const offsets = !!o.offsets;
+  const maxNodes = o.maxNodes || WALK_MAX_NODES;
+  const maxRoots = o.maxRoots || WALK_MAX_ROOTS;
+  const maxMs = o.maxMs || WALK_MAX_MS;
+  const t0 = nowMs();
   const seen = new Set();
-  const walk = (r, ox, oy) => {
-    if (!r || !r.querySelectorAll || seen.has(r)) return;
+  const queue = [[root, 0, 0]];
+  let head = 0, roots = 0, nodes = 0, truncated = null;
+  while (head < queue.length) {
+    if (roots >= maxRoots) { truncated = `more than ${maxRoots} roots`; break; }
+    if (nodes >= maxNodes) { truncated = `more than ${maxNodes} composed nodes`; break; }
+    if (nowMs() - t0 > maxMs) { truncated = `the ${maxMs}ms scan budget`; break; }
+    const [r, ox, oy] = queue[head++];
+    if (!r || !r.querySelectorAll || seen.has(r)) continue;
     seen.add(r);
+    roots++;
     let matches, all;
     try { matches = r.querySelectorAll(selector); all = r.querySelectorAll('*'); }
-    catch { return; }
+    catch { continue; }
     for (const el of matches) {
       try { visit(el, { ox, oy, inFrame: ox !== 0 || oy !== 0 }); } catch {}
     }
+    nodes += all.length;
+    // Budget again HERE, not only at the top of the loop: one enormous root (a
+    // single 400k-node document) would otherwise be walked to completion and the
+    // between-roots check would never fire. Matches in this root were already
+    // visited, so stopping here only skips descending further.
+    if (nodes >= maxNodes) { truncated = `more than ${maxNodes} composed nodes`; break; }
+    if (nowMs() - t0 > maxMs) { truncated = `the ${maxMs}ms scan budget`; break; }
     for (const el of all) {
       try {
-        if (el.shadowRoot) walk(el.shadowRoot, ox, oy);
+        if (el.shadowRoot) queue.push([el.shadowRoot, ox, oy]);
         if (el.tagName === 'IFRAME') {
           let doc = null;
           try { doc = el.contentDocument; } catch {}
@@ -324,12 +356,12 @@ const walkDeep = (root, selector, visit, opts) => {
             try { fr = el.getBoundingClientRect(); } catch { continue; }
             nx = ox + fr.x; ny = oy + fr.y;
           }
-          walk(doc, nx, ny);
+          queue.push([doc, nx, ny]);
         }
       } catch {}
     }
-  };
-  walk(root, 0, 0);
+  }
+  return { roots, nodes, ms: Math.round(nowMs() - t0), truncated };
 };
 
 // Compute the offset of `el` relative to the outer-page viewport, accounting
@@ -2756,9 +2788,12 @@ async function runPageAction(action, args) {
   }
 
   if (action === 'fast_select_option') {
+    // `lastWalk` carries the most recent scan's budget status, so a miss can say the
+    // page was too big to scan rather than pretending nothing matched.
+    let lastWalk = null;
     const queryAllDeep = (root, selector) => {
       const out = [];
-      walkDeep(root, selector, (el) => out.push(el));
+      lastWalk = walkDeep(root, selector, (el) => out.push(el));
       return out;
     };
 
@@ -3042,7 +3077,7 @@ async function runPageAction(action, args) {
       const where = sectionRaw ? ` in section "${sectionRaw}"` : '';
       if (!vis.length) {
         const act = pageActivity();
-        return { error: `field "${fieldRaw}" not found${where} — no visible dropdown/combobox/select carries that label, aria-label, placeholder, name, id, or titled section. Nothing was changed. Retry with one of the names in \`candidates\`.`, waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing — the control may not be rendered yet: fast_wait for text that identifies its view, then retry' } : {}), ...(cands.length ? { hiddenMatches: listCands(cands) } : {}), candidates: dropdownCandidates(), timing: rowsDone() };
+        return { error: `field "${fieldRaw}" not found${where} — no visible dropdown/combobox/select carries that label, aria-label, placeholder, name, id, or titled section. Nothing was changed. Retry with one of the names in \`candidates\`.`, waitedMs: Math.round(nowMs() - t0), settling: act.settling, ...(act.settling ? { hint: 'the page was still changing — the control may not be rendered yet: fast_wait for text that identifies its view, then retry' } : {}), ...(cands.length ? { hiddenMatches: listCands(cands) } : {}), ...(lastWalk && lastWalk.truncated ? { scan: { truncated: lastWalk.truncated, rootsScanned: lastWalk.roots, nodesScanned: lastWalk.nodes, ms: lastWalk.ms }, hint: `this page is too large to scan by name — the search stopped after ${lastWalk.truncated} (${lastWalk.nodesScanned || lastWalk.nodes} composed nodes across ${lastWalk.roots} roots/frames), so the control may exist but was never reached. Target it by the id from fast_snapshot, or narrow the search with section:"<heading>" or index:N.` } : {}), candidates: dropdownCandidates(), timing: rowsDone() };
       }
       const hiddenRows = (c) => cands.filter(o => !o.visible && o.el !== c.el && inOtherRow(c.el, [o.backing || o.el]));
       let chosen = null;
