@@ -71,7 +71,12 @@ function slimResult(r, depth = 0) {
   }
   if (o.urlChanged === false) { delete o.url; delete o.urlChanged; }
   if (typeof o.hint === 'string') { const h = o.hint.replace(SETTLE_HINT_RE, '').replace(/^\s*\|\s*/, '').trim(); if (h) o.hint = h; else delete o.hint; }
-  if (o.clicked) o.clicked = slimItem(o.clicked);
+  // a successful click names what it hit in one short string (its label, else text)
+  if (o.clicked && typeof o.clicked === 'object') {
+    const c = o.clicked;
+    const name = String(c.label || c.text || c.ariaLabel || c.innerText || c.tag || '').replace(/\s+/g, ' ').trim();
+    o.clicked = name.length > 60 ? name.slice(0, 59) + '…' : name;
+  }
   if (o.snapshot) o.snapshot = slimSnapshot(o.snapshot);
   if (Array.isArray(o.items) || Array.isArray(o.frames)) Object.assign(o, slimSnapshot({ items: o.items, frames: o.frames }));
   if (!o.items) delete o.items;

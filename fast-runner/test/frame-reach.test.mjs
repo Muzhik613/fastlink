@@ -475,3 +475,12 @@ test('fast_nav waits for the load to complete and returns the page\'s snapshot; 
   chrome.tabs.get = saved.get; chrome.tabs.update = saved.update;
   assert.equal(skip.snapshot, undefined);
 });
+
+
+test('a successful click names what it hit in one short string: clicked:"<label or text>"', async () => {
+  const { pay } = setup();
+  const snap = await call('fast_snapshot', {});
+  const payBtn = snap.frames[0].items.find((it) => /Pay now/.test(it.text || ''));
+  const r = await call('fast_click', { id: payBtn.i, noSnapshot: true });
+  assert.equal(r.clicked, 'Pay now', JSON.stringify(r));
+});

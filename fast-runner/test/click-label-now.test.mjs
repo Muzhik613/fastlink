@@ -67,7 +67,7 @@ test('top document: index with no text is refused (not an item id); an id from a
   const byIndex = await run(w, 'fast_click', { index: name.i, noSnapshot: true });
   assert.equal(byIndex.code, 'no_target', JSON.stringify(byIndex).slice(0, 300));
   const byId = await run(w, 'fast_click', { id: String(name.i), noSnapshot: true });
-  assert.equal(byId.clicked.text, 'Name: Activate to sort', JSON.stringify(byId).slice(0, 300));
+  assert.equal(byId.clicked.text, 'Name: Activate to sort', JSON.stringify(byId).slice(0, 300));   // page.js result; the exit (index.js) turns it into the string
   const none = await run(w, 'fast_click', { noSnapshot: true });
   assert.equal(none.error, 'fast_click needs a target — pass id:"<i>" (an item\'s i from fast_snapshot) or text:"<label>"; nothing was clicked');
 });
