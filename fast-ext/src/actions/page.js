@@ -1203,11 +1203,18 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       // fields are dropped entirely (roughly halves the payload with zero info
       // loss; every consumer reads `it.X && …` / `(it.X || '')`, so absent and
       // null are equivalent to them). i, tag, text and geometry are always kept.
-      const item = { i: entry.id, tag: entry.tag, text: entry.text, x, y, w, h };
-      if (entry.role)        item.role = entry.role;
+      // A field reads as NAME then VALUE, first: a combobox's `text` is what it shows
+      // (its current value), so without this the field's name hid in ariaLabel (live
+      // Azure: "Ubuntu Server 24.04 LTS - x64 Gen2" with the name "Image" only in ariaLabel,
+      // and the model reported the Image control absent).
+      const isField = !!entry.value || /^(input|select|textarea)$/.test(entry.tag) || /^(combobox|listbox|textbox|searchbox|spinbutton)$/.test(entry.role || '');
+      const fieldName = isField ? (entry.label || entry.ariaLabel || entry.placeholder || entry.name || null) : entry.label;
+      const item = { i: entry.id, tag: entry.tag };
+      if (fieldName)         item.label = fieldName;
       if (entry.value)       item.value = entry.value;   // live DOM value, never cached
+      Object.assign(item, { text: entry.text, x, y, w, h });
+      if (entry.role)        item.role = entry.role;
       if (entry.innerText)   item.innerText = entry.innerText;
-      if (entry.label)       item.label = entry.label;
       if (entry.href)        item.href = entry.href;
       if (entry.name)        item.name = entry.name;
       if (entry.placeholder) item.placeholder = entry.placeholder;
