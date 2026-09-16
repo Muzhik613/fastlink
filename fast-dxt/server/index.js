@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 import { startStdio } from './transports.js';
 import { getStatus } from './brokerClient.js';
-import { sweepOldScreenshots } from './handlers.js';
 
-sweepOldScreenshots();
 await startStdio();
 
 // A stdio MCP server lives exactly as long as its parent. However the parent

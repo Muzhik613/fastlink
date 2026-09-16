@@ -14,7 +14,6 @@
 // The check stays DUMB ON PURPOSE. It states what is visible; it does not classify
 // widgets, name a tool, diagnose or deliver a verdict. The model decides what to do.
 import { createMessage } from './xai.mjs';
-import { readFileSync } from 'node:fs';
 
 // WHO looks: grok-4.20 non-reasoning, a fresh conversation. Replay of 11 saved
 // screenshots (3 Azure, 8 rendered forms with known defects), 3 reps each:
@@ -121,7 +120,6 @@ export async function screenshotBase64(client) {
     let o = null;
     try { o = JSON.parse(c.text); } catch { continue; }
     if (typeof o?.dataUrl === 'string') return o.dataUrl.replace(/^data:image\/\w+;base64,/, '');
-    if (typeof o?.path === 'string') { try { return readFileSync(o.path).toString('base64'); } catch { return null; } }
   }
   return null;
 }

@@ -1,4 +1,4 @@
-import { writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Buffer } from 'buffer';
@@ -85,7 +85,7 @@ async function dispatchCall(name, args) {
     // LLM sees everything, not just the message.
     if (payload && typeof payload === 'object' && 'error' in payload) return text(payload);
     let result = payload?.result ?? null;
-    if (name === 'fast_screenshot' && result?.dataUrl) return text(saveScreenshot(result));
+    if (name === 'fast_screenshot' && result?.dataUrl) return screenshotContent(result);
     return text(result);
   } catch (e) {
     return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
@@ -169,33 +169,16 @@ const batchGate = (step) => DIAGNOSTIC_ONLY_STEPS.has(step.name)
   ? { error: `"${step.name}" is a diagnostic-only tool (not allowed as a batch step)` }
   : null;
 
-function saveScreenshot(result) {
-  const ext = (result.format || 'png').toLowerCase();
-  const path = join(tmpdir(), `fastlink-screenshot-${Date.now()}.${ext}`);
-  const base64 = result.dataUrl.replace(/^data:image\/\w+;base64,/, '');
-  const bytes = Buffer.from(base64, 'base64');
-  writeFileSync(path, bytes);
-  sweepOldScreenshots();
-  // cssWidth/cssHeight/dpr/scale:1 — the image's pixels are fast_click_xy's CSS pixels
+// The screenshot IS the result: an MCP image item the caller's model sees directly (the relay
+// already answers this way), plus one text item with the coordinate contract. A temp-file path
+// was useless to any caller that can't read this machine's disk — Grok on the local transport
+// never saw a single screenshot through it (live Azure run f654d4a4, 2026-09-16).
+// cssWidth/cssHeight/dpr/scale:1 — the image's pixels are fast_click_xy's CSS pixels.
+function screenshotContent(result) {
+  const m = /^data:(image\/\w+);base64,/.exec(result.dataUrl);
+  const mimeType = m ? m[1] : `image/${(result.format || 'png').toLowerCase()}`;
+  const data = result.dataUrl.replace(/^data:image\/\w+;base64,/, '');
   const { cssWidth, cssHeight, dpr, scale } = result;
-  return { path, format: ext, bytes: bytes.length, ...(cssWidth ? { width: cssWidth, height: cssHeight, cssWidth, cssHeight, dpr, scale } : {}) };
-}
-
-// Delete fastlink-screenshot-* files older than 24h. Cheap readdir on
-// /tmp; runs once at startup and again after each save.
-const SCREENSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const SCREENSHOT_PREFIX = 'fastlink-screenshot-';
-export function sweepOldScreenshots() {
-  const dir = tmpdir();
-  const cutoff = Date.now() - SCREENSHOT_MAX_AGE_MS;
-  let entries;
-  try { entries = readdirSync(dir); } catch { return; }
-  for (const name of entries) {
-    if (!name.startsWith(SCREENSHOT_PREFIX)) continue;
-    const full = join(dir, name);
-    try {
-      const st = statSync(full);
-      if (st.mtimeMs < cutoff) unlinkSync(full);
-    } catch {}
-  }
+  const meta = { format: mimeType.slice(6), bytes: Buffer.byteLength(data, 'base64'), ...(cssWidth ? { cssWidth, cssHeight, dpr, scale } : {}) };
+  return { content: [{ type: 'image', data, mimeType }, { type: 'text', text: JSON.stringify(meta) }] };
 }
