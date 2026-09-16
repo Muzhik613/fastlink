@@ -300,7 +300,7 @@ export function entryFacts(name, args, text, ok) {
     return out;
   }
   if (wrotePage(name, args, o)) out.wrote = true;
-  if (freshPreview(name, o)) out.preview = true;
+  if (freshPreview(name, o)) out.hasPreview = true;   // not `preview`: that key is the toolLog entry's result text
   const partial = partialFailures(name, args, text);
   const sections = resultSections(text);
   if (partial.length) out.partial = partial;
@@ -470,7 +470,7 @@ export function gateProblems(run, args) {
   else {
     let last = -1;
     for (let i = log.length - 1; i >= 0; i--) if (isStateChanging(log[i])) { last = i; break; }
-    const selfVerified = last >= 0 && log[last].ok && (log[last].verified === true || log[last].seen === true || log[last].preview === true);
+    const selfVerified = last >= 0 && log[last].ok && (log[last].verified === true || log[last].seen === true || log[last].hasPreview === true);
     if (!selfVerified && !log.slice(last + 1).some(e => e.ok && isRead(e))) {
       problems.push(last >= 0
         ? `no tool has read the page since your last ${log[last].name}; call fast_snapshot or fast_text (its own auto-snapshot is not a read-back) and cite what it returned`

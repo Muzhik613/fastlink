@@ -237,7 +237,9 @@ const REPORT_DF = { result: 'VM name: fastlink-bench-vm; Region: (Asia Pacific) 
 
 test('df6a2ba2: report_done is accepted right after a batch whose last step returned a fresh preview — no extra snapshot', () => {
   const run = df6a2ba2(BATCH_OK);
-  assert.equal(run.toolLog[3].preview, true, 'the batch ended on its own page preview');
+  assert.equal(run.toolLog[3].hasPreview, true, 'the batch ended on its own page preview');
+  assert.equal(typeof run.toolLog[3].preview, 'string', 'the stored result text is not overwritten by the fact (live Oracle f7015ef2 stored preview:true)');
+  assert.match(run.toolLog[3].preview, /^\{"summary":"2\/2 steps ok"/);
   assert.deepEqual(gateProblems(run, REPORT_DF), []);
   assert.ok(reportDone(Object.assign(run, { gate: 'on', turns: [] }), REPORT_DF, 20000).finish, 'accepted');
 });
