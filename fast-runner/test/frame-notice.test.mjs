@@ -32,21 +32,21 @@ test('an embedded cross-origin form: fast_snapshot LEADS with the notice, origin
     <iframe src="https://js.stripe.com/v3/elements-inner-card.html" data-box="40,300,400,220"></iframe>`);
   const r = await run(w, 'fast_snapshot', {});
   assert.equal(Object.keys(r)[0], 'frameNotice', 'first thing the model reads');
-  assert.equal(r.frameNotice, '1 visible cross-origin frame(s) DOM tools could not read: https://js.stripe.com at x:40, y:300, 400x220. Their content is visible in fast_screenshot, but DOM tools cannot target it.');
+  assert.equal(r.frameNotice, '1 visible frame(s) DOM tools could not read: https://js.stripe.com at x:40, y:300, 400x220. Their content is visible in fast_screenshot, but DOM tools cannot target it.');
   assert.deepEqual(JSON.parse(JSON.stringify(r.opaqueFrames)), [{ origin: 'https://js.stripe.com', x: 40, y: 300, w: 400, h: 220 }]);
 });
 
-test('a page full of ad iframes: trackers, hidden, below-the-fold and same-origin frames are not reported; the list is capped', async () => {
+test('a page full of ad iframes: trackers, hidden, below-the-fold and parent-written (srcdoc) frames are not reported; the list is capped', async () => {
   const ads = [
     ...Array.from({ length: 20 }, (_, i) => `<iframe src="https://px.ads.example/t${i}" data-box="0,0,1,1"></iframe>`),
     '<iframe src="https://hidden.ads.example/" data-box="0,0,300,250" style="visibility:hidden"></iframe>',
     '<iframe src="https://below.ads.example/" data-box="0,5000,300,250"></iframe>',
-    '<iframe src="https://news.example/embed" data-box="0,0,600,400" data-open></iframe>',
+    '<iframe srcdoc="<p>written by the page</p>" data-box="0,0,600,400" data-open></iframe>',
     ...Array.from({ length: 6 }, (_, i) => `<iframe src="https://ad${i}.example/banner" data-box="${i * 10},100,${300 - i},250"></iframe>`),
   ];
   const w = page(`<h1>News</h1><p>story</p>${ads.join('')}`, 'https://news.example/');
   const r = await run(w, 'fast_snapshot', {});
-  assert.match(r.frameNotice, /^6 visible cross-origin frame\(s\) DOM tools could not read: https:\/\/ad0\.example at x:0, y:100, 300x250; .* and 2 more\. Their content/);
+  assert.match(r.frameNotice, /^6 visible frame\(s\) DOM tools could not read: https:\/\/ad0\.example at x:0, y:100, 300x250; .* and 2 more\. Their content/);
   assert.equal(r.opaqueFrames.length, 4);
   assert.ok(!/px\.ads|hidden\.ads|below\.ads|news\.example/.test(r.frameNotice));
 });
@@ -69,7 +69,7 @@ test('fast_wait timeoutMs 3000 on text that never appears returns within 3.5s (t
 test('a selector wait (this document only) that times out names the visible frames and the frame arg', async () => {
   const w = page('<h1>Create a virtual machine</h1><iframe src="https://sandbox-1.reactblade.portal.azure.net/blade" data-box="0,120,1200,700"></iframe>', 'https://portal.azure.com/');
   const r = await run(w, 'fast_wait', { selector: '#vmName', timeoutMs: 500, noSnapshot: true });
-  assert.match(r.error, /^Timed out waiting for selector "#vmName" in this document — it may be inside a visible cross-origin frame \(https:\/\/sandbox-1\.reactblade\.portal\.azure\.net at x:0, y:120, 1200x700\); pass frame:/);
+  assert.match(r.error, /^Timed out waiting for selector "#vmName" in this document — it may be inside a visible frame \(https:\/\/sandbox-1\.reactblade\.portal\.azure\.net at x:0, y:120, 1200x700\); pass frame:/);
 });
 
 test('REGRESSION ba72fd8: a wait whose text matches only a hidden element answers at its deadline (it used to throw and hang to the 20s bridge)', async () => {

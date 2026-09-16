@@ -332,7 +332,7 @@ export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_
         if (cancelTop) { try { await cancelTop(); } catch {} }
         return {
           found: { text, frame: r.url }, inFrame: true, waitedMs: Date.now() - t0,
-          note: `"${text}" is inside a cross-origin frame (${r.url}); its elements are in fast_snapshot's \`frames\` and fast_click / fast_fill / fast_select_option act on them (by text, by id "f<frameId>:<i>", or with frame:"<part of the frame URL>")`,
+          note: `"${text}" is inside a frame (${r.url}); its elements are in fast_snapshot's \`frames\` and fast_click / fast_fill / fast_select_option act on them (by text, by id "f<frameId>:<i>", or with frame:"<part of the frame URL>")`,
         };
       }
       if (f.depth < walk.depth) for (const k of matchChildFrames(tree.get(f.id), r.kids)) pass.push({ ...k, depth: f.depth + 1 });
@@ -361,17 +361,20 @@ export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_
   };
 }
 
-// ── DOM tools inside cross-origin frames ─────────────────────────────────────
-// The top document cannot see into a cross-origin frame; the extension can. So
+// ── DOM tools inside frames ──────────────────────────────────────────────────
+// A frame with its own http(s) document — cross-origin, or same-origin (page.js
+// reads only parent-written about:blank/srcdoc frames itself: ownedFrameDoc) — is
+// read here. The top document cannot see into a cross-origin frame, and a same-origin
+// frame's content is a live document of its own; the extension reaches both. So
 // the REAL page.js (the same MAIN-world script the manifest runs in the top
-// document) is run inside each visible cross-origin frame, and what it returns
+// document) is run inside each visible such frame, and what it returns
 // is translated into top-page space: every {x, y} gains the frame's content-box
 // origin, every snapshot id `i` becomes "f<frameId>:<i>". One core for every
 // tool; `ctx.run(frameId, action, args)` is index.js's page.js bridge
 // (frameId 0 = the top document).
 //
 // Which frames: those page.js's own scan reports (fast_frames: on screen,
-// >=100x50, not hidden, cross-origin — the frames the frame notice names),
+// >=100x50, not hidden, not read by the parent — the frames the notice names),
 // mapped to extension frame ids through webNavigation (only asked when such a
 // frame exists), nested to REACH.depth, at most REACH.maxFrames.
 export const REACH = { maxFrames: 4, depth: 2, dryMs: 1500, snapMs: 2500 };
@@ -437,7 +440,7 @@ const inFrame = (t, r) => {
 
 // fast_snapshot: the top document's snapshot, plus `frames:[{frame, url,
 // frameId, box, …that frame's snapshot in top-page space}]` for each visible
-// cross-origin frame read within REACH.snapMs. The frame notice then names only
+// frame read within REACH.snapMs. The frame notice then names only
 // the frames that could not be read. `args.frame` (URL substring) reads just that frame.
 export async function snapshotWithFrames(ctx, args) {
   if (args && args.frame) return inNamedFrame(ctx, 'fast_snapshot', args);
@@ -466,22 +469,28 @@ export async function snapshotWithFrames(ctx, args) {
     const n = await withTimeout(ctx.run(0, 'fast_frames', { unread: unreadSrcs }), REACH.dryMs);
     if (n && n.frameNotice) notice = { frameNotice: n.frameNotice, opaqueFrames: n.opaqueFrames };
   }
-  const framesNote = `${frames.length} cross-origin frame(s) read into \`frames\` (${[...new Set(frames.map((f) => f.frame))].join(', ')}): their items carry top-page x,y and ids "f<frameId>:<i>"; fast_click / fast_fill / fast_select_option act inside them (by text, id, or frame:"<part of the frame URL>")`;
+  const framesNote = `${frames.length} frame(s) read into \`frames\` (${[...new Set(frames.map((f) => f.frame))].join(', ')}): their items carry top-page x,y and ids "f<frameId>:<i>"; fast_click / fast_fill / fast_select_option act inside them (by text, id, or frame:"<part of the frame URL>")`;
   // frames lead the top document's own items: on a framed app the top is chrome only
   const { url, title, ...others } = rest;
   return { framesNote, ...notice, url, title, frames, ...others };
 }
 
-// Run `action` in the one visible cross-origin frame whose URL contains args.frame.
+// Run `action` in the one visible frame whose URL contains args.frame. A value that
+// names no frame (live OCI: the model passed the TOP page URL) lists the frame URLs
+// that do exist.
 export async function inNamedFrame(ctx, action, args) {
   const want = String(args.frame);
   const { targets } = await frameTargets(ctx);
   const hits = targets.filter((t) => t.url.includes(want) || t.origin.includes(want));
   if (hits.length !== 1) {
+    const list = (hits.length ? hits : targets).map((t) => ({ ...frameTag(t), box: t.box }));
     return {
-      error: hits.length ? `${hits.length} visible cross-origin frames match frame:${JSON.stringify(want)} — nothing was done` : `no visible cross-origin frame URL contains ${JSON.stringify(want)} — nothing was done`,
-      frames: (hits.length ? hits : targets).map((t) => ({ ...frameTag(t), box: t.box })),
-      hint: hits.length ? 'pass a longer part of the frame URL (see frames)' : (targets.length ? 'use one of these frame URLs' : 'the page shows no readable cross-origin frame; drop frame'),
+      error: hits.length
+        ? `${hits.length} visible frames match frame:${JSON.stringify(want)} — nothing was done; pass a longer part of one frame URL: ${hits.map((t) => t.url).join(' | ')}`
+        : targets.length
+          ? `no visible frame URL contains ${JSON.stringify(want)} — nothing was done; the frames on this page are: ${targets.map((t) => t.url).join(' | ')}${ctx.topUrl && ctx.topUrl.includes(want) ? ' (the value you passed is the top page URL: omit frame to act on the top document)' : ''}`
+          : `no visible frame on this page — nothing was done; omit frame to act on the top document`,
+      frames: list,
     };
   }
   const { frame, ...rest } = args;
@@ -504,7 +513,7 @@ export async function actWithFrames(ctx, action, args = {}) {
   if (idm) {
     const { targets } = await frameTargets(ctx);
     const t = targets.find((x) => x.frameId === Number(idm[1]));
-    if (!t) return { error: `id ${args.id} points into frame ${idm[1]}, which is no longer a visible cross-origin frame — nothing was done; take a fresh fast_snapshot`, idStale: true };
+    if (!t) return { error: `id ${args.id} points into frame ${idm[1]}, which is no longer a visible frame — nothing was done; take a fresh fast_snapshot`, idStale: true };
     return inFrame(t, await ctx.run(t.frameId, action, { ...args, id: Number(idm[2]), noFrameNotice: true, idPrefix: `f${t.frameId}:` }));
   }
   if (args.frame) return inNamedFrame(ctx, action, args);
@@ -560,7 +569,7 @@ export async function actWithFrames(ctx, action, args = {}) {
     const label = key == null ? JSON.stringify(args.text ?? args.id) : JSON.stringify(key);
     return {
       refuse: {
-        error: `${label} matches in ${top === 'missing' ? '' : 'the top document and in '}${hits.length} cross-origin frame(s) — nothing was done`,
+        error: `${label} matches in ${top === 'missing' ? '' : 'the top document and in '}${hits.length} frame(s) — nothing was done`,
         candidates: [
           ...(top === 'missing' ? [] : [{ frame: 'top', ...(dry[0] && dry[0].best ? dry[0].best : {}) }]),
           ...hits.map((h) => ({ ...frameTag(h.t), box: h.t.box, ...(h.d && h.d.best ? toTopSpace(h.d.best, h.t) : {}) })),

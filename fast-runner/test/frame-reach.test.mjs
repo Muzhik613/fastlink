@@ -28,11 +28,14 @@ function doc(html, url) {
     return boxes.get(this);
   };
   w.Element.prototype.getClientRects = function () { return [this.getBoundingClientRect()]; };
-  for (const f of w.document.querySelectorAll('iframe')) Object.defineProperty(f, 'contentDocument', { get: () => null });
+  // a cross-origin frame's document is closed to the parent; a same-origin one (listed in
+  // SAME_ORIGIN_DOCS by src) is open — its own window, with its own http(s) URL
+  for (const f of w.document.querySelectorAll('iframe')) Object.defineProperty(f, 'contentDocument', { get: () => (SAME_ORIGIN_DOCS.get(f.getAttribute('src')) || {}).document || null });
   return w;
 }
 
 let frames = new Map();   // frameId → { win, parent, url, injected }
+const SAME_ORIGIN_DOCS = new Map();   // iframe src → window, for frames the parent may read
 const calls = [];
 globalThis.chrome = {
   runtime: { lastError: null, getURL: (p) => p },
@@ -84,7 +87,7 @@ function setup({ topHtml, payHtml, payBox = '200,300,400,200', second } = {}) {
 test('fast_snapshot lists the frame\'s items in top-page space with namespaced ids; page.js injected into the frame in the MAIN world', async () => {
   setup();
   const r = await call('fast_snapshot', {});
-  assert.match(r.framesNote, /^1 cross-origin frame\(s\) read into `frames` \(https:\/\/pay\.provider\.example\)/);
+  assert.match(r.framesNote, /^1 frame\(s\) read into `frames` \(https:\/\/pay\.provider\.example\)/);
   assert.equal(r.frameNotice, undefined, 'a frame that was read is not reported as unreadable');
   assert.equal(r.frames.length, 1);
   const f = r.frames[0];
@@ -125,7 +128,7 @@ test('fast_fill {fields} splits by document: Email in the top, Card number in th
 test('a label in the top document AND a frame is refused with candidates from both; frame:"…" then picks one', async () => {
   const { top, pay } = setup({ payHtml: '<label for="e2">Email</label><input id="e2">' });
   const r = await call('fast_fill', { match: 'Email', value: 'x@y.z', noSnapshot: true });
-  assert.match(r.error, /matches in the top document and in 1 cross-origin frame/);
+  assert.match(r.error, /matches in the top document and in 1 frame/);
   assert.deepEqual(r.candidates.map((c) => c.frame), ['top', 'https://pay.provider.example']);
   assert.equal(top.document.getElementById('em').value, '');
   assert.equal(pay.document.getElementById('e2').value, '');
@@ -138,7 +141,7 @@ test('two frames holding the same button: refused; an id from the snapshot click
   const OTHER = 'https://ads.example/unit';
   setup({ second: { url: OTHER, box: '700,300,300,250', html: '<button data-box="10,10,120,30">Pay now</button>' } });
   const r = await call('fast_click', { text: 'Pay now', noSnapshot: true });
-  assert.match(r.error, /matches in 2 cross-origin frame\(s\)/);
+  assert.match(r.error, /matches in 2 frame\(s\)/);
   const snap = await call('fast_snapshot', {});
   const inPay = snap.frames.find((f) => f.frameId === 7).items.find((it) => /Pay now/.test(it.text || ''));
   let clicked = 0;
@@ -170,7 +173,7 @@ test('a miss names only the frames that could NOT be read; a miss with every fra
   setup();
   frames.delete(7);
   const r2 = await call('fast_click', { text: 'Nowhere at all', noSnapshot: true });
-  assert.match(r2.frameNotice, /^1 visible cross-origin frame\(s\) DOM tools could not read: https:\/\/pay\.provider\.example at x:200, y:300, 400x200\. Their content is visible in fast_screenshot, but DOM tools cannot target it\.$/);
+  assert.match(r2.frameNotice, /^1 visible frame\(s\) DOM tools could not read: https:\/\/pay\.provider\.example at x:200, y:300, 400x200\. Their content is visible in fast_screenshot, but DOM tools cannot target it\.$/);
   const snap = await call('fast_snapshot', {});
   assert.match(snap.frameNotice, /could not read/);
   assert.equal(snap.frames, undefined);
@@ -237,4 +240,53 @@ test('fast_select_option on a portalled listbox inside the frame (Fluent-shaped)
   assert.equal(cb.querySelector('.t').textContent, '(Asia Pacific) Japan East', JSON.stringify(r).slice(0, 500));
   assert.equal(r.verified, true);
   assert.equal(r.inFrame.frameId, 7);
+});
+
+
+test('live OCI: a form rendered LATE into a SAME-origin frame (URL = the top page URL) is read by the frame path, not missed or listed twice', async () => {
+  const OCI = 'https://cloud.example/compute/instances/create?region=us-1';
+  const formWin = doc('<h1>Loading…</h1>', OCI);
+  SAME_ORIGIN_DOCS.set(OCI, formWin);
+  const top = doc(`<header><button>Navigation menu</button></header><iframe src="${OCI}" data-box="0,120,1400,700"></iframe>`, OCI);
+  top.eval(PAGE_JS);
+  frames = new Map([[0, { win: top, parent: -1, url: OCI }], [5, { win: formWin, parent: 0, url: OCI }]]);
+  const first = await call('fast_snapshot', { full: true });
+  assert.equal(first.frames.length, 1, JSON.stringify(first).slice(0, 400));
+  // the form mounts after the first read
+  const d = formWin.document;
+  d.body.innerHTML = '<h2>Create compute instance</h2><label for="nm">Name</label><input id="nm" data-box="20,60,300,30"><button data-box="20,120,120,30">Create</button>';
+  const snap = await call('fast_snapshot', { full: true });
+  const f = snap.frames[0];
+  assert.equal(f.frameId, 5);
+  const name = f.items.find((it) => it.tag === 'input');
+  assert.ok(name, JSON.stringify(f.items));
+  assert.deepEqual([name.x, name.y], [20, 180]);
+  assert.ok(!snap.items.some((it) => it.tag === 'input'), 'the frame\'s field is not also listed as a top-document item');
+  // the model passed the TOP page URL as frame: it is also this frame's URL, so it works
+  const r = await call('fast_fill', { frame: OCI, match: 'Name', value: 'bench-vm', noSnapshot: true });
+  assert.equal(d.getElementById('nm').value, 'bench-vm', JSON.stringify(r));
+  assert.equal(r.verified, true);
+  SAME_ORIGIN_DOCS.clear();
+});
+
+test('a frame value that names no frame lists the frame URLs that exist', async () => {
+  setup();
+  const r = await call('fast_snapshot', { frame: 'https://shop.example/checkout', full: true });
+  assert.match(r.error, /^no visible frame URL contains "https:\/\/shop\.example\/checkout" — nothing was done; the frames on this page are: https:\/\/pay\.provider\.example\/card-form \(the value you passed is the top page URL: omit frame to act on the top document\)$/);
+  assert.equal(r.frames[0].url, PAY);
+});
+
+test('depth 2: a same-origin frame nested inside a cross-origin frame is read, coordinates added through both frames', async () => {
+  const INNER = 'https://pay.provider.example/card-form/inner';
+  const innerWin = doc('<label for="z">Postal code</label><input id="z" data-box="5,5,100,20">', INNER);
+  SAME_ORIGIN_DOCS.set(INNER, innerWin);
+  setup({ payHtml: `<p>outer</p><iframe src="${INNER}" data-box="30,40,300,100"></iframe>` });
+  frames.set(11, { win: innerWin, parent: 7, url: INNER });
+  const snap = await call('fast_snapshot', {});
+  const inner = snap.frames.find((f) => f.frameId === 11);
+  assert.ok(inner, JSON.stringify(snap.frames.map((f) => f.frameId)));
+  const z = inner.items.find((it) => it.tag === 'input');
+  assert.deepEqual([z.x, z.y], [200 + 30 + 5, 300 + 40 + 5]);
+  assert.match(z.i, /^f11:/);
+  SAME_ORIGIN_DOCS.clear();
 });

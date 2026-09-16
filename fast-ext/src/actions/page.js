@@ -325,7 +325,24 @@ const containerLabel = (el) => {
   return '';
 };
 
-// Walks the composed tree (shadow roots + same-origin iframes). Generic
+// Which iframe documents THIS document reads itself: only those with no URL of
+// their own (about:blank / srcdoc — content the parent writes, which nothing can
+// address by URL). A frame with an http(s) document — same-origin or not — is a
+// document of its own: the background injects page.js into it and reads it there
+// (frames.js), with its own index and its own MutationObserver. Reading it here too
+// listed it twice, and read it STALE: the index walked it once at the first call and
+// no observer watched it (live OCI: the Create compute instance form rendered into a
+// same-origin iframe after the first walk and no snapshot ever showed it). Pure.
+const ownedFrameDoc = (el) => {
+  let doc = null;
+  try { doc = el.contentDocument; } catch {}
+  if (!doc) return null;
+  let url = '';
+  try { url = String(doc.URL || ''); } catch {}
+  return /^https?:/i.test(url) ? null : doc;
+};
+
+// Walks the composed tree (shadow roots + parent-written iframes). Generic
 // version used by diagnose / select_option. Indexing has its own walker.
 // The frame offset passed to `visit` is OPT-IN (`{offsets:true}`): reading an
 // iframe's getBoundingClientRect forces a synchronous layout, and no caller reads
@@ -380,8 +397,7 @@ const walkDeep = (root, selector, visit, opts) => {
       try {
         if (el.shadowRoot) queue.push([el.shadowRoot, ox, oy]);
         if (el.tagName === 'IFRAME') {
-          let doc = null;
-          try { doc = el.contentDocument; } catch {}
+          const doc = ownedFrameDoc(el);
           if (!doc) continue;
           let nx = ox, ny = oy;
           if (offsets) {
@@ -693,8 +709,7 @@ const stepInitWalk = (budget, overBudget) => {
           for (let i = el.shadowRoot.children.length - 1; i >= 0; i--) stack.push(el.shadowRoot.children[i]);
         }
         if (tag === 'iframe') {
-          let doc = null;
-          try { doc = el.contentDocument; } catch {}
+          const doc = ownedFrameDoc(el);
           if (doc) {
             const inner = doc.body || doc.documentElement;
             if (inner && inner.children) {
@@ -829,8 +844,7 @@ const stepCursor = (cur) => {
     for (let i = el.shadowRoot.children.length - 1; i >= 0; i--) cur.stack.push(el.shadowRoot.children[i]);
   }
   if (tag === 'iframe') {
-    let doc = null;
-    try { doc = el.contentDocument; } catch {}
+    const doc = ownedFrameDoc(el);
     if (doc) {
       const inner = doc.body || doc.documentElement;
       if (inner && inner.children) {
@@ -1468,10 +1482,10 @@ const capSnapshot = (snap, itemCap, contentCap) => {
 // offscreen,textTrimmed}, hint } — a model reading top-down cannot miss that
 // the view is partial, and the hint names the exact call that returns the rest.
 // Returns a NEW object (key order matters), or `snap` untouched when complete.
-// Cross-origin frames the top document cannot read but the user SEES: iframes
-// whose document is closed to the page (contentDocument null / throws), on
-// screen, at least FRAME_NOTICE_MIN in size. DOM tools (snapshot, click, fill,
-// wait) are blind inside them, so every page read says so up front — live: the
+// Frames this document does not read itself but the user SEES: iframes whose
+// document is closed to the page (cross-origin) or has its own http(s) URL
+// (ownedFrameDoc), on screen, at least FRAME_NOTICE_MIN in size. The background
+// reads them (frames.js); the ones it cannot are named up front — live: the
 // Azure portal's whole body is a cross-origin blade, fast_snapshot came back
 // header-only and the model burned 56s on waits for text plainly on screen,
 // then reported "page never rendered". Reads only the <iframe> elements' own
@@ -1495,9 +1509,7 @@ const opaqueFrames = (doc = document, win = window) => {
         const r = el.getBoundingClientRect();
         if (r.width < FRAME_NOTICE_MIN.w || r.height < FRAME_NOTICE_MIN.h) continue;
         if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) continue;
-        let open = false;
-        try { open = !!el.contentDocument; } catch {}
-        if (open) continue;
+        if (ownedFrameDoc(el)) continue;   // read here, as part of this document
         try { const cs = win.getComputedStyle(el); if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue; } catch {}
         let origin = '';
         try { origin = new URL(el.getAttribute('src') || '', doc.baseURI).origin; } catch {}
@@ -1526,7 +1538,7 @@ const frameList = (frames) => {
 // (live: three Grok models missed a 450x23 box on the same screenshot). Pure.
 const frameNotice = ({ frames }) => {
   if (!frames || !frames.length) return '';
-  return `${frames.length} visible cross-origin frame(s) DOM tools could not read: ${frameList(frames)}. Their content is visible in fast_screenshot, but DOM tools cannot target it.`;
+  return `${frames.length} visible frame(s) DOM tools could not read: ${frameList(frames)}. Their content is visible in fast_screenshot, but DOM tools cannot target it.`;
 };
 // Lead a snapshot result with the notice (a fresh scan). Returns `out` unchanged when none.
 const noticeBoxes = (frames) => frames.slice(0, FRAME_NOTICE_LIST).map(({ origin, x, y, w, h }) => ({ origin, x, y, w, h }));
@@ -2856,7 +2868,7 @@ async function runPageAction(action, args) {
             if (emptyHit) return resolveEmpty();
             // a selector is matched in this document only; name the frames it could be in
             const fr = opaqueFrames().frames;
-            return resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}${fr.length ? ` in this document — it may be inside a visible cross-origin frame (${frameList(fr)}); pass frame:"<part of the frame URL>" to wait there` : ''}`, ...pageActivity(), ...(acWaitHint() || {}) });
+            return resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}${fr.length ? ` in this document — it may be inside a visible frame (${frameList(fr)}); pass frame:"<part of the frame URL>" to wait there` : ''}`, ...pageActivity(), ...(acWaitHint() || {}) });
           }
           return setTimeout(poll, 150);
         }

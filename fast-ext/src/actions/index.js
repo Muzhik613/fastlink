@@ -123,11 +123,11 @@ async function runOne(action, args) {
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
   if (action === 'fast_frame_read') return frameRead(args);
-  // DOM tools reach visible cross-origin frames (frames.js): the same page.js runs
+  // DOM tools reach visible frames with their own documents (frames.js): the same page.js runs
   // inside them, results come back in top-page space
   if (action === 'fast_snapshot') return snapshotWithFrames(await frameCtx(), args || {});
   if (FRAME_AWARE.has(action)) return actWithFrames(await frameCtx(), action, args || {});
-  // fast_wait {frame}: a wait scoped to one visible cross-origin frame (text or selector)
+  // fast_wait {frame}: a wait scoped to one visible frame (text or selector)
   if (action === 'fast_wait' && args?.frame) return inNamedFrame(await frameCtx(), 'fast_wait', args);
   if (action === 'fast_wait' && args?.text && !args?.selector) {
     // A text wait searches the top document (page.js) AND every rendered
@@ -157,7 +157,7 @@ const FRAME_AWARE = new Set(['fast_click', 'fast_fill', 'fast_select_option']);
 // The page.js bridge addressed by frame (0 = the top document) on the target tab.
 async function frameCtx() {
   const target = await getTargetTab();
-  return { tabId: target?.id, run: (frameId, action, a) => injectPageAction(action, a, frameId) };
+  return { tabId: target?.id, topUrl: target?.url || '', run: (frameId, action, a) => injectPageAction(action, a, frameId) };
 }
 
 // Stop page.js's still-running fast_wait polls in the target tab (a sub-frame
