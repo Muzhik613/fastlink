@@ -5,8 +5,8 @@
 // further two rounds later.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recordResult, entryFacts, unverifiedWrites, reportDecision, deliverChecks, closeVisualChecks, gateProblems } from '../runner.mjs';
-import { startVisualCheck, settleShots, takeNotes, checkNoteText, describeWithGrok, observationPrompt, CHECK_MODEL, MAX_VISUAL_CHECKS } from '../visual-check.mjs';
+import { recordResult, entryFacts, unverifiedWrites, reportDecision, deliverChecks, closeVisualChecks, gateProblems, unlookedFailures } from '../runner.mjs';
+import { startVisualCheck, settleShots, takeNotes, checkNoteText, lookNoteText, describeWithGrok, observationPrompt, CHECK_MODEL, MAX_VISUAL_CHECKS } from '../visual-check.mjs';
 
 const AZ = 'https://portal.azure.com/#create/Microsoft.VirtualMachine';
 const snap = (url, ...texts) => JSON.stringify({ url, content: texts.map(text => ({ text })) });
@@ -171,6 +171,78 @@ test('at report_done a check still owed goes out TOGETHER with the gate problems
   assert.ok(v3.finish, 'nothing owed any more: straight to the gate, which accepts');
 });
 
+// ── report_done after failed looks, no write, no screenshot: ONE look first ─
+// Azure 68c8d227 (~/.local/state/fastrun/runs.jsonl): the Basics form was fully drawn by 20s on
+// the video; the run's three fast_waits errored, it never wrote or took a screenshot, and it
+// reported the page "never rendered". Rows below are that run's toolLog, previews trimmed.
+const LOGIN = 'https://portal.azure.com/auth/login/';
+const HEADER_ONLY = JSON.stringify({ url: AZ, title: 'Create a virtual machine - Microsoft Azure', fillable: 1, count: 14, items: [{ i: 1, tag: 'button', text: 'Show Microsoft Cloud menu' }], content: [{ text: 'Create a virtual machine' }] });
+const BUSY = (ms) => JSON.stringify({ error: 'page busy', phase: 'fast_wait', elapsedMs: ms, hint: 'fast_wait did not return within 28s — the page is re-rendering or frozen; fast_wait for text of the settled view, then retry', origin: 'https://portal.azure.com' });
+const run68c8d227 = (extraRows = [], extra = {}) => runOf([
+  ['fast_tab', { url: AZ }, JSON.stringify({ id: 1220563042, url: AZ, targetTab: 1220563042 })],
+  ['fast_snapshot', { full: true }, JSON.stringify({ url: LOGIN, title: 'Microsoft Authentication', count: 0, items: [], contentCount: 0, content: [] })],
+  ['fast_wait', { text: 'Create a virtual machine', timeoutMs: 15000 }, JSON.stringify({ error: 'fast_wait: could not inject into target tab 1220563042 (Frame with ID 0 was removed.). The tab may have been closed or navigated to a restricted URL.', origin: 'https://portal.azure.com' }), true],
+  ['fast_list', {}, JSON.stringify([{ id: 1220563042, url: AZ, title: 'Create a virtual machine - Microsoft Azure', active: true, targetTab: true }])],
+  ['fast_snapshot', { full: true }, HEADER_ONLY],
+  ['fast_wait', { text: 'Virtual machine name', timeoutMs: 30000 }, BUSY(28005), true],
+  ['fast_snapshot', { full: true }, HEADER_ONLY],
+  ['fast_wait', { text: 'Basics', timeoutMs: 30000 }, BUSY(28012), true],
+  ...extraRows,
+], extra);
+const REPORT_68 = {
+  result: 'Page stuck loading after auth redirect; never rendered "Create a virtual machine" Basics form. None of the four fields could be set.',
+  evidence: 'fast_snapshot (full) returned only header chrome + "Create a virtual machine" h2 + account menu; no VM form fields, inputs, or region/image selectors visible after 30s+ waits. URL remained https://portal.azure.com/#create/Microsoft.VirtualMachine.',
+};
+const FORM_OBS = ['The page shows a form titled "Create a virtual machine" with the Basics tab selected.', 'The Virtual machine name box reads empty.', 'The Region box reads "(US) East US".'];
+
+test('68c8d227: failed waits + no write + no screenshot → ONE look, handed over with the gate problems in one round', async () => {
+  const run = run68c8d227();
+  const d = deps(FORM_OBS);
+  const v = await reportDecision(run, REPORT_68, 76537, d);
+  assert.equal(d.seen.shots, 1);
+  assert.deepEqual(d.seen.described.targets, ['Create a virtual machine', 'Virtual machine name', 'Basics'], 'the checker is asked about what the failed waits looked for');
+  assert.ok(!JSON.stringify(d.seen.described).includes('never rendered'), 'the checker never sees the report');
+  assert.ok(v.note.includes('- The Virtual machine name box reads empty.'));
+  assert.match(v.note, /no screenshot was taken since/);
+  assert.equal(v.refuse.length, 3, 'the gate spoke in the same round (three unretried waits)');
+  assert.equal(v.finish, undefined);
+  assert.equal(run.visualChecks.length, 1);
+  assert.equal(run.visualChecks[0].kind, 'report');
+  assert.equal(run.visualChecks[0].idx, 7);
+  assert.ok(run.corpus.some(r => JSON.stringify(r).includes('Basics tab selected')), 'the observations are evidence the model can quote');
+  // ONE round, not a loop: the reworded report gets no second look
+  const v2 = await reportDecision(run, { ...REPORT_68, result: 'Form never rendered; waits timed out, not retried because the page was frozen.' }, 80000, d);
+  assert.equal(d.seen.shots, 1);
+  assert.equal(v2.note, undefined);
+});
+
+test('the look stays out of the way: a write anywhere, a screenshot since, gate off, nothing failed, or the cap', async () => {
+  const cases = {
+    'a write landed': run68c8d227([['fast_fill', { fields: { Name: 'x' } }, JSON.stringify({ verified: true, fields: { Name: { verified: true } } })]]),
+    'a batch with a click step': run68c8d227([['fast_batch', { actions: [{ ifFound: 'Basics', then: [{ name: 'fast_click', args: { text: 'Basics' } }] }] }, JSON.stringify({ summary: '1/1 steps ok', results: [] })]]),
+    'a screenshot after the last failure': run68c8d227([['fast_screenshot', {}, JSON.stringify({ path: '/tmp/s.png' })]]),
+    'gate off': run68c8d227([], { gate: 'off' }),
+    'no failed look': runOf([['fast_tab', { url: AZ }, `{"id":1,"url":"${AZ}"}`], ['fast_snapshot', { full: true }, HEADER_ONLY]]),
+  };
+  for (const [label, run] of Object.entries(cases)) {
+    assert.equal(unlookedFailures(run), null, label);
+    const d = deps(FORM_OBS);
+    await reportDecision(run, REPORT_68, 9000, d);
+    assert.equal(d.seen.shots, 0, label);
+  }
+  // a screenshot BEFORE the last failure is not a look at what the report describes
+  assert.ok(unlookedFailures(runOf([['fast_screenshot', {}, '{"path":"/tmp/s.png"}'], ['fast_wait', { text: 'Basics' }, BUSY(28000), true]])));
+  // it spends the same per-run budget as the write checks
+  const capped = run68c8d227();
+  capped.visualChecks = Array.from({ length: MAX_VISUAL_CHECKS }, (_, i) => ({ idx: i, skipped: 'nothing observed' }));
+  const d = deps(FORM_OBS);
+  const v = await reportDecision(capped, REPORT_68, 9000, d);
+  assert.equal(d.seen.shots, 0);
+  assert.equal(v.note, undefined);
+  assert.match(capped.visualChecks.at(-1).skipped, /check cap/);
+  assert.equal(unlookedFailures(capped), null, 'recorded, so never retried');
+});
+
 // ── what the model is told, and what the checker is asked ────────────────────
 test('the note stays DUMB: no tool names, no widget classification, no verdict, no remedy', () => {
   const ours = checkNoteText(['Virtual machine name'], []);
@@ -178,6 +250,10 @@ test('the note stays DUMB: no tool names, no widget classification, no verdict, 
     assert.doesNotMatch(ours, banned, String(banned));
   }
   assert.match(ours, /"Virtual machine name" could not be read back/);
+  const look = lookNoteText(['Basics'], []);
+  for (const banned of [/fast_[a-z_]+/, /\bdropdown\b/i, /\bshould\b/i, /\bmust\b/i, /\bfailed\b/i, /\bwrong\b/i, /\bnot load/i, /\brender/i]) {
+    assert.doesNotMatch(look, banned, String(banned));
+  }
 });
 
 test('the checker call: one fresh user turn, the image, the write target — no task, no history, no tools', async () => {

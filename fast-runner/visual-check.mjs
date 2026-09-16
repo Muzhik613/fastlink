@@ -121,6 +121,16 @@ export const checkNoteText = (targets, observations) => [
   'Anything you want to fix, or is that what you expected? Either is fine — carry on.',
 ].join('\n');
 
+// A report that nothing appeared, made without looking. Live miss (Azure 68c8d227): three
+// fast_waits for the form errored ("page busy"), no write ever landed, no screenshot was taken,
+// and report_done said the page "never rendered", while the video shows the Basics form fully
+// drawn by 20s. That report is a claim about the screen too, and one screenshot answers it.
+export const lookNoteText = (targets, observations) => [
+  `Before your report is recorded: the calls that waited for or read ${targets.length ? quoteList(targets) : 'the page'} came back with errors, nothing has written to the page, and no screenshot was taken since, so I took one now and showed it to a second model in a fresh conversation. It saw only that image${targets.length ? ' and those names' : ''} — not the task, your report, your history or your tools. Here is what it says is on the screen:`,
+  ...observations.map(o => `- ${o}`),
+  'If that is what you expected, call report_done again. If not, carry on with the task. Either is fine.',
+].join('\n');
+
 // Start a check for the unread writes ONE toolLog entry reports. Returns
 // immediately: the screenshot and the checker run in the background. The record
 // (run.visualChecks) is what the run row carries; the promises live in
@@ -129,11 +139,24 @@ export function startVisualCheck(run, idx, deps = {}) {
   const entry = run.toolLog[idx];
   const unverified = (entry?.partial || []).filter(p => p.unverified);
   if (run.gate === 'off' || !unverified.length) return null;
+  const targets = [...new Set(unverified.map(u => u.target).filter(Boolean))];
+  return launchCheck(run, { idx, t: entry.t, unverified }, targets, checkNoteText, deps);
+}
+
+// Start the ONE look a report gets when it follows failed waits/reads with no write and no
+// screenshot (runner.mjs unlookedFailures decides that). `idx` is the latest of those failures;
+// the targets asked about are what the failed calls were looking for. Same budget, same checker.
+export function startLookCheck(run, { idx, failures }, deps = {}) {
+  if (run.gate === 'off' || !failures?.length) return null;
+  const targets = [...new Set(failures.map(f => f.target).filter(Boolean))];
+  return launchCheck(run, { idx, t: run.toolLog[idx]?.t, kind: 'report', failures }, targets, lookNoteText, deps);
+}
+
+function launchCheck(run, base, targets, noteText, deps) {
   run.visualChecks ||= [];
   run.pendingChecks ||= [];
   const checker = deps.model || CHECK_MODEL;
-  const targets = [...new Set(unverified.map(u => u.target).filter(Boolean))];
-  const rec = { idx, t: entry.t, checker, unverified };
+  const rec = { ...base, checker };
   run.visualChecks.push(rec);
   if (run.visualChecks.length > MAX_VISUAL_CHECKS) { rec.skipped = `check cap (${MAX_VISUAL_CHECKS}) reached`; return null; }
   const t0 = Date.now();
@@ -152,7 +175,7 @@ export function startVisualCheck(run, idx, deps = {}) {
     if (out?.skipped || !observations.length) { rec.skipped = out?.skipped || 'nothing observed'; return; }
     rec.observations = observations;
     rec.readyAt = Date.now() - run.startedAt;
-    rec.note = checkNoteText(targets, observations);
+    rec.note = noteText(targets, observations);
     rec.url = url;
   });
   run.pendingChecks.push({ rec, shot, done });

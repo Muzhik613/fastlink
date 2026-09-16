@@ -6,7 +6,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMessage, ensureProxy, MODEL } from './xai.mjs';
 import { connect } from './fastlink-client.mjs';
-import { startVisualCheck, settleShots, takeNotes } from './visual-check.mjs';
+import { startVisualCheck, startLookCheck, settleShots, takeNotes } from './visual-check.mjs';
 import { startRecording, stopRecording } from './recorder.mjs';
 
 const STATE_DIR = join(homedir(), '.local', 'state', 'fastrun');
@@ -526,11 +526,40 @@ export function reportDone(run, args, t) {
 // a round later (Azure 5f06a066: note at turn 8, the gate's problems only at turn
 // 10 and 11). A report the gate would accept still gets one round with the note,
 // so the model sees the screen before its report is recorded.
-export async function reportDecision(run, args, t) {
+//
+// A report that follows failed looks gets one look of its own first (unlookedFailures): the
+// screenshot is taken now and its observations ride in that same round.
+export async function reportDecision(run, args, t, deps = {}) {
+  const look = unlookedFailures(run);
+  if (look) startLookCheck(run, look, deps);
   const notes = await deliverChecks(run);
   const verdict = reportDone(run, args, t);
   if (!notes.length) return verdict;
   return verdict.refuse ? { note: notes.join('\n\n'), refuse: verdict.refuse } : { note: notes.join('\n\n') };
+}
+
+// When a report_done gets ONE look at the screen, decided on structure alone, never the report's
+// wording (phrase lists for "didn't load / blank / not there" were rejected as fragile):
+//   - a wait or read failed and is still unresolved (errored, never retried or overtaken),
+//   - nothing wrote to the page in the whole run (navigation does not count: fast_tab loaded it),
+//   - no screenshot succeeded after the latest of those failures, and
+//   - this run has not had that look yet.
+// A run that gave up without writing, after looks that errored, has only its report to say what
+// is on the screen; a screenshot answers it in ~2s. Conservative both ways: one write anywhere or
+// one screenshot since the failure and it never fires, and it fires at most once.
+// Returns { idx, failures } or null.
+const WRITE_TOOLS = new Set(['fast_click', 'fast_click_xy', 'fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_key_press', 'fast_type']);
+const stepNames = (steps) => (Array.isArray(steps) ? steps : []).flatMap(s => [s?.name, ...stepNames(s?.then), ...stepNames(s?.else)]);
+const wrotePage = (e) => e.ok && (WRITE_TOOLS.has(e.name) || (e.name === 'fast_batch' && stepNames(e.args?.actions || e.args?.steps).some(n => WRITE_TOOLS.has(n))));
+export function unlookedFailures(run) {
+  const log = run.toolLog || [];
+  if (run.gate === 'off' || (run.visualChecks || []).some(c => c.kind === 'report') || log.some(wrotePage)) return null;
+  const failures = unresolvedFailures(log).filter(f => !f.unverified && isReadOrWait(f));
+  if (!failures.length) return null;
+  const last = Math.max(...failures.map(f => f.t));
+  const idx = log.findLastIndex(e => !e.ok && e.t === last);
+  if (idx < 0 || log.slice(idx + 1).some(e => e.ok && e.name === 'fast_screenshot')) return null;
+  return { idx, failures };
 }
 
 // Hand over the finished visual checks: each one's observations are a read of the
