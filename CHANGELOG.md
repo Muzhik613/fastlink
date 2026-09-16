@@ -33,6 +33,27 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — walkDeep: the per-iframe forced layout is opt-in, and a root is never walked twice
+- **What:** `walkDeep(root, sel, visit, opts)` computes the iframe offset passed to `visit` only when
+  a caller asks (`{offsets:true}`), and carries a `seen` Set so a root reachable by more than one
+  path is walked once.
+- **Why:** it called `getBoundingClientRect()` on EVERY same-origin iframe before recursing — a
+  forced synchronous layout each time — while no caller reads `ox`/`oy`/`inFrame` (checked all six
+  call sites, including both multi-line `diagnose` callbacks; `queryAllDeep`, which `findFields`
+  uses, discards the offset outright). On a 600-iframe page the walk measured **98ms with the rect
+  vs 6ms without**. The `seen` Set is defensive: an audit on nested iframes + shadow roots showed
+  rootVisits 51 / distinctRoots 51 / duplicateVisits 0, so nothing re-walks today, but nothing
+  stopped it either.
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** any future caller that needs frame-relative coordinates must pass
+  `{offsets:true}` or it will get `ox/oy = 0` inside frames. `offsetFor()` is unrelated and still
+  computes real coordinates for the snapshot path.
+- **Status:** committed; fast-runner 56/56. 600-iframe repro: warm call **202ms → 48ms** (4.2×).
+  Behaviour identical — a nested-iframe page returns a byte-identical result before and after, and
+  gcpscale2's candidate count stays 5001 (wall 1878 → 1493ms). selenium web-form, APG select-only
+  and select2 `index:0` all still verify. NOT the GCP fix: at ~0.15ms per frame you would need
+  ~200,000 iframes to account for its 45s resolve, and the cause there is still open.
+
 ## 2026-09-16 — fast_select_option: toControls' containment dedupe was O(n²) and read a rect per match
 - **What:** `toControls` (page.js) dedupes with an ancestor `Set` lookup (O(depth), crossing shadow
   hosts) instead of `out.some(o => o.el.contains(c.el) || c.el.contains(o.el))` over every kept

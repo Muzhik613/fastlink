@@ -294,9 +294,17 @@ const containerLabel = (el) => {
 
 // Walks the composed tree (shadow roots + same-origin iframes). Generic
 // version used by diagnose / select_option. Indexing has its own walker.
-const walkDeep = (root, selector, visit) => {
+// The frame offset passed to `visit` is OPT-IN (`{offsets:true}`): reading an
+// iframe's getBoundingClientRect forces a synchronous layout, and no caller reads
+// ox/oy today, so on a page with many same-origin frames that layout was the bulk
+// of the walk — 600 frames measured 98ms with the rect vs 6ms without. `seen` means
+// a root reachable by more than one path is walked once, never repeatedly.
+const walkDeep = (root, selector, visit, opts) => {
+  const offsets = !!(opts && opts.offsets);
+  const seen = new Set();
   const walk = (r, ox, oy) => {
-    if (!r || !r.querySelectorAll) return;
+    if (!r || !r.querySelectorAll || seen.has(r)) return;
+    seen.add(r);
     let matches, all;
     try { matches = r.querySelectorAll(selector); all = r.querySelectorAll('*'); }
     catch { return; }
@@ -310,9 +318,13 @@ const walkDeep = (root, selector, visit) => {
           let doc = null;
           try { doc = el.contentDocument; } catch {}
           if (!doc) continue;
-          let fr;
-          try { fr = el.getBoundingClientRect(); } catch { continue; }
-          walk(doc, ox + fr.x, oy + fr.y);
+          let nx = ox, ny = oy;
+          if (offsets) {
+            let fr;
+            try { fr = el.getBoundingClientRect(); } catch { continue; }
+            nx = ox + fr.x; ny = oy + fr.y;
+          }
+          walk(doc, nx, ny);
         }
       } catch {}
     }
