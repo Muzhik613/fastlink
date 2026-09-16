@@ -1509,7 +1509,7 @@ const isEmptyFillable = (el, entry) => {
 // fast_snapshot's `full`/`limit` args bypass the cap for the complete set.
 const ITEM_CAP_DEFAULT    = 70;   // explicit fast_snapshot default
 const CONTENT_CAP_DEFAULT = 30;   // content text array default
-const AUTO_ITEM_CAP       = 12;   // action-result preview: the controls around the action, not the page
+const AUTO_ITEM_CAP       = 20;   // action-result preview: the controls around the action, not the page
 const AUTO_CONTENT_CAP    = 3;
 const RANK_INTERACTIVE_TAGS  = new Set(['input', 'button', 'select', 'textarea']);
 const RANK_INTERACTIVE_ROLES = new Set([
@@ -1683,7 +1683,7 @@ const autoHint = (d) => [
 // AUTO_MIN_ITEMS. Item ids (`i`) and geometry are never touched, so a caller can
 // still act on anything listed. Loss is recorded in snap.dropped for
 // markTruncated().
-const AUTO_SNAP_MAX_CHARS = 2500;
+const AUTO_SNAP_MAX_CHARS = 4000;
 const AUTO_MIN_ITEMS      = 8;
 const SETTLE_MAX_MS       = 1000;  // post-action DOM-quiet wait before the auto-snapshot
 const AUTO_WAIT_MS        = 1500;  // fill/click/select keep looking for a missing target this long
