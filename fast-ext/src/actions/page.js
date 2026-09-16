@@ -954,8 +954,13 @@ const settleDom = async (maxMs, quietMs = 150) => {
 const disconnectObserver = (reason) => {
   if (INDEX.observer) { try { INDEX.observer.disconnect(); } catch {} INDEX.observer = null; }
   INDEX.suspended = true;
-  if (reason === 'storm') INDEX.stormTripped = true;
+  if (reason === 'storm') { INDEX.stormTripped = true; INDEX.stormAt = nowMs(); }
 };
+// A storm is usually a burst (a panel animating in, a table re-rendering). After this long
+// the next tool call re-arms the observer; a page still too hot simply trips it again. A
+// permanently deaf observer left settles and waits blind (live Oracle 4cbfe776: sinceMutMs
+// 81,240 while panels opened and closed).
+const STORM_RETRY_MS = 10000;
 
 const setupObserver = () => {
   if (INDEX.observer || typeof MutationObserver === 'undefined') return;
@@ -1018,9 +1023,14 @@ const setupObserver = () => {
 // freely. Always stamps activity so idle-suspend measures from the last call.
 const armObserver = () => {
   INDEX.lastActivityMs = nowMs();
-  if (INDEX.stormTripped) return;        // stay out of the way on hot pages
+  if (INDEX.stormTripped) {
+    if (!(INDEX.stormAt && nowMs() - INDEX.stormAt > STORM_RETRY_MS)) return;   // stay out of the way while it is hot
+    INDEX.stormTripped = false;          // cooled down: listen again
+  }
   if (!INDEX.observer) setupObserver();
 };
+// Is the observer recording page mutations right now (so settleDom's quiet signal means something)?
+const observerLive = () => !!INDEX.observer && !INDEX.suspended && !INDEX.stormTripped;
 
 // Called at snapshot time: if FastLink has been idle, disconnect the observer
 // so an unused-but-live tab carries no background watcher.
@@ -1879,6 +1889,10 @@ async function runPageAction(action, args) {
     // ≤ SETTLE_MAX_MS) so the snapshot shows the result of the action, not the
     // frame before it. A page still mutating at the cap is flagged `settling`.
     const tSettle = nowMs();
+    // With no observer recording, settleDom has no mutation signal and returns at once —
+    // serializing the DOM from BEFORE what the action set off (a panel closing still listed its
+    // options). Give the page a fixed 150ms instead, only in that state.
+    if (!observerLive()) await wait(Math.min(150, settleMs));
     const settle = await settleDom(settleMs);
     phase('settleMs', nowMs() - tSettle);
     // FRESH POST-ACTION SNAPSHOT (field-feedback #1): re-walk the DOM AFTER the
@@ -4673,15 +4687,23 @@ const formState = () => {
     if (el.type === 'password') value = value ? '•••' : '';
     fields.set(el, { label, value: cleanLabel(value).slice(0, 80) });
   }
-  const dialogs = new Set();
+  // dialogs by ELEMENT, not name: a same-named panel opening inside another (Oracle's image
+  // picker is a "Side Panel" inside the "Side Panel" create form) is its own open/close
+  const dialogs = new Map();   // element → label
   try {
     const els = document.querySelectorAll(DIALOG_SEL);
     for (let i = 0; i < els.length && i < 50; i++) {
       let r; try { r = els[i].getBoundingClientRect(); } catch { continue; }
-      if (visible(els[i], r)) dialogs.add(dialogLabel(els[i]) || 'dialog');
+      if (visible(els[i], r)) dialogs.set(els[i], dialogLabel(els[i]) || 'dialog');
     }
     const act = activeDialogRoot();
-    if (act) dialogs.add(dialogLabel(act) || 'dialog');
+    if (act && !dialogs.has(act)) dialogs.set(act, dialogLabel(act) || 'dialog');
+    // name + nesting, read NOW (a closed panel is detached by the time the states are compared)
+    for (const [el, label] of dialogs) {
+      let nested = false;
+      for (const other of dialogs.keys()) if (other !== el && other.contains(el)) { nested = true; break; }
+      dialogs.set(el, `dialog "${label}"${nested ? ' (nested)' : ''}`);
+    }
   } catch {}
   return { fields, dialogs, partial };
 };
@@ -4695,8 +4717,17 @@ const diffFormState = (a, b) => {
     const y = b.fields.get(el) || (al.get(x.label) ? bl.get(x.label) : null);
     if (y && y.value !== x.value) out.push(`${x.label}: ${JSON.stringify(x.value)} → ${JSON.stringify(y.value)}`);
   }
-  for (const d of b.dialogs) if (!a.dialogs.has(d)) out.push(`dialog "${d}" opened`);
-  for (const d of a.dialogs) if (!b.dialogs.has(d)) out.push(`dialog "${d}" closed`);
+  // Dialogs are told apart by name AND nesting (a "Side Panel" opened inside the "Side Panel"
+  // form is its own entry); a panel the page re-mounted as a new element with the same name and
+  // place is not reported as closed + opened.
+  const names = (st) => {
+    const counts = new Map();
+    for (const key of st.dialogs.values()) counts.set(key, (counts.get(key) || 0) + 1);
+    return counts;
+  };
+  const na = names(a), nb = names(b);
+  for (const [key, n] of nb) if (n > (na.get(key) || 0)) out.push(`${key} opened`);
+  for (const [key, n] of na) if (n > (nb.get(key) || 0)) out.push(`${key} closed`);
   return out;
 };
 // Put `changed` right after the result's first key.
