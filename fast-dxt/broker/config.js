@@ -5,7 +5,7 @@ import { readFileSync } from 'fs';
 // Ports. Defaults are the shared production instance; FASTLINK_BROKER_PORT
 // (mcp, same var the server reads) + FASTLINK_EXT_PORTS ("9876,9877") give a
 // throwaway broker for tests. A non-default mcp port also suffixes the pid/log
-// files and skips the cloudflared tunnel so it never clobbers the live broker.
+// files so it never clobbers the live broker.
 const DEFAULT_MCP_PORT = 9870;
 export const MCP_PORT = parseInt(process.env.FASTLINK_BROKER_PORT, 10) || DEFAULT_MCP_PORT;
 

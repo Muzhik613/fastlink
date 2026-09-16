@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { WebSocket } from 'ws';
 
-// Throwaway instance: suffixed pid/log files, tunnel skipped (broker/config.js).
+// Throwaway instance: suffixed pid/log files (broker/config.js).
 process.env.FASTLINK_BROKER_PORT = '19870';
 process.env.FASTLINK_EXT_PORTS = '19876,19877';
 const { state } = await import('../broker/state.js');

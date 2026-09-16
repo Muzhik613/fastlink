@@ -33,12 +33,12 @@ const SETTLE_INITIAL_GAP_MS = 100;       // let teardown/commit begin before fir
 const IF_FOUND_WAIT_MS = 1000;           // default probe budget for ifFound
 
 // Inherently-navigating actions whose result carries no willNavigate flag.
-const NAV_ACTIONS = new Set(['fast_nav', 'fast_reload']);
+const NAV_ACTIONS = new Set(['fast_nav']);
 // Steps that can drive a SAME-TAB navigation. Read-only / tab-switching steps are
 // excluded so they add zero latency and never trigger a false "navigated".
 const POSSIBLY_NAVIGATING = new Set([
   'fast_click', 'fast_click_xy', 'fast_key_press',
-  'fast_nav', 'fast_reload', 'fast_select_option',
+  'fast_nav', 'fast_select_option',
 ]);
 const STEP_RENAMES = { fast_fill_form: 'fast_fill' };
 const SELECTOR_RE = /^[#.[:*]|[>[]/;

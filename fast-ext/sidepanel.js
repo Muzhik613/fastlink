@@ -104,7 +104,7 @@ const VERB = {
   fast_screenshot: 'Capturing screenshot', fast_click: 'Clicking', fast_click_xy: 'Clicking',
   fast_fill: 'Typing', fast_type: 'Typing',
   fast_select_option: 'Selecting',
-  fast_nav: 'Navigating', fast_reload: 'Reloading', fast_scroll: 'Scrolling',
+  fast_nav: 'Navigating', fast_scroll: 'Scrolling',
   fast_wait: 'Waiting', fast_key_press: 'Pressing key', fast_tab: 'Switching tab',
   fast_switch: 'Switching tab', fast_list: 'Listing tabs', fast_close: 'Closing tab',
   fast_evaluate: 'Running script',

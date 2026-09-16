@@ -153,7 +153,7 @@ const IMAGE_TOOLS = new Set(['fast_screenshot']);
 const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_type',
   'fast_key_press', 'fast_nav', 'fast_evaluate',
-  'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_reload',
+  'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close',
 ]);
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.

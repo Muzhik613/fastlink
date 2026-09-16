@@ -70,7 +70,7 @@ extension, then verify with `fast_status`.
 ## Notes
 
 - **Ports:** extension slots `9876` (primary) / `9877` (secondary 2nd profile); internal
-  MCP↔broker `9870`; optional HTTP transport `9879`.
+  MCP↔broker `9870`.
 - **Web Store:** not published, and there is no self-hosted `.crx` channel — use Load-unpacked
   (Developer mode). `fast-ext/scripts/package.sh` builds the uploadable zip if one is ever cut.
 - **Non-DOM targets** (canvas, cross-origin iframes): `fast_screenshot` → `fast_click_xy` / `fast_type`.

@@ -105,25 +105,19 @@ claude mcp add fastlink wsl.exe -- -e node /home/<user>/code/Fastlink/fast-dxt/s
 ```
 
 Equivalent `~/.claude.json` entry (proven-working local form — `node` direct, absolute server
-path, optional HTTP flags, optional env):
+path):
 
 ```json
 "fastlink": {
   "type": "stdio",
   "command": "node",
   "args": [
-    "/ABSOLUTE/PATH/TO/Fastlink/fast-dxt/server/index.js",
-    "--http",
-    "--http-port=9879"
-  ],
-  "env": {
-    "FASTLINK_TOKEN": "<optional shared secret>"
-  }
+    "/ABSOLUTE/PATH/TO/Fastlink/fast-dxt/server/index.js"
+  ]
 }
 ```
 
-The `--http` / `--http-port=9879` flags are **optional** (they expose an HTTP transport; the
-default stdio transport works without them). After editing config, restart Claude Code or run
+The server speaks stdio only. After editing config, restart Claude Code or run
 `/mcp` to reconnect.
 
 ### 4b. Claude Desktop (.mcpb bundle)
@@ -158,7 +152,7 @@ native-Windows installs work out of the box.
 
 > The broker **auto-spawns** when the server first needs it (detached) and is reused if already
 > running — you never start it by hand. Ports: extension slots **9876** (primary) / **9877**
-> (secondary 2nd Chrome profile), internal MCP↔broker **9870**, optional HTTP **9879**. The
+> (secondary 2nd Chrome profile), internal MCP↔broker **9870**. The
 > broker binds `0.0.0.0`, multiplexes all MCP clients onto one extension socket, and self-exits
 > after ~60s idle.
 

@@ -3,7 +3,6 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { Buffer } from 'buffer';
 import { callExtension, getStatus, getBrokerLinkInfo, setSelectedInstall, getSelectedInstall } from './brokerClient.js';
-import { HTTP_ENABLED, HTTP_PORT, TOKEN } from './config.js';
 import { runBatch } from './batch.js';
 
 const text = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
@@ -28,7 +27,7 @@ const CAPTURE_TOOLS = new Set(['fast_screenshot']);
 const NON_IDEMPOTENT = new Set([
   'fast_fill', 'fast_type',
   'fast_click', 'fast_click_xy', 'fast_select_option',
-  'fast_key_press', 'fast_nav', 'fast_reload',
+  'fast_key_press', 'fast_nav',
 ]);
 const READBACK_ERR_RE = /readback|compositor|captureVisibleTab/i;
 async function callCapture(name, args, retries = 2) {
@@ -159,9 +158,6 @@ async function statusReport() {
     ...broker,
     selectedInstall: selected,
     brokerLink: link,
-    httpEnabled: HTTP_ENABLED,
-    httpPort: HTTP_ENABLED ? HTTP_PORT : null,
-    httpAuthRequired: HTTP_ENABLED && !!TOKEN,
     hint: hints.join(' '),
   };
 }

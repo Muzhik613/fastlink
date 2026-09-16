@@ -34,10 +34,6 @@
       "description": "Navigate the active Chrome tab to a URL."
     },
     {
-      "name": "fast_reload",
-      "description": "Reload the active Chrome tab (bypassing cache) and wait for the load to finish."
-    },
-    {
       "name": "fast_list",
       "description": "List all open tabs in the current Chrome window with id, url, title, and active state."
     },

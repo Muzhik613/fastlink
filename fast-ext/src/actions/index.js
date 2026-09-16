@@ -6,7 +6,7 @@ import { clickXY, typeText } from './input.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { isInjectableUrl } from '../util.js';
 
-const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_reload', 'fast_list', 'fast_close', 'fast_switch']);
+const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_list', 'fast_close', 'fast_switch']);
 const PAGE_ACTIONS = new Set([
   'fast_snapshot', 'fast_click', 'fast_fill', 'fast_wait',
   'fast_select_option', 'fast_scroll',

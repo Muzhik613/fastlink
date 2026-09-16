@@ -1,17 +1,14 @@
-import express from 'express';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { TOOLS } from './tools.js';
 import { handleCall } from './handlers.js';
-import { HTTP_PORT, TOKEN } from './config.js';
 import { log } from './log.js';
 
 // Guidance the client (Claude) sees in the initialize result — steers it toward
 // the FAST tools instead of its default "screenshot + read it myself" instinct.
 const INSTRUCTIONS = [
-  'THIS IS THE LOCAL FastLink connector (named "fastlink") — Claude Code on the user\'s own machine drives the browser through the local broker. No pairing, no token, no OAuth. If a separate CLOUD connector is ALSO listed (server "fastlink-relay" / shown as "claude.ai Fastlink"), PREFER THIS LOCAL ONE for CLI sessions; that cloud connector is for claude.ai web and needs the browser paired to a relay account. FASTLINK_TOKEN is NOT used here — it is an unrelated, optional local-HTTP secret; never treat a missing FASTLINK_TOKEN as the cause of a connection problem.',
+  'THIS IS THE LOCAL FastLink connector (named "fastlink") — Claude Code on the user\'s own machine drives the browser through the local broker. No pairing, no token, no OAuth. If a separate CLOUD connector is ALSO listed (server "fastlink-relay" / shown as "claude.ai Fastlink"), PREFER THIS LOCAL ONE for CLI sessions; that cloud connector is for claude.ai web and needs the browser paired to a relay account. FASTLINK_TOKEN is NOT used here; never treat a missing FASTLINK_TOKEN as the cause of a connection problem.',
   '',
   'FastLink drives the user\'s real Chrome tab. Use it efficiently:',
   '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content.',
@@ -38,45 +35,4 @@ export async function startStdio() {
   const server = createMcpServer();
   await server.connect(new StdioServerTransport());
   log('stdio transport connected');
-}
-
-export function startHttp() {
-  const app = express();
-  app.use(express.json({ limit: '10mb' }));
-  app.use('/mcp', authMiddleware);
-
-  app.post('/mcp', async (req, res) => {
-    try {
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = createMcpServer();
-      res.on('close', () => { transport.close(); server.close(); });
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-    } catch (e) {
-      log(`http /mcp error: ${e.message}`);
-      if (!res.headersSent) res.status(500).json({ error: 'internal' });
-    }
-  });
-
-  return new Promise((resolve) => {
-    const httpServer = app.listen(HTTP_PORT, '127.0.0.1', () => {
-      log(`http MCP listening on :${HTTP_PORT}/mcp ${TOKEN ? '(auth required)' : '(NO AUTH — localhost only)'}`);
-      resolve();
-    });
-    httpServer.on('error', (e) => {
-      if (e.code === 'EADDRINUSE') log(`http port ${HTTP_PORT} already bound — another server has it. Skipping HTTP.`);
-      else log(`http server error: ${e.message}`);
-      resolve();
-    });
-  });
-}
-
-function authMiddleware(req, res, next) {
-  if (!TOKEN) return next();
-  const m = (req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
-  if (!m || m[1] !== TOKEN) {
-    log(`http auth rejected: ${req.ip}`);
-    return res.status(401).json({ error: 'unauthorized' });
-  }
-  next();
 }

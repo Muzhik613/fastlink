@@ -29,7 +29,6 @@ const MAIN_WORLD_FILES = ['src/actions/page.js'];
 export async function handleTabAction(action, args = {}) {
   if (action === 'fast_tab')    return openTab(args);
   if (action === 'fast_nav')    return navigateTab(args);
-  if (action === 'fast_reload') return reloadTab(args);
   if (action === 'fast_list')   return listTabs();
   if (action === 'fast_close')  return closeTab(args);
   if (action === 'fast_switch') return switchTab(args);
@@ -111,7 +110,7 @@ async function openTab({ url, background, waitMs }) {
 }
 
 // Resolve once the tab reaches load 'complete', capped so we never hang on a
-// slow/never-loading page. Shared by fast_nav and fast_reload.
+// slow/never-loading page.
 function waitForComplete(tabId, waitMs) {
   const cap = typeof waitMs === 'number' ? waitMs : 10000;
   return new Promise((resolve) => {
@@ -183,22 +182,14 @@ async function navigateTab({ url, waitMs }) {
   }
   // Still not live (restricted chrome:// URL, crashed renderer, or inject
   // blocked) → surface 'stale' WITH a clear, machine-readable hint so the caller
-  // doesn't silently chase empty snapshots; fast_reload is the recovery path.
+  // doesn't silently chase empty snapshots; re-navigating is the recovery path.
   if (contentScript === 'stale') {
     return {
       id: tab.id, url, contentScript,
-      hint: 'FastLink\'s content script is not live in the navigated tab — snapshot/click/wait may return empty or falsely idle. Call fast_reload to recover. (Restricted chrome:// / extension-gallery URLs cannot be driven.)',
+      hint: 'FastLink\'s content script is not live in the navigated tab — snapshot/click/wait may return empty or falsely idle. fast_nav to the same URL to recover. (Restricted chrome:// / extension-gallery URLs cannot be driven.)',
     };
   }
   return { id: tab.id, url, contentScript };
-}
-
-async function reloadTab({ waitMs }) {
-  const tab = await getTargetTab();
-  if (!tab) return { error: 'No active tab' };
-  await chrome.tabs.reload(tab.id, { bypassCache: true });
-  await waitForComplete(tab.id, waitMs);
-  return { id: tab.id, url: tab.url, reloaded: true };
 }
 
 async function listTabs() {

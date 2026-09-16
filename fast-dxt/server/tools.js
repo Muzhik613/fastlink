@@ -85,7 +85,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_nav',
-    description: 'Navigate the active Chrome tab to a URL. Waits for the load to complete (up to waitMs, default 10000) before returning — override with waitMs to wait longer for slow pages or shorter to return early. Then HEALTH-CHECKS the page.js content script (with a short settle-retry, because it re-attaches asynchronously and can race the return — which is what made post-nav snapshots come back empty) and returns `contentScript`: "fresh" (it was already live), "reinjected" (it was stale/missing — common after the extension was reloaded — so FastLink re-injected it), or "stale" (still not live, e.g. a restricted chrome:// URL). A "stale" result ALSO includes a `hint`: subsequent snapshot/click/wait may return empty or falsely idle, so call fast_reload to recover.',
+    description: 'Navigate the active Chrome tab to a URL. Waits for the load to complete (up to waitMs, default 10000) before returning — override with waitMs to wait longer for slow pages or shorter to return early. Then HEALTH-CHECKS the page.js content script (with a short settle-retry, because it re-attaches asynchronously and can race the return — which is what made post-nav snapshots come back empty) and returns `contentScript`: "fresh" (it was already live), "reinjected" (it was stale/missing — common after the extension was reloaded — so FastLink re-injected it), or "stale" (still not live, e.g. a restricted chrome:// URL). A "stale" result ALSO includes a `hint`: subsequent snapshot/click/wait may return empty or falsely idle, so fast_nav to the same URL to recover.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -93,16 +93,6 @@ export const TOOLS = [
         waitMs: { type: 'number', description: 'Max ms to wait for the load to complete (default 10000).' },
       },
       required: ['url'],
-    },
-  },
-  {
-    name: 'fast_reload',
-    description: 'Reload the active Chrome tab (bypassing cache) and wait for the load to finish. Use this to recover when snapshot returns empty, networkIdle falsely reports idle, or a screenshot readback fails — symptoms of a stale/missing content script after the extension was reloaded.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        waitMs: { type: 'number', description: 'Max ms to wait for the reload to complete (default 10000).' },
-      },
     },
   },
   {

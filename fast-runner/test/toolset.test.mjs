@@ -17,7 +17,7 @@ test('default toolset = every server tool + native, descriptions untouched, inst
   assert.equal(ts.name, 'default');
   const { tools, back } = buildTools(TOOLS, ts);
   assert.equal(tools.length, TOOLS.length + NATIVE.length);
-  assert.equal(TOOLS.length, 22);
+  assert.equal(TOOLS.length, 21);
   assert.ok(TOOLS.some(t => t.name === 'fast_ext_reload'), 'ops tool fast_ext_reload is on the server (default "*" exposes it)');
   for (const t of TOOLS) {
     const seen = tools.find(x => x.name === t.name);
