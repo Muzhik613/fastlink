@@ -4,13 +4,13 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadToolset, buildTools, buildSystem, HIDDEN_TOOLS } from '../runner.mjs';
+import { loadToolset, buildTools, buildSystem, HIDDEN_TOOLS, SHORT_NAMES, shortName, canonicalName, toModelText } from '../runner.mjs';
 import { TOOLS } from '../../fast-dxt/server/tools.js';
 import { TOOLS as RELAY_TOOLS } from '../../fastlink-relay/tools.js';
 
 // Tools that attach chrome.debugger (fast-ext/src/actions/input.js tier + its importers).
 const CDP = ['fast_click_xy', 'fast_type', 'fast_evaluate', 'fast_screenshot'];
-const NATIVE = ['ask_caller', 'report_done'];
+const NATIVE = ['ask', 'done'];   // ask_caller / report_done as the model sees them
 const names = (tools) => tools.map(t => t.name);
 const tool = (n) => TOOLS.find(t => t.name === n);
 const param = (n, p) => tool(n).inputSchema.properties[p]?.description || '';
@@ -48,14 +48,15 @@ test('toolsets choose tools only: allow (and a comment), no describe / rename ov
   }
   for (const name of ['default', 'phase2', 'phase2-eval', 'no-cdp']) {
     const { tools } = buildTools(TOOLS, loadToolset(name));
-    for (const t of tools) if (!NATIVE.includes(t.name)) assert.equal(t.description, tool(t.name).description, `${name} ${t.name}: server text`);
+    for (const t of tools) if (!NATIVE.includes(t.name)) assert.equal(t.description, toModelText(tool(canonicalName(t.name)).description), `${name} ${t.name}: server text, short names`);
   }
 });
 
 test('one short system prompt for every toolset, no server instructions essay', () => {
   const sys = buildSystem();
   assert.ok(sys.length < 1000, `system prompt ${sys.length} chars`);
-  assert.match(sys, /fast_batch/); assert.match(sys, /report_done/); assert.match(sys, /ask_caller/);
+  assert.match(sys, /\bbatch\b/); assert.match(sys, /\bdone\b/); assert.match(sys, /\bask\b/);
+  assert.doesNotMatch(sys, /fast_batch|fast_fill|report_done|ask_caller/, 'short names only');
   assert.match(sys, /When a step fails, read the error, fix the call, and continue\./);
   assert.match(sys, /omitted counts are normal/); assert.match(sys, /truncated:true means an explicit read was cut/);
   assert.doesNotMatch(sys, /do not re-snapshot|Tool guidance from FastLink/i);
@@ -69,7 +70,7 @@ test('default toolset = every server tool except hidden + native', () => {
   assert.equal(tools.length, TOOLS.length - HIDDEN_TOOLS.size + NATIVE.length);
   assert.ok(TOOLS.some(t => t.name === 'fast_ext_reload'), 'ops tool fast_ext_reload is on the server');
   assert.ok(!names(tools).includes('fast_ext_reload') && !back.has('fast_ext_reload'), 'default "*" does not offer the operator reload');
-  for (const t of tools.filter(t => !NATIVE.includes(t.name))) { assert.equal(back.get(t.name), t.name); assert.equal(t.input_schema, tool(t.name).inputSchema); }
+  for (const t of tools.filter(t => !NATIVE.includes(t.name))) { assert.equal(back.get(t.name), canonicalName(t.name)); assert.equal(t.name, shortName(canonicalName(t.name))); }
 });
 
 test('hidden tools (scorer fast_frame_read, operator fast_ext_reload) are never model-facing, even when allowed', () => {
@@ -77,10 +78,25 @@ test('hidden tools (scorer fast_frame_read, operator fast_ext_reload) are never 
   assert.ok(!HIDDEN_TOOLS.has('fast_evaluate'), 'phase2-eval offers fast_evaluate on purpose');
   for (const name of ['default', 'phase2', 'phase2-eval', 'no-cdp']) {
     const { tools, back } = buildTools(TOOLS, loadToolset(name));
-    for (const h of HIDDEN_TOOLS) { assert.ok(!names(tools).includes(h), `${name}: ${h}`); assert.equal(back.has(h), false); }
+    for (const h of HIDDEN_TOOLS) { assert.ok(!names(tools).map(canonicalName).includes(h), `${name}: ${h}`); assert.equal([...back.values()].includes(h), false); }
   }
   const { tools } = buildTools(TOOLS, { name: 'x', allow: ['fast_snapshot', ...HIDDEN_TOOLS] });
-  assert.deepEqual(names(tools), ['fast_snapshot', ...NATIVE]);
+  assert.deepEqual(names(tools), ['read', ...NATIVE]);
+});
+
+test('short tool names: the model sees them in the list, descriptions, params and prompt; the server keeps fast_*', () => {
+  assert.deepEqual(SHORT_NAMES, {
+    fast_snapshot: 'read', fast_text: 'text', fast_click: 'click', fast_click_xy: 'click_at', fast_fill: 'fill',
+    fast_select_option: 'select', fast_type: 'type', fast_key_press: 'key', fast_scroll: 'scroll', fast_wait: 'wait',
+    fast_tab: 'open', fast_nav: 'go', fast_batch: 'batch', fast_screenshot: 'look', report_done: 'done', ask_caller: 'ask',
+  });
+  const { tools, back } = buildTools(TOOLS, loadToolset('phase2'));
+  assert.deepEqual(names(tools), ['read', 'click', 'fill', 'open', 'go', 'wait', 'text', 'select', 'key', 'scroll', 'batch', 'click_at', 'ask', 'done']);
+  const blob = JSON.stringify(tools);
+  for (const long of Object.keys(SHORT_NAMES)) assert.ok(!blob.includes(long), `no ${long} anywhere the model reads`);
+  assert.equal(back.get('select'), 'fast_select_option');
+  assert.ok(TOOLS.every(t => t.name.startsWith('fast_')), 'MCP server names unchanged');
+  assert.equal(toModelText('use fast_select_option; fast_click_xy then fast_type; fast_evaluate stays'), 'use select; click_at then type; fast_evaluate stays');
 });
 
 test('"default" and unset and FASTRUN_TOOLSET resolve the same file', () => {
@@ -96,14 +112,14 @@ test('phase2 = its 12 allowed tools + 2 native; phase2-eval adds fast_evaluate; 
   const p2 = loadToolset('phase2');
   const t2 = buildTools(TOOLS, p2).tools;
   assert.equal(t2.length, 14);
-  assert.deepEqual([...names(t2).slice(0, -2)].sort(), [...p2.allow].sort());
+  assert.deepEqual([...names(t2).slice(0, -2)].map(canonicalName).sort(), [...p2.allow].sort());
   assert.deepEqual(names(t2).slice(-2), NATIVE);
   const ev = loadToolset('phase2-eval');
   assert.deepEqual(ev.allow, [...p2.allow, 'fast_evaluate']);
   assert.equal(buildTools(TOOLS, ev).tools.length, 15);
   const nc = buildTools(TOOLS, loadToolset('no-cdp')).tools;
   assert.equal(nc.length, 13);
-  for (const n of names(nc)) assert.ok(!CDP.includes(n), `${n} needs CDP`);
+  for (const n of names(nc)) assert.ok(!CDP.includes(canonicalName(n)), `${n} needs CDP`);
 });
 
 test('bad toolset name or shape throws before any connect', () => {

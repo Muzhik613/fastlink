@@ -511,6 +511,10 @@ export function gateMode(spec = process.env.FASTRUN_GATE || 'on') {
   return m;
 }
 
+// The refusal the model gets back from a report_done the gate refused (canonical names here; forModel
+// shortens them on the way out).
+export const refusalText = (problems) => `report_done refused: ${problems.join('; ')}. Fix that, then call report_done again.`;
+
 // The loop's decision at a report_done: { refuse: problems } (on: the model continues)
 // or { finish: fields } (the run ends 'done' with these fields).
 export function reportDone(run, args, t) {
@@ -659,6 +663,48 @@ const gateFields = (run) => run.gate === 'off' ? { gate: 'off' } : {
   unresolvedFailures: run.unresolvedFailures || undefined, claimMismatch: run.claimMismatch || undefined, screenMismatch: run.screenMismatch || undefined,
 };
 
+// ── Short tool names for Grok ─────────────────────────────────────────────────
+// Owner: tool names Grok reads must be very short and clear. ONE map, applied to every toolset at
+// the runner boundary: `forModel` on everything the model reads (tool list, descriptions, the system
+// prompt, tool results, refusals, check notes, nudges) and `fromModel` on every call it makes
+// (its tool name and fast_batch step names). The MCP server, the run store (runs.jsonl), the gate
+// and every log keep the canonical fast_* names, so history stays comparable and Claude / relay
+// callers are unaffected. Names without an entry (fast_evaluate, fast_list…) pass through unchanged.
+export const SHORT_NAMES = {
+  fast_snapshot: 'read', fast_text: 'text', fast_click: 'click', fast_click_xy: 'click_at', fast_fill: 'fill',
+  fast_select_option: 'select', fast_type: 'type', fast_key_press: 'key', fast_scroll: 'scroll', fast_wait: 'wait',
+  fast_tab: 'open', fast_nav: 'go', fast_batch: 'batch', fast_screenshot: 'look', report_done: 'done', ask_caller: 'ask',
+};
+const CANONICAL = Object.fromEntries(Object.entries(SHORT_NAMES).map(([k, v]) => [v, k]));
+const NAME_TOKEN = /\b(?:fast_[a-z_]+|report_done|ask_caller)\b/g;
+export const shortName = (name) => SHORT_NAMES[name] || name;
+export const canonicalName = (name) => CANONICAL[name] || name;
+/** Model-facing text: every canonical tool name that has a short name becomes it. */
+export const toModelText = (text) => String(text).replace(NAME_TOKEN, (m) => SHORT_NAMES[m] || m);
+/** Model-facing content blocks (text, and tool_result with nested content); images untouched. */
+export function forModel(blocks) {
+  return blocks.map((b) => {
+    if (b?.type === 'text') return { ...b, text: toModelText(b.text) };
+    if (b?.type === 'tool_result' && Array.isArray(b.content)) return { ...b, content: forModel(b.content) };
+    return b;
+  });
+}
+/** A call as the model made it → canonical tool name and args (fast_batch steps, incl. then/else). */
+export function fromModel(name, args) {
+  const canon = canonicalName(name);
+  const steps = (list) => Array.isArray(list) ? list.map((st) => {
+    if (!st || typeof st !== 'object') return st;
+    const out = { ...st };
+    if (typeof out.name === 'string') out.name = canonicalName(out.name);
+    if (out.then) out.then = steps(out.then);
+    if (out.else) out.else = steps(out.else);
+    return out;
+  }) : list;
+  if (canon !== 'fast_batch' || !args || typeof args !== 'object') return { name: canon, args };
+  return { name: canon, args: { ...args, ...(args.actions ? { actions: steps(args.actions) } : {}), ...(args.steps ? { steps: steps(args.steps) } : {}) } };
+}
+const schemaForModel = (schema) => JSON.parse(JSON.stringify(schema), (k, v) => (k === 'description' && typeof v === 'string' ? toModelText(v) : v));
+
 const NATIVE_TOOLS = [
   {
     name: 'ask_caller',
@@ -713,19 +759,20 @@ export function buildTools(mcpTools, toolset) {
   for (const t of mcpTools) {
     if (!allowAll && !toolset.allow.includes(t.name)) continue;
     if (HIDDEN_TOOLS.has(t.name)) continue;
-    back.set(t.name, t.name);
-    tools.push({ name: t.name, description: t.description || '', input_schema: t.inputSchema || { type: 'object', properties: {} } });
+    back.set(shortName(t.name), t.name);
+    tools.push({ name: shortName(t.name), description: toModelText(t.description || ''), input_schema: schemaForModel(t.inputSchema || { type: 'object', properties: {} }) });
   }
-  return { tools: [...tools, ...NATIVE_TOOLS], back };
+  const native = NATIVE_TOOLS.map((t) => ({ ...t, name: shortName(t.name), description: toModelText(t.description) }));
+  return { tools: [...tools, ...native], back };
 }
 
 // The same short prompt for every toolset. The server's MCP `instructions` essay is for Claude
 // clients and is NOT given to Grok: the tool descriptions carry what it needs.
 export function buildSystem() {
-  return `${SYSTEM}\n${todayLine()}`;
+  return toModelText(`${SYSTEM}\n${todayLine()}`);
 }
 
-function toolResultContent(res) {
+export function toolResultContent(res) {
   const out = [];
   for (const c of res?.content || []) {
     if (c.type === 'text') out.push({ type: 'text', text: c.text.length > RESULT_CAP
@@ -886,7 +933,7 @@ async function loop(run) {
     if (!uses.length) {
       if (++nudges > MAX_NUDGES) return finish(run, 'error', { error: 'model ended without report_done', result: lastAssistantText(run) });
       const notes = await deliverChecks(run);
-      run.messages.push({ role: 'user', content: [...notes.map(text => ({ type: 'text', text })), { type: 'text', text: 'You ended your turn without calling report_done or ask_caller. Continue the task, or call report_done now.' }] });
+      run.messages.push({ role: 'user', content: forModel([...notes.map(text => ({ type: 'text', text })), { type: 'text', text: 'You ended your turn without calling report_done or ask_caller. Continue the task, or call report_done now.' }]) });
       continue;
     }
     nudges = 0;
@@ -895,25 +942,26 @@ async function loop(run) {
     const batchStart = run.toolLog.length;   // checks started from here on go out with the NEXT batch
     for (const u of uses) {
       if (run.cancelled) return;
-      const args = u.input || {};
+      const call = fromModel(u.name, u.input || {});   // the model's short names → canonical, once
+      const args = call.args;
       await settleShots(run);   // a pending check's screenshot is taken before the page is touched again
-      if (u.name === 'report_done') {
+      if (call.name === 'report_done') {
         const verdict = await reportDecision(run, args, Date.now() - t0);
         if (verdict.note) {
           onEvent?.({ type: 'visualCheck', text: verdict.note });
           if (verdict.refuse) onEvent?.({ type: 'gate', problems: verdict.refuse });
-          const text = verdict.refuse ? `${verdict.note}\n\nreport_done refused: ${verdict.refuse.join('; ')}. Fix that, then call report_done again.` : verdict.note;
+          const text = verdict.refuse ? `${verdict.note}\n\n${refusalText(verdict.refuse)}` : verdict.note;
           results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text }] });
           continue;
         }
         if (verdict.refuse) {
           onEvent?.({ type: 'gate', problems: verdict.refuse });
-          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: `report_done refused: ${verdict.refuse.join('; ')}. Fix that, then call report_done again.` }] });
+          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: refusalText(verdict.refuse) }] });
           continue;
         }
         return finish(run, 'done', verdict.finish);
       }
-      if (u.name === 'ask_caller') {
+      if (call.name === 'ask_caller') {
         run.question = String(args.question ?? '');
         run.status = 'question';
         onEvent?.({ type: 'question', question: run.question });
@@ -923,7 +971,7 @@ async function loop(run) {
         results.push({ type: 'tool_result', tool_use_id: u.id, content: [{ type: 'text', text: answer }] });
         continue;
       }
-      const real = run.back.get(u.name);
+      const real = run.back.get(u.name) ? call.name : null;
       const t1 = Date.now();
       let res, ok = true;
       if (!real) {
@@ -935,7 +983,9 @@ async function loop(run) {
       const ms = Date.now() - t1;
       const texts = (res?.content || []).filter(c => c.type === 'text').map(c => c.text);
       const firstText = texts[0] || '';
-      ok = recordResult(run, texts, !!res?.isError); // urlTrail + evidence corpus (corpus is memory only, not written to runs.jsonl)
+      // urlTrail + evidence corpus (memory only, not written to runs.jsonl). The corpus holds the text as the
+      // MODEL saw it, short tool names included, so a verbatim quote of a result matches.
+      ok = recordResult(run, texts.map(toModelText), !!res?.isError);
       // 1200 chars: enough of a result to post-mortem a fumble from runs.jsonl
       // (an error's candidates / a batch's per-step results); 160 showed only the
       // first key of a snapshot.
@@ -947,7 +997,7 @@ async function loop(run) {
       results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResultContent(res), ...(ok ? {} : { is_error: true }) });
       const stop = stuckReason(run.toolLog);
       if (stop) {
-        run.messages.push({ role: 'user', content: results });
+        run.messages.push({ role: 'user', content: forModel(results) });
         return finish(run, 'error', { error: stop });
       }
     }
@@ -957,7 +1007,7 @@ async function loop(run) {
       onEvent?.({ type: 'visualCheck', text });
       results.push({ type: 'text', text });
     }
-    run.messages.push({ role: 'user', content: results });
+    run.messages.push({ role: 'user', content: forModel(results) });
     run.status = 'running';
   }
 }
