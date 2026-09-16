@@ -641,9 +641,11 @@ export async function describeScreen({ base64, values } = {}) {
   const wanted = (Array.isArray(values) ? values : []).map((v) => String(v)).filter(Boolean).slice(0, 8);
   const prompt = [
     'Describe what this browser screenshot SHOWS. Report only what is visibly on the screen.',
-    'Cover, when visible: (a) input boxes that look empty or still show greyed placeholder text,',
-    'naming the label printed beside them; (b) any red/orange marks, dots, outlines, warning icons',
-    'or validation messages, and what they sit next to; (c) whether the content continues below the',
+    'Cover, when visible: (a) EVERY box that looks empty or still shows greyed placeholder text,',
+    'naming the label printed beside it — include the ones marked as required (an asterisk, the word',
+    '"required"), and list them even if they seem unrelated to each other; (b) any red/orange marks,',
+    'dots, outlines, warning icons or validation messages, and what they sit next to — including a mark',
+    'on a tab or step name at the top of the page; (c) whether the content continues below the',
     'visible area (a scrollbar, a cut-off section, a partially visible row).',
     wanted.length ? `(d) for each of these values, say what the box that should hold it reads right now, or that you cannot see it: ${wanted.map((v) => JSON.stringify(v)).join(', ')}.` : '',
     'RULES: each observation is one short sentence about what is on the screen.',
