@@ -37,8 +37,8 @@ const NAV_ACTIONS = new Set(['fast_nav', 'fast_reload']);
 // Steps that can drive a SAME-TAB navigation. Read-only / tab-switching steps are
 // excluded so they add zero latency and never trigger a false "navigated".
 const POSSIBLY_NAVIGATING = new Set([
-  'fast_click', 'fast_click_xy', 'fast_key', 'fast_key_press',
-  'fast_nav', 'fast_reload', 'fast_select_option', 'fast_drag', 'fast_drag_xy',
+  'fast_click', 'fast_click_xy', 'fast_key_press',
+  'fast_nav', 'fast_reload', 'fast_select_option',
 ]);
 const STEP_RENAMES = { fast_fill_form: 'fast_fill' };
 const SELECTOR_RE = /^[#.[:*]|[>[]/;

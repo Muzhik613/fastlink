@@ -2,7 +2,7 @@ import { handleTabAction, getTargetTab, getTargetTabId } from './tab.js';
 import { takeScreenshot }  from './screenshot.js';
 import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
-import { clickXY, typeText, pressKeyChord, wheelScroll, dragXY } from './input.js';
+import { clickXY, typeText, wheelScroll } from './input.js';
 import { uploadFile }      from './upload.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { captureMarks }    from './marks.js';
@@ -12,7 +12,7 @@ import { isInjectableUrl } from '../util.js';
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_reload', 'fast_list', 'fast_close', 'fast_switch']);
 const PAGE_ACTIONS = new Set([
   'fast_snapshot', 'fast_click', 'fast_fill', 'fast_wait',
-  'fast_select_option', 'fast_hover', 'fast_drag', 'fast_scroll',
+  'fast_select_option', 'fast_scroll',
   'fast_key_press',
 ]);
 
@@ -23,12 +23,11 @@ const PAGE_ACTIONS = new Set([
 // as SUCCESS (navigated) instead of failing the step (BUG-2 sub-bug). READ
 // actions (fast_snapshot, fast_evaluate, …) are deliberately excluded: a frame
 // loss there is a real failure and must keep erroring. (Of these,
-// fast_click / fast_select_option / fast_drag / fast_key_press flow through
-// runBridge; fast_click_xy/fast_key/fast_drag_xy use the CDP input path and
-// never hit this code — listed here for completeness / future-proofing.)
+// fast_click / fast_select_option / fast_key_press flow through runBridge;
+// fast_click_xy uses the CDP input path and never hits this code — listed
+// here for completeness / future-proofing.)
 const NAVIGATING_ACTIONS = new Set([
-  'fast_click', 'fast_click_xy', 'fast_key', 'fast_key_press',
-  'fast_select_option', 'fast_drag', 'fast_drag_xy',
+  'fast_click', 'fast_click_xy', 'fast_key_press', 'fast_select_option',
 ]);
 
 // executeScript rejection messages that mean the MAIN-world FRAME was torn down
@@ -130,9 +129,9 @@ async function runOne(action, args) {
   if (action === 'fast_evaluate')   return evaluate(args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
-  if (action === 'fast_key')        return pressKeyChord(args);
+  // INTERNAL only (no tool schema): the vision tier's scroll:true passes call
+  // fast_wheel through callExtension to reach GCP's nested scrollers.
   if (action === 'fast_wheel')      return wheelScroll(args);
-  if (action === 'fast_drag_xy')    return dragXY(args);
   if (action === 'fast_upload')     return uploadFile(args);
   if (action === 'fast_wait' && (args?.networkIdle || args?.domready)) {
     // text/selector + networkIdle: the text is the real signal (SPAs long-poll,

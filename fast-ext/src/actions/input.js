@@ -125,28 +125,6 @@ export async function wheelScroll({ x, y, deltaX, deltaY }) {
   return { wheeled: { deltaX: deltaX || 0, deltaY: deltaY || 0, at: { x: x || 0, y: y || 0 } } };
 }
 
-// Trusted drag via CDP — real press → moves → release, so HTML5 drag-and-drop,
-// sliders, and sortable lists that ignore synthetic events work. Coords are
-// top-level viewport CSS pixels (add iframe offset for in-frame targets).
-export async function dragXY({ fromX, fromY, toX, toY, steps }) {
-  if ([fromX, fromY, toX, toY].some((v) => typeof v !== 'number')) {
-    return { error: 'fromX, fromY, toX, toY are all required numbers' };
-  }
-  const got = await getInjectableTab();
-  if (got.error) return got;
-  const tabId = got.tab.id;
-  const n = Math.max(1, steps || 10);
-  const send = (type, extra) => cdp(tabId, 'Input.dispatchMouseEvent', { type, ...extra });
-  await send('mousePressed', { x: fromX, y: fromY, button: 'left', buttons: 1, clickCount: 1 });
-  for (let i = 1; i <= n; i++) {
-    const x = fromX + (toX - fromX) * (i / n);
-    const y = fromY + (toY - fromY) * (i / n);
-    await send('mouseMoved', { x, y, button: 'left', buttons: 1 });
-  }
-  await send('mouseReleased', { x: toX, y: toY, button: 'left', buttons: 0, clickCount: 1 });
-  return { dragged: { from: [fromX, fromY], to: [toX, toY] } };
-}
-
 // Runs in the page MAIN world: describe the focused element so we can (a) refuse
 // to type (or select-all) when nothing editable is focused and (b) read the value
 // back after typing. Self-contained (no closures) — chrome.scripting serializes it.
@@ -225,10 +203,10 @@ function isMacPlatform() {
   } catch { return false; }
 }
 
-// Select-all + Delete via the CDP Input domain — same trusted key path as
-// fast_key (pressKeyChord). Uses Cmd/Meta+A on macOS and Ctrl+A elsewhere (the
-// fast_key MOD_BITS map already carries meta/cmd=4), so the clear-before-type
-// select-all fires the right chord on every platform. Clears the field so a
+// Select-all + Delete via the CDP Input domain. Uses Cmd/Meta+A on macOS and
+// Ctrl+A elsewhere (the MOD_BITS map below carries meta/cmd=4), so the
+// clear-before-type select-all fires the right chord on every platform. This
+// is the only remaining caller of keyInfo/MOD_BITS. Clears the field so a
 // follow-up insertText REPLACES instead of appending.
 // ONLY ever called with an EDITABLE element focused (see typeText): Ctrl/Cmd+A
 // with the DOCUMENT focused selects the whole PAGE, which is what happened on
@@ -376,25 +354,4 @@ function keyInfo(k) {
     return { keyCode: cc, code: '', key: s };
   }
   return { keyCode: 0, code: s, key: s };
-}
-
-// Trusted key chord via the CDP Input domain — supports modifiers (Ctrl/Cmd/
-// Shift/Alt), so Ctrl+A / Cmd+C / Shift+Tab actually fire as real key events.
-export async function pressKeyChord({ key, modifiers = [] }) {
-  if (!key) return { error: 'key required' };
-  const got = await getInjectableTab();
-  if (got.error) return got;
-  const tabId = got.tab.id;
-  const mask = (modifiers || []).reduce((m, x) => m | (MOD_BITS[String(x).toLowerCase()] || 0), 0);
-  const info = keyInfo(key);
-  const base = {
-    modifiers: mask,
-    key: info.key,
-    code: info.code,
-    windowsVirtualKeyCode: info.keyCode,
-    nativeVirtualKeyCode: info.keyCode,
-  };
-  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...base });
-  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...base });
-  return { pressed: { key: info.key, modifiers } };
 }

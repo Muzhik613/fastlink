@@ -168,9 +168,8 @@ const IMAGE_TOOLS = new Set(['fast_screenshot', 'fast_marks', 'fast_vision_captu
 // do) but NOT the read/locate-only ones (scout/point/point_som/locate).
 const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_type',
-  'fast_key', 'fast_key_press', 'fast_nav', 'fast_evaluate', 'fast_drag', 'fast_drag_xy',
-  'fast_select_option', 'fast_wheel', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_reload',
-  'fast_hover',
+  'fast_key_press', 'fast_nav', 'fast_evaluate',
+  'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_reload',
   'fast_fill_vision', 'fast_do', 'fast_upload',
 ]);
 

@@ -32,8 +32,8 @@ const CAPTURE_TOOLS = new Set([
 // to CAPTURE_TOOLS can't silently start double-writing. (BUG-4)
 const NON_IDEMPOTENT = new Set([
   'fast_fill', 'fast_fill_vision', 'fast_type', 'fast_do',
-  'fast_click', 'fast_click_xy', 'fast_select_option', 'fast_drag', 'fast_drag_xy',
-  'fast_key', 'fast_key_press', 'fast_nav', 'fast_reload',
+  'fast_click', 'fast_click_xy', 'fast_select_option',
+  'fast_key_press', 'fast_nav', 'fast_reload',
 ]);
 const READBACK_ERR_RE = /readback|compositor|captureVisibleTab/i;
 async function callCapture(name, args, retries = 2) {
@@ -463,10 +463,9 @@ const warmCaptures = new Map();      // url -> { capture, ts }
 // Tools that change the page (so any cached warm screenshot is now stale). Used by
 // dispatchCall to invalidate warmCaptures after a mutating action.
 const MUTATING_TOOLS = new Set([
-  'fast_click', 'fast_click_xy', 'fast_type', 'fast_key', 'fast_key_press',
+  'fast_click', 'fast_click_xy', 'fast_type', 'fast_key_press',
   'fast_fill', 'fast_select_option', 'fast_nav', 'fast_reload',
-  'fast_scroll', 'fast_wheel', 'fast_drag', 'fast_drag_xy', 'fast_hover',
-  'fast_fill_vision', 'fast_do', 'fast_upload',
+  'fast_scroll', 'fast_wheel', 'fast_fill_vision', 'fast_do', 'fast_upload',
 ]);
 let visionWarmTimer = null;
 let visionWarmInFlight = false;

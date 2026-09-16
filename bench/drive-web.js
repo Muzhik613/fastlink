@@ -93,7 +93,7 @@ export async function dismissUpsell(site) {
   const r1 = await evalIn(null, DISMISS_FN);
   if (r1?.dialogs) { await sleep(600); await evalIn(null, DISMISS_FN); }
   // Escape clears anything text-matching missed (both sites close modals on Esc).
-  await fl('fast_key', { key: 'Escape' });
+  await fl('fast_key_press', { key: 'Escape' });
   return r1;
 }
 

@@ -110,10 +110,6 @@
       "description": "Press a single key on the active tab."
     },
     {
-      "name": "fast_key",
-      "description": "Trusted keyboard chord via the CDP Input domain — fires REAL key events with modifiers, so shortcuts like Ctrl+A, Cmd+C, Cmd+V, Shift+Tab actually work (unli..."
-    },
-    {
       "name": "fast_scroll",
       "description": "Scroll the active tab."
     },
@@ -126,24 +122,8 @@
       "description": "Run multiple FastLink actions in sequence with ONE tool call."
     },
     {
-      "name": "fast_hover",
-      "description": "Hover over an element matching text/label/aria-label/placeholder."
-    },
-    {
-      "name": "fast_drag",
-      "description": "Drag from one element to another (or to coordinates)."
-    },
-    {
       "name": "fast_click_xy",
       "description": "Trusted click at a pixel via the CDP Input domain (a REAL mouse event, isTrusted:true) — unlike fast_click's injected JS, LWC/React widgets honor it and it c..."
-    },
-    {
-      "name": "fast_wheel",
-      "description": "Trusted mouse-wheel scroll at a point via the CDP Input domain — a REAL wheel event, so canvas/WebGL views and virtualized lists that ignore programmatic scr..."
-    },
-    {
-      "name": "fast_drag_xy",
-      "description": "Trusted drag via the CDP Input domain — real mousePressed → mouseMoved(s) → mouseReleased, so native HTML5 drag-and-drop, sliders, and sortable lists that ig..."
     },
     {
       "name": "fast_type",

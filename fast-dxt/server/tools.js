@@ -312,22 +312,6 @@ export const TOOLS = [
     },
   },
   {
-    name: 'fast_key',
-    description: 'Trusted keyboard chord via the CDP Input domain — fires REAL key events with modifiers, so shortcuts like Ctrl+A, Cmd+C, Cmd+V, Shift+Tab actually work (unlike injected key events the page may ignore). Goes to the currently-focused element; focus first (e.g. fast_click / fast_click_xy) if needed.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        key: { type: 'string', description: 'Key to press, e.g. "a", "c", "Enter", "ArrowDown". Single letters/digits or a named key.' },
-        modifiers: {
-          type: 'array',
-          description: 'Modifier keys held during the press. Any of: "ctrl", "cmd"/"meta", "shift", "alt". E.g. ["ctrl"] for Ctrl+A, ["meta"] for Cmd+C.',
-          items: { type: 'string' },
-        },
-      },
-      required: ['key'],
-    },
-  },
-  {
     name: 'fast_scroll',
     description: 'Scroll the active tab. Auto-detects the right scroll container (handles nested scrollers like claude.ai chat, not just window); container detection is time-bounded and falls back to a plain window scroll on huge ad/tracker-heavy DOMs, so this always returns within ~1s and never hangs. Pass "to" (top|bottom|"50%") or "pixels" (delta, positive=down). Optional selector to target a specific scroller. For canvas/WebGL/virtualized views that ignore programmatic scrollTop, use fast_wheel instead. Returns include a fresh `snapshot` of the post-scroll viewport (opt out with noSnapshot:true).',
     inputSchema: {
@@ -376,36 +360,6 @@ export const TOOLS = [
     },
   },
   {
-    name: 'fast_hover',
-    description: 'Hover over an element matching text/label/aria-label/placeholder. Fires mouseenter/mouseover/mousemove. Useful for triggering tooltips, hover-only menus, lazy hover-loaded content. Returns include a FRESH POST-hover `snapshot` (opt out with noSnapshot:true): a re-walk taken AFTER the hover settles, so a tooltip/menu it JUST revealed IS captured — fast_wait for its text if the tooltip is slow to appear.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: { type: 'string', description: 'Text/label/aria-label/placeholder substring (case-insensitive)' },
-        index: { type: 'number', description: 'Pick the N-th match (0-based) in document order when text is ambiguous' },
-        noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-hover snapshot and return just the action outcome.' },
-      },
-      required: ['text'],
-    },
-  },
-  {
-    name: 'fast_drag',
-    description: 'Drag from one element to another (or to coordinates). Synthesizes mousedown→mousemove(s)→mouseup, which works for sliders, sortable lists, canvas drawing, and most JS-handled drag UIs. May NOT trigger native HTML5 drag-and-drop handlers (those listen to DragEvent — different protocol). Returns include a FRESH POST-drag `snapshot` (opt out with noSnapshot:true): a re-walk taken AFTER the drag settles, so the result of the drag IS reflected (falls back to the pre-drag capture, flagged `snapshotStale:true`, only if the page is too heavy to re-serialize).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        from: { type: 'string', description: 'Text/label substring matching the source element' },
-        fromIndex: { type: 'number', description: 'Pick the N-th from-match (0-based)' },
-        to: { type: 'string', description: 'Text/label substring matching the target element (use this OR toX+toY)' },
-        toIndex: { type: 'number', description: 'Pick the N-th to-match (0-based)' },
-        toX: { type: 'number', description: 'Target X coordinate (use with toY instead of "to")' },
-        toY: { type: 'number', description: 'Target Y coordinate (use with toX instead of "to")' },
-        noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-drag snapshot and return just the action outcome.' },
-      },
-      required: ['from'],
-    },
-  },
-  {
     name: 'fast_click_xy',
     description: 'Trusted click at a pixel via the CDP Input domain (a REAL mouse event, isTrusted:true) — unlike fast_click\'s injected JS, LWC/React widgets honor it and it can focus an iframe input with no DOM reach-in. Coordinates are TOP-LEVEL VIEWPORT CSS pixels: if the target lives inside an iframe, add the iframe\'s page offset to its in-iframe getBoundingClientRect before passing (a same-origin frame\'s offset is its own frameElement.getBoundingClientRect on the parent page). x and y are validated as numbers — a missing/non-numeric coordinate returns an error instead of silently clicking (0,0). Playbook for stubborn React/iframe fields: read the field\'s rect via fast_evaluate (getBoundingClientRect, use its center x/y), fast_click_xy there to focus it (trusted), then fast_type to enter text. **Every click reports WHERE FOCUS LANDED**: `focused` {tag, type, label, editable} (+ the field\'s live `value` when it is editable), and a `hint` when nothing editable holds focus — which is exactly when the fast_type after it would be refused (the first click after an overlay/consent banner closes often lands before the page is listening). Read `focused` before typing instead of discovering it from the refusal.',
     inputSchema: {
@@ -417,35 +371,6 @@ export const TOOLS = [
         clickCount: { type: 'number', description: 'Number of clicks: 1 (default), 2 for double-click (select word / open), 3 for triple.' },
       },
       required: ['x', 'y'],
-    },
-  },
-  {
-    name: 'fast_wheel',
-    description: 'Trusted mouse-wheel scroll at a point via the CDP Input domain — a REAL wheel event, so canvas/WebGL views and virtualized lists that ignore programmatic scrollTop (which fast_scroll uses) actually scroll. Coordinates are top-level viewport CSS pixels (the point the wheel is over).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        x: { type: 'number', description: 'Viewport X the wheel is over (CSS px).' },
-        y: { type: 'number', description: 'Viewport Y the wheel is over (CSS px).' },
-        deltaY: { type: 'number', description: 'Vertical scroll amount in px (positive = down).' },
-        deltaX: { type: 'number', description: 'Horizontal scroll amount in px (positive = right).' },
-      },
-      required: ['x', 'y'],
-    },
-  },
-  {
-    name: 'fast_drag_xy',
-    description: 'Trusted drag via the CDP Input domain — real mousePressed → mouseMoved(s) → mouseReleased, so native HTML5 drag-and-drop, sliders, and sortable lists that ignore synthetic events work (unlike fast_drag, which dispatches injected events). All coords are top-level viewport CSS pixels; for in-frame targets add the iframe page offset to the in-iframe getBoundingClientRect.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        fromX: { type: 'number', description: 'Start X (viewport CSS px).' },
-        fromY: { type: 'number', description: 'Start Y (viewport CSS px).' },
-        toX: { type: 'number', description: 'End X (viewport CSS px).' },
-        toY: { type: 'number', description: 'End Y (viewport CSS px).' },
-        steps: { type: 'number', description: 'Intermediate move events (default 10); more = smoother for sliders.' },
-      },
-      required: ['fromX', 'fromY', 'toX', 'toY'],
     },
   },
   {

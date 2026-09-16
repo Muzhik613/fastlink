@@ -135,9 +135,7 @@ const ALLOWED_STEPS = [
   'fast_fill {match, value}  — set an input/textarea by its label/placeholder (match).',
   'fast_type {text}  — TRUSTED typing into the focused element. Use AFTER fast_click_xy to enter text into React/LWC/iframe inputs that ignore fast_fill.',
   'fast_select_option {field, option}',
-  'fast_hover {text}',
   'fast_scroll {to|pixels}',
-  'fast_key {key, modifiers}  — keyboard shortcut, e.g. {key:"a",modifiers:["ctrl"]}, {key:"c",modifiers:["meta"]}.',
   'fast_key_press {key}  — a single key with no modifier (Enter, Escape, ArrowDown...).',
   'fast_nav {url}',
 ].join(' | ');
@@ -358,7 +356,6 @@ function normalizeSteps(steps) {
     if (!s || typeof s !== 'object') return s;
     const args = { ...(s.args || {}) };
     if (s.name === 'fast_click' && args.match && !args.text) { args.text = args.match; delete args.match; }
-    if (s.name === 'fast_hover' && args.match && !args.text) { args.text = args.match; delete args.match; }
     return { ...s, args };
   });
 }
