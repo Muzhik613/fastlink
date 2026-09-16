@@ -8,7 +8,7 @@ import { loadToolset, buildTools, buildSystem } from '../runner.mjs';
 import { TOOLS } from '../../fast-dxt/server/tools.js';
 
 // Tools that attach chrome.debugger (fast-ext/src/actions/input.js tier + its importers).
-const CDP = ['fast_click_xy', 'fast_type', 'fast_evaluate', 'fast_screenshot', 'fast_fill_vision', 'fast_do'];
+const CDP = ['fast_click_xy', 'fast_type', 'fast_evaluate', 'fast_screenshot', 'fast_fill_vision'];
 const NATIVE = ['ask_caller', 'report_done'];
 const names = (tools) => tools.map(t => t.name);
 
@@ -17,7 +17,7 @@ test('default toolset = every server tool + native, descriptions untouched, inst
   assert.equal(ts.name, 'default');
   const { tools, back } = buildTools(TOOLS, ts);
   assert.equal(tools.length, TOOLS.length + NATIVE.length);
-  assert.equal(TOOLS.length, 32);
+  assert.equal(TOOLS.length, 24);
   assert.ok(TOOLS.some(t => t.name === 'fast_ext_reload'), 'ops tool fast_ext_reload is on the server (default "*" exposes it)');
   for (const t of TOOLS) {
     const seen = tools.find(x => x.name === t.name);
@@ -58,7 +58,7 @@ test('phase2: 12 FastLink + 2 native = 14 (no fast_evaluate), every allowed tool
   // report_done is re-described in phase2 (terse report = fewer output tokens per run); ask_caller keeps the baseline text.
   assert.equal(tools.find(t => t.name === 'report_done').description, ts.describe.report_done);
   assert.ok(ts.describe.report_done && !ts.describe.ask_caller);
-  assert.ok(!names(tools).includes('fast_status') && !names(tools).includes('fast_scout') && !names(tools).includes('fast_prewarm'));
+  assert.ok(!names(tools).includes('fast_status') && !names(tools).includes('fast_profile'));
   assert.ok(!names(tools).includes('fast_ext_reload'), 'INTERNAL ops tool never offered to Grok');
   // fill_form is folded into fast_fill {fields}; the batching nudge is in the data + one sentence each
   assert.ok(!TOOLS.some(t => t.name === 'fast_fill_form') && !names(tools).includes('fast_fill_form'));

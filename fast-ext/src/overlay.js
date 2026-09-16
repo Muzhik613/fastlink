@@ -78,9 +78,8 @@
   // Map a raw tool name to a human-readable present-tense verb the user can
   // grok at a glance. Anything unmapped falls back to the de-prefixed name.
   const VERB = {
-    fast_snapshot: 'Reading page', fast_marks: 'Reading page',
-    fast_text: 'Reading text', fast_vision_capture: 'Looking at page',
-    fast_annotate_boxes: 'Looking at page', fast_screenshot: 'Capturing screenshot',
+    fast_snapshot: 'Reading page', fast_text: 'Reading text',
+    fast_vision_capture: 'Looking at page', fast_screenshot: 'Capturing screenshot',
     fast_click: 'Clicking', fast_click_xy: 'Clicking',
     fast_fill: 'Typing', fast_type: 'Typing', fast_fill_vision: 'Typing',
     fast_select_option: 'Selecting',

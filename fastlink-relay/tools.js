@@ -2,16 +2,6 @@
 
 export const TOOLS = [
   {
-    name: 'fast_scout',
-    description: 'PREFERRED way to understand and act on the active tab — use this instead of fast_snapshot in most cases. A fast model (Gemini) reads the live page (stable ids, shadow DOM + same-origin iframes) and is pre-warmed on every page load, so the page comprehension is usually already cached when you call. Two modes: (1) NO intent → returns {summary, elements:[{i,purpose}], warmed} — a concise semantic read of the page (a smarter, smaller snapshot). (2) WITH intent → returns {brief, steps:[{name,args}], warmed, needsMoreInfo?} where each step is a runnable fast_* call (use directly or via fast_batch). Prefer passing an intent when you know your goal (e.g. "log in as alice@x.com"). NOTE: intent mode returns runnable ACTIONS, not extracted page data. For DATA-EXTRACTION goals ("list every processor with name/price/stock", "read all the prices") it correctly returns an empty brief:"" / steps:[] — that is a SUCCESS, not a failure; use NO-intent mode (semantic read) or fast_snapshot / fast_text to pull the actual content. Falls back to fast_snapshot for raw element coords or when you need detail the model omitted. Requires GEMINI_API_KEY on the server (returns {disabled:true} otherwise).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        intent: { type: 'string', description: 'Optional. What you want to accomplish on this page, in plain language (e.g. "fill the signup form with name Bob and email bob@x.com and submit"). Omit to just get a semantic read of the page.' },
-      },
-    },
-  },
-  {
     name: 'fast_point',
     description: 'VISION coordinate-grounding: locate on-screen target(s) NOT in the DOM (opaque/cross-origin iframes, canvas, custom widgets) by having a fast multimodal model (Gemini) read a screenshot. GEMINI does the visual reading and returns pixel coordinates FOR you, so you never take a screenshot and parse it yourself — fast and token-cheap, ideal for non-DOM/heavy pages. Returns CSS-pixel centers ready for fast_click_xy → then fast_type to fill. **NEVER hallucinates: a target not clearly visible returns {found:false} (with confidence), never a guessed coordinate — so you can TRUST a returned point without screenshot-verifying it.** If found:false, the element is genuinely off-screen/absent: reopen the menu, or call again with scroll:true. Pass `target` (one) or `targets` (array, one model call — for multi-field forms). Small/dense targets auto crop-zoom refine. Returns {points:[{target,found,xCss,yCss,confidence,refined}]}. Requires GEMINI_API_KEY.',
     inputSchema: {
@@ -21,29 +11,6 @@ export const TOOLS = [
         targets: { type: 'array', items: { type: 'string' }, description: 'Multiple element descriptions, located in one model call. Use for multi-field forms.' },
         refine: { type: 'boolean', description: 'Crop-zoom refine pass for small targets (default true). Set false to force a single coarse pass.' },
         scroll: { type: 'boolean', description: 'OPT-IN auto-scroll: if a target is not visible, wheel-scroll down and re-point (up to 4 passes) to surface it. Default FALSE. Do NOT use when a dropdown/menu/popover is open — scrolling dismisses it; reopen the menu instead. Use for long static forms with fields below the fold.' },
-        freshCapture: { type: 'boolean', description: 'Force a new screenshot instead of reusing a recent pre-warmed capture (default false). Use if the page changed since the last navigation pre-warm.' },
-      },
-    },
-  },
-  {
-    name: 'fast_vision_capture',
-    description: 'Low-level: capture the visible tab for the vision tier — returns {dataUrl, imgW, imgH, dpr}, optionally cropped to a CSS-px region and upscaled (the crop-zoom primitive). Most callers want fast_point instead, which orchestrates capture + locate + coordinate conversion.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        crop: { type: 'object', description: 'Optional {x,y,w,h} region in CSS px to crop+zoom into.' },
-        zoom: { type: 'number', description: 'Upscale factor for the crop (default 2).' },
-      },
-    },
-  },
-  {
-    name: 'fast_point_som',
-    description: 'VISION locate via SET-OF-MARK (classification, not coordinate regression — typically most reliable for dense/iframe forms). Gemini first DETECTS a bounding box per target, the extension draws a NUMBERED red box on each, then Gemini PICKS the number for each target. The click point is the detected box center, confirmed by the pick. Same output as fast_point: {points:[{target,found,xCss,yCss,n,via}]} → feed xCss/yCss to fast_click_xy then fast_type. Pass `target` or `targets`. Requires GEMINI_API_KEY. Costs ~2 model calls (detect + pick).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        target: { type: 'string', description: 'A single element description.' },
-        targets: { type: 'array', items: { type: 'string' }, description: 'Multiple element descriptions in one flow (multi-field forms).' },
       },
     },
   },
@@ -56,45 +23,8 @@ export const TOOLS = [
         fields: { type: 'object', description: 'Map of field description → value to type, e.g. { "First Name input": "Jacob", "Email input": "a@b.com" }. Each key is a plain-language description of the input the vision model should locate.' },
         submit: { type: 'string', description: 'Optional description of the submit/continue button to click after all fields are filled, e.g. "the blue Sign up button". Omit (or null) to fill without submitting.' },
         refine: { type: 'boolean', description: 'Crop-zoom refine pass for small/dense fields to sharpen coordinates (default true). Set false for a single coarse locate pass.' },
-        freshCapture: { type: 'boolean', description: 'Force a new screenshot instead of reusing a recent pre-warmed capture. DEFAULT TRUE for this tool — a stale cached frame can make fields locate off an old layout and type into nowhere. Pass false to opt back into warm reuse.' },
       },
       required: ['fields'],
-    },
-  },
-  {
-    name: 'fast_do',
-    description: 'EXPERIMENTAL most-aggressive tier: give ONE plain-language INTENT and a whole form is filled/operated in a SINGLE call — a fast multimodal model (Gemini) does BOTH the task DECOMPOSITION and the element LOCATION, removing the per-field LLM loop entirely. Flow: capture one screenshot → ONE Gemini call decomposes the intent into ordered steps ({action,target,value}) AND describes each target → ONE Gemini vision call locates all targets → each step is executed server-side (trusted click, then trusted type for text; key presses for keys). Differs from fast_fill_vision: there YOU supply the field→value map and Gemini only locates; here Gemini infers the entire plan from the intent + what it sees. SAFETY: it will NOT click a final submit/create/save/delete/confirm button — it stops with the form filled — UNLESS your intent explicitly says to submit/create/save it. Steps whose target is not visible are skipped and reported. Returns { plan, executed:[...], skipped:[...], stoppedBefore:[...], note }. Use for visible on-screen forms; pass a specific intent naming the field values, e.g. "fill the API key form: name it \'My Key\', restrict it to the Geocoding API". Requires GEMINI_API_KEY.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        intent: { type: 'string', description: 'The plain-language goal for the form on screen, naming the concrete values, e.g. "set Name to Jacob, Email to a@b.com, Country to US". Do NOT include "and submit"/"create" unless you actually want it committed — by default fast_do fills and stops before any submit/create/delete button.' },
-      },
-      required: ['intent'],
-    },
-  },
-  {
-    name: 'fast_locate',
-    description: 'Locate an element by racing the DOM and vision tiers concurrently; returns the fastest usable hit. GEMINI does any visual reading and hands back pixel coordinates FOR you, so you never screenshot-and-read it yourself — fast and token-cheap. Best on mixed/unknown pages — DOM wins on simple pages, vision wins (and DOM can\'t stall it) on heavy SPAs like GCP. Fires fast_snapshot text-matching AND a Gemini vision point at the same time; whichever yields a usable coordinate first wins, the loser is ignored. A hung/crashing DOM snapshot can NEVER block the vision answer (DOM tier is wrapped + 3s timeout). Returns { via:"dom"|"vision"|null, xCss, yCss, found, target } — feed xCss/yCss to fast_click_xy (then fast_type to fill). Requires GEMINI_API_KEY.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        target: { type: 'string', description: 'Plain-language description of the element to locate, e.g. "the Create button" or "the Email input box".' },
-        refine: { type: 'boolean', description: 'Crop-zoom refine pass for small targets on the vision tier (default true).' },
-        freshCapture: { type: 'boolean', description: 'Force the vision tier to take a new screenshot instead of reusing a recent pre-warmed one (default false).' },
-        scroll: { type: 'boolean', description: 'OPT-IN auto-scroll: if both tiers miss, wheel-scroll down and re-run the vision tier (up to 4 passes) to surface a below-the-fold target. Default FALSE. Only the vision tier gains (the DOM tier already searches the whole page). Do NOT use when a dropdown/menu/popover is open — scrolling dismisses it; reopen the menu instead. Use for long static forms with fields below the fold.' },
-      },
-      required: ['target'],
-    },
-  },
-  {
-    name: 'fast_annotate_boxes',
-    description: 'Low-level: capture the viewport and draw numbered red boxes at the given CSS-px boxes [{n,x,y,w,h}], returning {dataUrl,dpr}. The Set-of-Mark primitive behind fast_point_som; most callers want fast_point_som.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        boxes: { type: 'array', description: 'Boxes to draw, each {n (label number), x, y, w, h} in CSS px.', items: { type: 'object' } },
-      },
-      required: ['boxes'],
     },
   },
   {
@@ -112,11 +42,6 @@ export const TOOLS = [
       },
       required: ['install'],
     },
-  },
-  {
-    name: 'fast_prewarm',
-    description: 'Turn ON background pre-warming for the next ~60s. While active, each page navigation triggers a silent scout + vision pre-pass (cached snapshot/visual map) so the FIRST fast_scout / fast_point / fast_fill_vision on a freshly-loaded page is near-instant. Pre-warming NEVER starts on its own — call this once when you are about to do a burst of page-driving work. Any subsequent tool call extends the window; it shuts off automatically 60s after your last tool. No browser action is taken — this only arms the warmer.',
-    inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'fast_snapshot',
@@ -273,27 +198,13 @@ export const TOOLS = [
   },
   {
     name: 'fast_screenshot',
-    description: 'Capture a screenshot of the active Chrome tab — for VISUAL VERIFICATION only (confirm something looks right), NOT for reading or parsing page text/structure. To READ a page use fast_snapshot (structured DOM, instant); to LOCATE a visual/non-DOM element use fast_point or fast_locate (Gemini returns the coordinates). Do NOT screenshot a page and read it yourself — that is slow and token-heavy. Saves as PNG to the OS temp dir and returns the file path. Use Read on the path to view the image. Pass fresh:true if a recent screenshot looked stale/identical after a focus/navigation change — it reads the live window surface via CDP instead of the compositor frame chrome.tabs.captureVisibleTab may re-serve.',
+    description: 'Capture a screenshot of the active Chrome tab — for VISUAL VERIFICATION only (confirm something looks right), NOT for reading or parsing page text/structure. To READ a page use fast_snapshot (structured DOM, instant); to LOCATE a visual/non-DOM element use fast_point (Gemini returns the coordinates). Do NOT screenshot a page and read it yourself — that is slow and token-heavy. Saves as PNG to the OS temp dir and returns the file path. Use Read on the path to view the image. Pass fresh:true if a recent screenshot looked stale/identical after a focus/navigation change — it reads the live window surface via CDP instead of the compositor frame chrome.tabs.captureVisibleTab may re-serve.',
     inputSchema: {
       type: 'object',
       properties: {
         format: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format (default png)' },
         quality: { type: 'number', description: 'JPEG quality 0-100 (default 90, ignored for PNG)' },
         fresh: { type: 'boolean', description: 'Force a fresh frame via CDP (live window surface) instead of captureVisibleTab, which can re-serve a stale composited frame across focus/nav changes. Use when a recent screenshot looked unchanged though the page changed.' },
-      },
-    },
-  },
-  {
-    name: 'fast_marks',
-    description: 'Annotated screenshot: draws numbered boxes (the element\'s id) over visible interactive elements and returns the image + an id→center-coords map, for visually locating an element when DOM matching fails. Each box is labelled with the element\'s snapshot id, so the number the model picks maps straight back to that ref. Returns { dataUrl (annotated PNG), marks: [{ i, cx, cy }] (cx/cy = element center in viewport CSS px, ready for fast_click_xy), dpr, truncated }. Capped at ~40 boxes (truncated:true when there are more). Pass `only` (array of element ids) to mark just those.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        only: {
-          type: 'array',
-          description: 'Optional array of element ids (from a snapshot) to mark. Omit to mark all visible interactive elements (capped at ~40).',
-          items: { type: 'number' },
-        },
       },
     },
   },

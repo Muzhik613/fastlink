@@ -47,9 +47,9 @@ Rules:
 const STATE_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_select_option', 'fast_key_press',
   'fast_type', 'fast_nav', 'fast_tab', 'fast_reload', 'fast_scroll',
-  'fast_switch', 'fast_close', 'fast_batch', 'fast_do', 'fast_fill_vision',
+  'fast_switch', 'fast_close', 'fast_batch', 'fast_fill_vision',
 ]);
-const READ_TOOLS = new Set(['fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_evaluate', 'fast_marks', 'fast_scout', 'fast_list']);
+const READ_TOOLS = new Set(['fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_evaluate', 'fast_list']);
 const isStateChanging = (e) => STATE_TOOLS.has(e.name);
 const isRead = (e) => READ_TOOLS.has(e.name) || (e.name === 'fast_wait' && !!(e.args && e.args.text));
 // ONE normalization for both sides of the evidence match (tool results and the
@@ -381,14 +381,14 @@ export const unverifiedWrites = (log) => unresolvedFailures(log || []).filter(f 
 // (flightsearch p1-p3) passes; 'Worker "fastlink-relay" opened' with only the list
 // page loaded (cfworkers fbc16cf2) names neither, so it still needs a click/2nd load.
 // A custom dropdown is "selected" by clicking its option and a native <select>
-// can be set by fast_fill, so the select family includes both; fast_do (vision
-// act) counts for every family; fast_fill_form is still a valid batch step name.
-const CLICKS = ['fast_click', 'fast_click_xy', 'fast_do'];
+// can be set by fast_fill, so the select family includes both; fast_fill_form is
+// still a valid batch step name.
+const CLICKS = ['fast_click', 'fast_click_xy'];
 const CLAIMS = [
   { re: /\b(opened|navigated|drilled|went to)\b/gi, family: 'fast_click / fast_nav / fast_tab (beyond the first page load)', nav: true },
   { re: /\b(clicked|added|checked)\b/gi, family: 'fast_click', tools: CLICKS },
   { re: /\b(selected|picked)\b/gi, family: 'fast_select_option / fast_click / fast_fill', tools: ['fast_select_option', 'fast_fill', 'fast_fill_form', ...CLICKS], enter: true },
-  { re: /\b(filled|entered|typed)\b/gi, family: 'fast_fill', tools: ['fast_fill', 'fast_fill_form', 'fast_type', 'fast_fill_vision', 'fast_do'] },
+  { re: /\b(filled|entered|typed)\b/gi, family: 'fast_fill', tools: ['fast_fill', 'fast_fill_form', 'fast_type', 'fast_fill_vision'] },
   { re: /\b(submitted)\b/gi, family: 'fast_click / fast_key_press Enter', tools: CLICKS, enter: true },
 ];
 const VERB_BASE = { opened: 'open', navigated: 'navigate', drilled: 'drill in', 'went to': 'go to', clicked: 'click', added: 'add', checked: 'check', selected: 'select', picked: 'pick', filled: 'fill', entered: 'enter', typed: 'type', submitted: 'submit' };

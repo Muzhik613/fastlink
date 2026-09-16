@@ -7,19 +7,17 @@
 // `relay` is the UserRelay DO instance; dispatchTool calls relay.callExtension(...)
 // for each browser primitive, mirroring fast-dxt/server/handlers.js's surface.
 //
-// SCOPE: ships the full tool surface. RAW / DOM tools route straight to the
-// extension; the Gemini-backed composite tiers (fast_scout/point/point_som/
-// fill_vision/do/locate) are orchestrated in src/composite.js using a per-user
-// Gemini client (relay.getScout()) — task #7. Image-returning tools come back as
-// MCP image content (no /tmp on Workers). fast_evaluate is gated OFF by default.
+// SCOPE: RAW / DOM tools route straight to the extension; the two Gemini-backed
+// vision tiers (fast_point / fast_fill_vision) are orchestrated in
+// src/composite.js using a per-user Gemini client (relay.getScout()). Image-
+// returning tools come back as MCP image content (no /tmp on Workers).
+// fast_evaluate is gated OFF by default.
 //
 // See SPEC.md §3e, §7.
 
 import { TOOLS } from '../tools.js';
 import { runBatch } from './batch.js';
-import {
-  handleScout, handlePoint, handlePointSom, handleFillVision, handleDo, handleLocate,
-} from './composite.js';
+import { handlePoint, handleFillVision } from './composite.js';
 import { resolveTraceSession, startTraceSession, recordTiming } from './timing.js';
 import { sanitizeDeviceName, RESERVED_DEVICE_NAMES } from './db.js';
 
@@ -30,8 +28,8 @@ const INSTRUCTIONS = [
   'THIS IS THE CLOUD relay connector (server "fastlink-relay", shown as "claude.ai Fastlink") — it drives the browser over the multi-tenant relay and needs the user\'s extension PAIRED to their relay account. If a separate LOCAL connector is ALSO listed (server "fastlink") — i.e. this is a Claude Code session on the user\'s own machine — PREFER THAT LOCAL ONE; it drives the browser directly with no pairing/token/OAuth. FASTLINK_TOKEN is NOT used by this connector either; never treat a missing FASTLINK_TOKEN as the cause of a problem here — this path authenticates with OAuth.',
   '',
   'FastLink drives the user\'s real Chrome tab. Use it efficiently:',
-  '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content. (fast_scout can pre-read a page so you plan in one pass.)',
-  '- LOCATE/click something NOT in the DOM (canvas, opaque/cross-origin iframe, image, custom-rendered UI) with fast_point or fast_locate (fast_fill_vision to fill a visual form). Gemini reads the screenshot and returns the pixel coordinates FOR you — never screenshot-and-read-it-yourself; that is slow and token-heavy. fast_screenshot is for VISUAL CONFIRMATION only, never to read/parse page content.',
+  '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content.',
+  '- LOCATE/click something NOT in the DOM (canvas, opaque/cross-origin iframe, image, custom-rendered UI) with fast_point (fast_fill_vision to fill a visual form). Gemini reads the screenshot and returns the pixel coordinates FOR you — never screenshot-and-read-it-yourself; that is slow and token-heavy. fast_screenshot is for VISUAL CONFIRMATION only, never to read/parse page content.',
   '- CHAIN a known multi-step sequence in ONE call with fast_batch (e.g. navigate → fill → click → wait) to cut round-trips.',
   '- Fill multi-field forms with ONE fast_fill {fields:{label:value}} (or one fast_batch), never field-by-field.',
   '- Action results (fast_click / fast_fill / fast_wait) already include a snapshot — chain off THAT; do not issue a separate fast_snapshot right after.',
@@ -39,9 +37,8 @@ const INSTRUCTIONS = [
   '',
   'WHICH TOOL WHEN (rule of thumb: snapshot to read → DOM tools to act → vision only when the element is not in the DOM or the page is too heavy → batch when the path is known):',
   '- DEFAULT TO DOM TOOLS for normal HTML pages (the vast majority). Read with fast_snapshot; act with fast_click / fast_fill / fast_select_option. They are the fastest and most precise — TRY DOM FIRST.',
-  '- USE VISION TOOLS (fast_point / fast_locate / fast_fill_vision) ONLY when DOM can\'t see or reach the target: canvas/WebGL, cross-origin iframes, image-only or custom-rendered UIs, or when DOM tools return nothing / freeze on a very heavy page. Gemini reads the screenshot and returns coordinates. Vision is a FALLBACK, not the default.',
+  '- USE VISION TOOLS (fast_point / fast_fill_vision) ONLY when DOM can\'t see or reach the target: canvas/WebGL, cross-origin iframes, image-only or custom-rendered UIs, or when DOM tools return nothing / freeze on a very heavy page. Gemini reads the screenshot and returns coordinates. Vision is a FALLBACK, not the default.',
   '- USE fast_batch when you already KNOW the full step sequence (navigate → fill → click → wait) to cut round-trips. DON\'T batch when you must SEE a step\'s result before deciding the next (exploratory/branching flows) — run those one at a time.',
-  '- USE fast_scout to pre-read a complex/unfamiliar page so you can plan the whole interaction in one pass before acting.',
 ].join('\n');
 
 // ---- JSON-RPC plumbing ----------------------------------------------------
@@ -155,13 +152,11 @@ const errorResult = (message) => ({ content: [{ type: 'text', text: `Error: ${me
 // src/composite.js, which orchestrates browser primitives (relay.callExtension)
 // + Gemini calls (relay.getScout()). They self-report {disabled:true} when no
 // GEMINI_API_KEY secret is configured.
-const VISION_TOOLS = new Set([
-  'fast_scout', 'fast_point', 'fast_point_som', 'fast_fill_vision', 'fast_do', 'fast_locate',
-]);
+const VISION_TOOLS = new Set(['fast_point', 'fast_fill_vision']);
 
 // Raw tools that return a screenshot dataURL. On Workers there's no /tmp to save
 // to, so we hand the image back as proper MCP image content instead.
-const IMAGE_TOOLS = new Set(['fast_screenshot', 'fast_marks', 'fast_vision_capture', 'fast_annotate_boxes']);
+const IMAGE_TOOLS = new Set(['fast_screenshot']);
 
 // Mutating actions blocked when a site is in read-only consent mode (SAFETY §7).
 // Includes the composite tiers that actually execute clicks/typing (fill_vision,
@@ -170,20 +165,20 @@ const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_type',
   'fast_key_press', 'fast_nav', 'fast_evaluate',
   'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_reload',
-  'fast_fill_vision', 'fast_do',
+  'fast_fill_vision',
 ]);
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.
-const DIAGNOSTIC_ONLY = new Set([...VISION_TOOLS, 'fast_prewarm', 'fast_status', 'fast_profile', 'fast_batch']);
+const DIAGNOSTIC_ONLY = new Set([...VISION_TOOLS, 'fast_status', 'fast_profile', 'fast_batch']);
 
 // Relay-native tools that never touch a page → exempt from the per-origin consent
 // gate. (fast_batch's STEPS are gated individually inside runBatch.)
-const CONSENT_EXEMPT = new Set(['fast_status', 'fast_profile', 'fast_prewarm', 'fast_batch']);
+const CONSENT_EXEMPT = new Set(['fast_status', 'fast_profile', 'fast_batch']);
 
 // N2 kill-switch: tools still allowed while the user has PAUSED driving — only the
 // observable relay-meta ones, so the paused state can be reported. Everything else
 // (incl. fast_batch and all browser actions) is refused until the user resumes.
-const PAUSE_EXEMPT = new Set(['fast_status', 'fast_profile', 'fast_prewarm']);
+const PAUSE_EXEMPT = new Set(['fast_status', 'fast_profile']);
 
 // Per-origin consent gate (M4 / SIGNUP-SPEC §4.2). Returns null to PROCEED, or a
 // plain blocking payload object to short-circuit (dispatchTool wraps it in
@@ -260,19 +255,6 @@ async function dispatchTool(params, relay, session) {
     });
   }
 
-  // fast_prewarm: the cloud relay runs scout/vision on-demand (no background
-  // navigation pre-warm wired in v1), so this is informational — it never starts
-  // a browser action. The scout still works on the first real fast_scout/point.
-  if (name === 'fast_prewarm') {
-    const scout = await relay.getBoundScout();
-    return textResult({
-      prewarm: scout.enabled ? 'on-demand' : 'unavailable',
-      reason: scout.enabled
-        ? 'cloud relay runs the scout/vision tier on demand; no background pre-warm needed'
-        : 'set the GEMINI_API_KEY relay secret to enable the scout/vision tier',
-    });
-  }
-
   // Relay-native tools that answer without touching a browser. Deliberately
   // BEFORE target resolution so they still work when the pinned browser is
   // offline — otherwise the only tool that can fix a bad pin would be unreachable.
@@ -304,12 +286,8 @@ async function dispatchTool(params, relay, session) {
     const bound = boundRelay(relay, ws);
     let result;
     switch (name) {
-      case 'fast_scout':       result = await handleScout(bound, scout, args); break;
       case 'fast_point':       result = await handlePoint(bound, scout, args); break;
-      case 'fast_point_som':   result = await handlePointSom(bound, scout, args); break;
       case 'fast_fill_vision': result = await handleFillVision(bound, scout, args); break;
-      case 'fast_do':          result = await handleDo(bound, scout, args); break;
-      case 'fast_locate':      result = await handleLocate(bound, scout, args); break;
     }
     relay.audit(name, args, !(result && result.error)); // best-effort
     return textResult(result);
@@ -482,8 +460,8 @@ async function relayStatus(relay, session) {
         : '',
     ].filter(Boolean).join(' '),
     scoutNote: scoutEnabled
-      ? 'Scout/vision tier (fast_scout, fast_point, fast_fill_vision, fast_do, fast_locate) is enabled.'
-      : 'Scout/vision tier is disabled — add your own Gemini API key in relay settings, or set the operator GEMINI_API_KEY secret.',
+      ? 'Vision tier (fast_point, fast_fill_vision) is enabled.'
+      : 'Vision tier is disabled — add your own Gemini API key in relay settings, or set the operator GEMINI_API_KEY secret.',
   };
 }
 

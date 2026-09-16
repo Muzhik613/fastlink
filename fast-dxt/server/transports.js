@@ -14,8 +14,8 @@ const INSTRUCTIONS = [
   'THIS IS THE LOCAL FastLink connector (named "fastlink") — Claude Code on the user\'s own machine drives the browser through the local broker. No pairing, no token, no OAuth. If a separate CLOUD connector is ALSO listed (server "fastlink-relay" / shown as "claude.ai Fastlink"), PREFER THIS LOCAL ONE for CLI sessions; that cloud connector is for claude.ai web and needs the browser paired to a relay account. FASTLINK_TOKEN is NOT used here — it is an unrelated, optional local-HTTP secret; never treat a missing FASTLINK_TOKEN as the cause of a connection problem.',
   '',
   'FastLink drives the user\'s real Chrome tab. Use it efficiently:',
-  '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content. (fast_scout can pre-read a page so you plan in one pass.)',
-  '- LOCATE/click something NOT in the DOM (canvas, opaque/cross-origin iframe, image, custom-rendered UI) with fast_point or fast_locate (fast_fill_vision to fill a visual form). Gemini reads the screenshot and returns the pixel coordinates FOR you — never screenshot-and-read-it-yourself; that is slow and token-heavy. fast_screenshot is for VISUAL CONFIRMATION only, never to read/parse page content.',
+  '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content.',
+  '- LOCATE/click something NOT in the DOM (canvas, opaque/cross-origin iframe, image, custom-rendered UI) with fast_point (fast_fill_vision to fill a visual form). Gemini reads the screenshot and returns the pixel coordinates FOR you — never screenshot-and-read-it-yourself; that is slow and token-heavy. fast_screenshot is for VISUAL CONFIRMATION only, never to read/parse page content.',
   '- CHAIN a known multi-step sequence in ONE call with fast_batch (e.g. navigate → fill → click → wait) to cut round-trips.',
   '- Fill multi-field forms with ONE fast_fill {fields:{label:value}} (or one fast_batch), never field-by-field.',
   '- Action results (fast_click / fast_fill / fast_wait) already include a snapshot — chain off THAT; do not issue a separate fast_snapshot right after.',
@@ -23,9 +23,8 @@ const INSTRUCTIONS = [
   '',
   'WHICH TOOL WHEN (rule of thumb: snapshot to read → DOM tools to act → vision only when the element is not in the DOM or the page is too heavy → batch when the path is known):',
   '- DEFAULT TO DOM TOOLS for normal HTML pages (the vast majority). Read with fast_snapshot; act with fast_click / fast_fill / fast_select_option. They are the fastest and most precise — TRY DOM FIRST.',
-  '- USE VISION TOOLS (fast_point / fast_locate / fast_fill_vision) ONLY when DOM can\'t see or reach the target: canvas/WebGL, cross-origin iframes, image-only or custom-rendered UIs, or when DOM tools return nothing / freeze on a very heavy page. Gemini reads the screenshot and returns coordinates. Vision is a FALLBACK, not the default.',
+  '- USE VISION TOOLS (fast_point / fast_fill_vision) ONLY when DOM can\'t see or reach the target: canvas/WebGL, cross-origin iframes, image-only or custom-rendered UIs, or when DOM tools return nothing / freeze on a very heavy page. Gemini reads the screenshot and returns coordinates. Vision is a FALLBACK, not the default.',
   '- USE fast_batch when you already KNOW the full step sequence (navigate → fill → click → wait) to cut round-trips. DON\'T batch when you must SEE a step\'s result before deciding the next (exploratory/branching flows) — run those one at a time.',
-  '- USE fast_scout to pre-read a complex/unfamiliar page so you can plan the whole interaction in one pass before acting.',
 ].join('\n');
 
 function createMcpServer() {

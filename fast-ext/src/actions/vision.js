@@ -12,8 +12,8 @@
 // exact image dims (and, for a crop, where the crop sits in CSS space).
 import { injectInTab, captureVisiblePinAware, captureViaDebugger } from '../util.js';
 
-// Robust viewport grab for the vision tiers (fast_vision_capture / the warm
-// capture fast_point relies on, and fast_annotate_boxes). The GPU compositor
+// Robust viewport grab for the vision tier (fast_vision_capture, which
+// fast_point / fast_fill_vision capture through). The GPU compositor
 // intermittently wedges ("image readback failed" / "Failed to capture tab") —
 // captureVisibleTab depends on that GPU readback path, while CDP
 // Page.captureScreenshot reads the window surface and can succeed when it's
@@ -107,50 +107,5 @@ export async function visionCapture(args = {}) {
     };
   } catch (e) {
     return { error: 'vision capture failed: ' + (e?.message || String(e)) };
-  }
-}
-
-// Set-of-Mark annotator: capture the viewport and draw a numbered red box for
-// each provided box, so a multimodal model can pick an element by NUMBER
-// (classification — far more reliable than coordinate regression). boxes are in
-// CSS px: [{ n, x, y, w, h }]. Returns { dataUrl, dpr } — the model reads the
-// numbers, the caller maps the chosen number back to that box's center.
-export async function annotateBoxes(args = {}) {
-  try {
-    const boxes = Array.isArray(args.boxes) ? args.boxes : [];
-    if (!boxes.length) return { error: 'annotateBoxes: no boxes' };
-    const r = await injectInTab({ world: 'MAIN', func: readDpr });
-    if (r.error) return r;
-    const dpr = r.result || 1;
-
-    const dataUrl = await captureForVision({ format: 'png' });
-    if (!dataUrl) return { error: 'annotateBoxes failed: GPU image readback wedged and the CDP fallback also failed — retry in a moment' };
-
-    const blob = await (await fetch(dataUrl)).blob();
-    const bmp = await createImageBitmap(blob);
-    const cvs = new OffscreenCanvas(bmp.width, bmp.height);
-    const ctx = cvs.getContext('2d');
-    ctx.drawImage(bmp, 0, 0);
-    ctx.font = 'bold 18px sans-serif';
-    ctx.textBaseline = 'alphabetic';
-    for (const b of boxes) {
-      // CSS px → device px (the captured image is device px).
-      const x = b.x * dpr, y = b.y * dpr, w = b.w * dpr, h = b.h * dpr;
-      ctx.strokeStyle = 'red';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(x, y, w, h);
-      const label = String(b.n);
-      const lw = label.length * 11 + 8, lh = 20;
-      const ly = y - lh >= 0 ? y - lh : y;
-      ctx.fillStyle = 'red';
-      ctx.fillRect(x, ly, lw, lh);
-      ctx.fillStyle = 'white';
-      ctx.fillText(label, x + 3, ly + lh - 5);
-    }
-    const outBlob = await cvs.convertToBlob({ type: 'image/png' });
-    const annotated = await blobToDataURL(outBlob);
-    return { dataUrl: annotated, dpr };
-  } catch (e) {
-    return { error: 'annotateBoxes failed: ' + (e?.message || String(e)) };
   }
 }

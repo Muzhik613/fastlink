@@ -44,7 +44,7 @@ export function formatTimingReport(rows, { label = 'Model', header = '' } = {}) 
   out.push(`  Calls:                  ${rows.length}`);
   out.push('  ============================================');
   out.push(totalGap > totalDur
-    ? '  → Round-trips dominate. Collapsing model turns (fast_do / fast_batch) is the win.'
+    ? '  → Round-trips dominate. Collapsing model turns (fast_batch) is the win.'
     : '  → Actions dominate. Optimize the slowest tool above, not round-trips.');
 
   return out.join('\n');

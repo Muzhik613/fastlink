@@ -46,12 +46,6 @@ const NO_DEVICE_ERROR =
   + 'use the LOCAL "fastlink" connector instead — it drives the browser directly through the local broker with no pairing, token, or OAuth. '
   + 'Only if you intend to use the cloud relay: open the FastLink extension, set it to "relay" mode, and pair it (paste your code from the relay site). '
   + 'Note: FASTLINK_TOKEN is unrelated and is NOT the fix.';
-// Background prewarm debounce. On a 'navigated' event we fire ONE lightweight DOM
-// page-map warm so the first fast_scout/vision call is warm. The cooldown caps the
-// rate well under the Gemini free tier (2.5-flash-lite ~30 RPM): ≥8s spacing →
-// ≤~7.5 warms/min even under constant navigation, and it's also one-per-nav +
-// skip-same-URL + skip-while-a-real-call-is-in-flight. Purely best-effort.
-const PREWARM_COOLDOWN_MS = 8_000;
 
 export class UserRelay extends DurableObject {
   constructor(ctx, env) {
@@ -77,11 +71,6 @@ export class UserRelay extends DurableObject {
     // the DURABLE flag in ctx.storage — it MUST be durable because the DO hibernates
     // between tool calls and would otherwise forget a pause. undefined = not yet read.
     this._paused = undefined;
-    // Background-prewarm debounce state (in-memory; resets on hibernation wake,
-    // which is fine — the scout's page-map cache is per-instance too, so a fresh
-    // instance legitimately wants to re-warm). { at: last warm ms, url: last warmed
-    // url, inFlight: a warm is running }.
-    this._prewarm = { at: 0, url: null, inFlight: false };
     // Cached D1 device rows for named targeting: { at, rows:[{deviceToken,name,…}] }.
     // Rebuilt after a hibernation wake (D1 is the source of truth for names).
     this._devices = null;
@@ -442,59 +431,9 @@ export class UserRelay extends DurableObject {
       return;
     }
 
-    // BACKGROUND PREWARM: the extension fired a 'navigated' event. Kick a debounced,
-    // best-effort DOM page-map warm so the first fast_scout/vision call on the new
-    // page is already warm. Runs in ctx.waitUntil so it neither blocks this message
-    // handler nor lets the DO hibernate mid-warm; it never affects the live path.
-    if (evt === 'navigated') {
-      const url =
-        (typeof msg.url === 'string' && msg.url) ||
-        (msg.payload && typeof msg.payload.url === 'string' ? msg.payload.url : null) ||
-        (msg.data && typeof msg.data.url === 'string' ? msg.data.url : null);
-      // Warm the browser that actually navigated (`ws`), not "whichever connected
-      // last" — with several browsers paired, the latter would snapshot the wrong tab.
-      try { this.ctx.waitUntil(this.#prewarmOnNav(url, ws)); } catch { /* waitUntil unavailable — skip */ }
-      return;
-    }
-
     // {type:'pong'} and any other event are ignored. The {"ping":true} keepalive
     // never reaches here — it's handled by the auto-response pair without waking
     // the DO.
-  }
-
-  // Debounced, best-effort page-map prewarm on navigation. Lightweight: ONE viewport
-  // snapshot → ONE Gemini page-map build (cached by URL inside the scout factory), so
-  // a subsequent fast_scout for the same URL hits the warm cache. Guards (any → skip):
-  //   • cooldown not elapsed (rate cap, free-tier safe)   • same URL already warmed
-  //   • a warm already in flight                          • driving paused (N2)
-  //   • a real MCP tool call is in flight (don't contend) • no Gemini key (tier off)
-  async #prewarmOnNav(url, ws) {
-    try {
-      if (!ws || ws.readyState !== 1) return;
-      const nowMs = Date.now();
-      if (this._prewarm.inFlight) return;
-      if (nowMs - this._prewarm.at < PREWARM_COOLDOWN_MS) return;
-      if (url && url === this._prewarm.url) return;
-      if (this.pending.size > 0) return;          // user is actively driving — don't inject
-      if (await this.isDrivingPaused()) return;   // honor the Stop-driving kill-switch
-      const scout = await this.getBoundScout();
-      if (!scout || !scout.enabled) return;       // no per-user/operator key → vision tier off
-
-      // Reserve the slot up-front so a burst of navs can't fan out into many warms.
-      this._prewarm.inFlight = true;
-      this._prewarm.at = nowMs;
-      if (url) this._prewarm.url = url;
-
-      const snap = await this.callExtension('fast_snapshot', { viewport: true, __prewarm: true }, REQUEST_TIMEOUT_MS, ws);
-      const digest = snap?.result;
-      if (digest && Array.isArray(digest.items) && digest.items.length) {
-        if (typeof digest.url === 'string') this._prewarm.url = digest.url;
-        await scout.warm(digest); // builds + caches the page map (the warm Gemini call)
-      }
-    } catch { /* best-effort: prewarm must never affect the live call path */ }
-    finally {
-      this._prewarm.inFlight = false;
-    }
   }
 
   async webSocketClose(ws) {

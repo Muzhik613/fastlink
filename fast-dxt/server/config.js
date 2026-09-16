@@ -36,9 +36,8 @@ export const HTTP_PORT = httpPortArg
 export const TOKEN = process.env.FASTLINK_TOKEN || null;
 export const REQUEST_TIMEOUT_MS = 30_000;
 
-// Scout: fast model that pre-reads pages and turns intent into an action plan.
-// Direct Gemini (Generative Language API) only. fast_scout returns
-// {disabled:true} until GEMINI_API_KEY is set.
+// Vision tier (fast_point / fast_fill_vision): direct Gemini (Generative Language
+// API). Both return {disabled:true} until GEMINI_API_KEY is set.
 export const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 // Benchmarked winner for both planning and the vision/screenshot rung: fastest
 // (TTFT ~440ms) AND fully accurate. 3.5-flash ~5× slower, 3.1-lite ~1.6×. See

@@ -10,44 +10,16 @@
   },
   "tools": [
     {
-      "name": "fast_scout",
-      "description": "PREFERRED way to understand and act on the active tab — use this instead of fast_snapshot in most cases."
-    },
-    {
       "name": "fast_point",
       "description": "VISION coordinate-grounding: locate on-screen target(s) NOT in the DOM (opaque/cross-origin iframes, canvas, custom widgets) by having a fast multimodal mode..."
-    },
-    {
-      "name": "fast_vision_capture",
-      "description": "Low-level: capture the visible tab for the vision tier — returns {dataUrl, imgW, imgH, dpr}, optionally cropped to a CSS-px region and upscaled (the crop-zoo..."
-    },
-    {
-      "name": "fast_point_som",
-      "description": "VISION locate via SET-OF-MARK (classification, not coordinate regression — typically most reliable for dense/iframe forms)."
     },
     {
       "name": "fast_fill_vision",
       "description": "VISION form-fill in ONE call: fills an entire form server-side, collapsing the per-field point→click→type loop (~15 round-trips) into a single tool call."
     },
     {
-      "name": "fast_do",
-      "description": "EXPERIMENTAL most-aggressive tier: give ONE plain-language INTENT and a whole form is filled/operated in a SINGLE call — a fast multimodal model (Gemini) doe..."
-    },
-    {
-      "name": "fast_locate",
-      "description": "Locate an element by racing the DOM and vision tiers concurrently; returns the fastest usable hit."
-    },
-    {
-      "name": "fast_annotate_boxes",
-      "description": "Low-level: capture the viewport and draw numbered red boxes at the given CSS-px boxes [{n,x,y,w,h}], returning {dataUrl,dpr}."
-    },
-    {
       "name": "fast_status",
       "description": "Report whether the Chrome extension is connected to this MCP server, and connection diagnostics."
-    },
-    {
-      "name": "fast_prewarm",
-      "description": "Turn ON background pre-warming for the next ~60s."
     },
     {
       "name": "fast_snapshot",
@@ -100,10 +72,6 @@
     {
       "name": "fast_screenshot",
       "description": "Capture a screenshot of the active Chrome tab."
-    },
-    {
-      "name": "fast_marks",
-      "description": "Annotated screenshot: draws numbered boxes (the element's id) over visible interactive elements and returns the image + an id→center-coords map, for visually..."
     },
     {
       "name": "fast_key_press",

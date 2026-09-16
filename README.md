@@ -51,7 +51,7 @@ extension, then verify with `fast_status`.
 | [`docs/UPDATING.md`](docs/UPDATING.md) | The one path from source to a loaded extension (`scripts/ship-ext.sh`), plus server/relay updates. |
 | [`docs/TOKEN-SECURITY.md`](docs/TOKEN-SECURITY.md) | Cloud-relay device-token auth model and recommended hardening. |
 
-`docs/` also holds design/status notes (scout, speed tiers, vision Set-of-Mark, issue logs).
+`docs/` also holds design/status notes (speed tiers, benchmarks, issue logs).
 
 ---
 
@@ -73,6 +73,6 @@ extension, then verify with `fast_status`.
   MCP↔broker `9870`; optional HTTP transport `9879`.
 - **Web Store:** not published, and there is no self-hosted `.crx` channel — use Load-unpacked
   (Developer mode). `fast-ext/scripts/package.sh` builds the uploadable zip if one is ever cut.
-- **Optional Gemini key** enables the vision/scout tier (`fast_scout`, `fast_point`,
-  `fast_fill_vision`, `fast_do`); everything else works without it.
+- **Optional Gemini key** enables the vision tier (`fast_point`, `fast_fill_vision`);
+  everything else works without it.
 </content>
