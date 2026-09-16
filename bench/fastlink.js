@@ -68,6 +68,43 @@ export async function evalIn(match, fn, args = []) {
   return r;
 }
 
+// FRAME READ INTERFACE — what the scorer needs from the extension to read fields inside a
+// CROSS-ORIGIN iframe (the Azure portal blade). This is deliberately NARROW: it returns field
+// values and nothing else, instead of a general eval into arbitrary cross-origin frames.
+// The extension side owns it. Not built as of 2026-09-16; until it is, `fl` returns an
+// unknown-tool error and every frameField checkpoint scores FAIL.
+//
+//   fast_frame_read {
+//     frame:  string    // substring of the iframe's URL, e.g. "reactblade.portal.azure.net"
+//     fields: string[]  // VISIBLE LABEL TEXT, e.g. ["Virtual machine name", "Region"]
+//   }                   // acts on the ACTIVE tab, like fast_evaluate
+//   → {
+//     frames: string[]  // URLs of every frame that matched `frame` (so a miss is diagnosable)
+//     fields: { [label]: {
+//       found: boolean,
+//       count: number,  // controls carrying that label across ALL matched frames
+//       value: string,  // LIVE value, as the control shows it:
+//                       //   input/textarea → .value, exactly, NOT trimmed (appended junk must survive)
+//                       //   <select>       → selected option's text
+//                       //   combobox / listbox dropdown (Fluent) → the text the closed control
+//                       //                    displays, e.g. "(New) fastlink-bench-rg", "(Asia Pacific) Japan East"
+//                       //   placeholder text is NOT a value → ""
+//       tag, role       // what was read, for diagnosis
+//     } }
+//   }
+//   | { error, frames } // no frame matched: list every frame URL on the page
+//
+// Label resolution: <label for>, aria-labelledby, aria-label, then the nearest label text of the
+// field's form row. AMBIGUITY IS REFUSED: count > 1 → value null, never a guess (the fast_select_option
+// rule). The same-origin frames and the top frame need no special path, but they must not break it.
+export async function frameRead(match, frame, fields) {
+  if (match) {
+    const t = await switchToTab(match);
+    if (!t) return { __noTab: true, match };
+  }
+  return fl('fast_frame_read', { frame, fields });
+}
+
 /** Close every tab whose URL contains any of `patterns`. Used by run reset so a
  *  cell never inherits a previous run's page (which would score as free credit). */
 export async function closeMatching(patterns = []) {

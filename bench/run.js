@@ -104,6 +104,10 @@ export async function runCell({
     return null;
   }
 
+  // A `blocked` test cannot be scored honestly yet (bench/azure.js). Refused BEFORE the lock, the
+  // reset or the drive, so it never touches the browser and never writes a results row.
+  if (test.blocked) throw new Error(`NOT RUNNABLE — ${test.blocked}`);
+
   acquireLock({ client, testId, transport }, { force });
   const notes = [];
   let valid = true; let invalidReason = null;
@@ -311,9 +315,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const flag = (n, d = null) => { const i = argv.indexOf(n); if (i === -1) return d; const v = argv[i + 1]; argv.splice(i, 2); return v; };
 
   if (has('--list')) {
-    const suite = flag('--suite'); // main | holdout | holdout2; omitted = all
+    const suite = flag('--suite'); // main | holdout | holdout2 | azure; omitted = all
     if (suite && !SUITES[suite]) { console.error(`unknown suite "${suite}" (have: ${Object.keys(SUITES).join(', ')})`); process.exit(2); }
-    for (const t of suite ? SUITES[suite] : ALL_TESTS) console.log(`${t.id.padEnd(14)} ${t.name}`);
+    for (const t of suite ? SUITES[suite] : ALL_TESTS) console.log(`${t.id.padEnd(14)} ${t.name}${t.blocked ? '   [NOT RUNNABLE]' : ''}`);
     process.exit(0);
   }
   if (has('--force-unlock')) { releaseLock(); console.log('lock released'); }
@@ -350,7 +354,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       '                            (e.g. claude=primary, grok=secondary) or you score the wrong Chrome.',
       '  --claimed   yes|no        override the completion-claim reading of the final message',
       '  --quiet-ms / --ceiling-ms finish / stuck thresholds (default 25000 / 300000)',
-      '  --no-reset --force --force-unlock --dry-run --list [--suite main|holdout|holdout2]',
+      '  --no-reset --force --force-unlock --dry-run --list [--suite main|holdout|holdout2|azure]',
     ].join('\n'));
     process.exit(2);
   }

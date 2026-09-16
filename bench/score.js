@@ -17,7 +17,7 @@
 // CLI:  node bench/score.js multipage [--report-file f.txt] [--trail-file t.json]
 //                                     [--install primary] [--json]
 import { readFileSync } from 'fs';
-import { evalIn, tabs, pinInstall } from './fastlink.js';
+import { evalIn, frameRead, tabs, pinInstall } from './fastlink.js';
 import { byId, TEST_IDS } from './suite.js';
 
 // --- text normalization ----------------------------------------------------
@@ -156,7 +156,36 @@ async function runCheckpoint(cp, ctx, cache) {
     };
   }
 
+  if (cp.kind === 'frameField') {
+    // One fast_frame_read per (tab, frame, fields) set: every field a test scores is listed in
+    // `fields`, so N field checkpoints cost ONE read, like readOnce for eval.
+    const key = `frame::${cp.tab || ''}::${cp.frame}::${JSON.stringify(cp.fields)}`;
+    if (!(key in cache)) cache[key] = await frameRead(cp.tab, cp.frame, cp.fields);
+    const raw = cache[key];
+    if (raw && raw.__noTab) return { ...base, passed: false, expected: cp.name, actual: `no tab matching "${cp.tab}"` };
+    if (!raw || raw.error || !raw.fields) return { ...base, passed: false, expected: cp.name, actual: `frame read failed: ${JSON.stringify(raw).slice(0, 300)}` };
+    const f = raw.fields[cp.field];
+    if (!f || !f.found) return { ...base, passed: false, expected: cp.name, actual: `field "${cp.field}" not found in frames ${JSON.stringify(raw.frames || [])}` };
+    // Ambiguity is a FAIL, never a pick: two controls sharing the label means we cannot say
+    // which one the run wrote.
+    if (f.count > 1 || f.value == null) return { ...base, passed: false, expected: cp.name, actual: `field "${cp.field}" is ambiguous (${f.count} controls) — not scored` };
+    const r = applyExpect(f.value, cp.expect);
+    return { ...base, passed: r.passed, expected: r.expected, actual: JSON.stringify(f.value) };
+  }
+
   throw new Error(`unknown checkpoint kind: ${cp.kind}`);
+}
+
+/** `trailNever`: the checkpoint also FAILS if any visited URL contains a forbidden substring.
+ *  With no trail (standalone scoring) only open tabs are seen, which can MISS a page already
+ *  navigated away from, so a trail-less pass is flagged as a lower bound. */
+async function applyTrailNever(cp, ctx, res) {
+  if (!cp.trailNever || !res.passed) return res;
+  const hasTrail = !!(ctx.trail && ctx.trail.length);
+  const pool = hasTrail ? ctx.trail : (await ctx.tabList()).map((t) => t.url || '');
+  const hit = pool.find((u) => cp.trailNever.some((bad) => u.includes(bad)));
+  if (hit) return { ...res, passed: false, expected: `${res.expected}; and NO visited URL containing ${cp.trailNever.join(' | ')}`, actual: `forbidden URL visited: ${hit}` };
+  return hasTrail ? res : { ...res, actual: `${res.actual} (no trail — trailNever checked against open tabs only, lower bound)` };
 }
 
 /** liveList expands at scoring time: one name + one value checkpoint per entry,
@@ -219,7 +248,7 @@ export async function scoreTest(test, { trail = null, reportText = null, install
   const results = [];
   for (const cp of test.checkpoints) {
     if (cp.kind === 'liveList') results.push(...await runLiveList(cp, ctx, cache));
-    else results.push(await runCheckpoint(cp, ctx, cache));
+    else results.push(await applyTrailNever(cp, ctx, await runCheckpoint(cp, ctx, cache)));
   }
   const score = results.filter((r) => r.passed).length;
   const firstFailure = results.findIndex((r) => !r.passed);
@@ -260,6 +289,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error(`usage: node bench/score.js <${TEST_IDS.join('|')}> [--report-file f] [--trail-file f] [--install label] [--json]`);
     process.exit(2);
   }
+  if (test.blocked) { console.error(`NOT RUNNABLE — ${test.blocked}`); process.exit(3); }
   const reportText = reportFile ? readFileSync(reportFile, 'utf8') : null;
   const trail = trailFile ? JSON.parse(readFileSync(trailFile, 'utf8')) : null;
   const res = await scoreTest(test, { trail, reportText, install });

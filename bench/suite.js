@@ -12,6 +12,7 @@
 //
 import { HOLDOUT } from './holdout.js';
 import { HOLDOUT2 } from './holdout2.js';
+import { AZURE } from './azure.js';
 
 // Kinds:
 //   tab     {urlIncludes}                 – some tab is open on that URL
@@ -27,6 +28,13 @@ import { HOLDOUT2 } from './holdout2.js';
 //                                            one name checkpoint + one value
 //                                            checkpoint per entry, plus an order
 //                                            checkpoint.
+//   frameField {tab, frame, fields, field, expect}
+//                                          – read a field's LIVE value inside an
+//                                            iframe (cross-origin included) through
+//                                            fast_frame_read; see bench/fastlink.js.
+//
+// Any checkpoint may add `trailNever: [substr]`: it then also FAILS if the URL
+// trail contains one of them (e.g. a deployment page the run must never reach).
 //
 // `expect` matchers (string-normalized unless noted): equals | equalsIgnoreCase |
 // includes | notIncludes | regex | oneOf | truthy | falsy | nonEmpty
@@ -430,9 +438,10 @@ export const TESTS = [
   },
 ];
 
-// The holdout sets (bench/holdout.js ids `h_*`, bench/holdout2.js ids `h2_*`) resolve
-// through the same lookup, so run.js / score.js take `--test h2_tree` with no second code path.
-export const SUITES = { main: TESTS, holdout: HOLDOUT, holdout2: HOLDOUT2 };
-export const ALL_TESTS = [...TESTS, ...HOLDOUT, ...HOLDOUT2];
+// The holdout sets (bench/holdout.js ids `h_*`, bench/holdout2.js ids `h2_*`) and the Azure
+// cells (bench/azure.js ids `az_*`) resolve through the same lookup, so run.js / score.js take
+// `--test h2_tree` with no second code path. A test carrying `blocked` is refused by both.
+export const SUITES = { main: TESTS, holdout: HOLDOUT, holdout2: HOLDOUT2, azure: AZURE };
+export const ALL_TESTS = [...TESTS, ...HOLDOUT, ...HOLDOUT2, ...AZURE];
 export const byId = (id) => ALL_TESTS.find((t) => t.id === id);
 export const TEST_IDS = ALL_TESTS.map((t) => t.id);
