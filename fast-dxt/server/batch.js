@@ -123,6 +123,7 @@ export async function runBatch(args, io) {
   const actions = Array.isArray(args?.actions) ? args.actions : [];
   const counts = { ok: 0, missed: 0, steps: 0 };
   const misses = [];   // { label, error }
+  const quiet = [];    // labels of write steps whose result says the form did not change
 
   const runStep = async (step, index, hasFollower) => {
     const name = STEP_RENAMES[step.name] || step.name;
@@ -153,6 +154,7 @@ export async function runBatch(args, io) {
       return { step: index, name, ok: false, result };
     }
     counts.ok++;
+    if (result && result.changed === 'none') quiet.push(label);
     return { step: index, name, ok: true, result };
   };
 
@@ -193,8 +195,10 @@ export async function runBatch(args, io) {
 
   const results = await runList(actions, false);
   const head = `${counts.ok}/${counts.steps} steps ok`;
-  const summary = misses.length
-    ? `${head}; ${misses.map((m) => `${m.label} ${m.unverified ? 'not verified' : 'missed'}: ${m.error}`).join(' | ')}`
-    : head;
+  const parts = [
+    ...misses.map((m) => `${m.label} ${m.unverified ? 'not verified' : 'missed'}: ${m.error}`),
+    ...quiet.map((l) => `${l} changed nothing on the form`),
+  ];
+  const summary = parts.length ? `${head}; ${parts.join(' | ')}` : head;
   return { summary, ok: counts.ok, missed: counts.missed, steps: counts.steps, results };
 }

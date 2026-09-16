@@ -4567,6 +4567,70 @@ const shortResult = (action, r, args = {}) => {
   return r;
 };
 
+// ── What a write changed ─────────────────────────────────────────────────────
+// Every write (click, fill, select, key) reports what actually changed on the form, in
+// one short list: the labelled form controls of THIS document (label → value, checked
+// state) and the dialogs open, read before and after the action, diffed. Live misses on
+// two sites were changes that silently did not happen — a picked image discarded when
+// its panel closed, a resource group typed but never applied — while every result said
+// ok. Only labelled controls and dialog open/close count (no prices, counters or text).
+// Read from the index the page already keeps; no waits added.
+const WRITE_ACTIONS = new Set(['fast_click', 'fast_fill', 'fast_select_option', 'fast_key_press']);
+const FORM_STATE_MAX = 1500, CHANGED_SHOWN = 4;
+const formState = () => {
+  const fields = new Map();   // element → { label, value }
+  let k = 0, partial = false;
+  for (const [el, e] of INDEX.byEl) {
+    if (++k > 20000 || fields.size >= FORM_STATE_MAX) { partial = true; break; }
+    if (!e || e.kind !== 'click' || !el.isConnected) continue;
+    const chk = checkedOf(el);
+    if (!e.live && chk === null) continue;
+    const label = cleanLabel(String(e.label || e.ariaLabel || e.placeholder || e.name || '')).slice(0, 60);
+    if (!label) continue;
+    let value;
+    if (chk !== null) value = chk ? 'checked' : 'unchecked';
+    else { const c = { live: e.live }; try { refreshLiveEntry(el, c); } catch {} value = c.value == null ? '' : String(c.value); }
+    if (el.type === 'password') value = value ? '•••' : '';
+    fields.set(el, { label, value: cleanLabel(value).slice(0, 80) });
+  }
+  const dialogs = new Set();
+  try {
+    const els = document.querySelectorAll(DIALOG_SEL);
+    for (let i = 0; i < els.length && i < 50; i++) {
+      let r; try { r = els[i].getBoundingClientRect(); } catch { continue; }
+      if (visible(els[i], r)) dialogs.add(dialogLabel(els[i]) || 'dialog');
+    }
+    const act = activeDialogRoot();
+    if (act) dialogs.add(dialogLabel(act) || 'dialog');
+  } catch {}
+  return { fields, dialogs, partial };
+};
+// "Label: \"old\" → \"new\"", "dialog \"X\" opened/closed". A field the page re-rendered (a new
+// element) is matched by its label when that label is unique on both sides. Pure given states.
+const diffFormState = (a, b) => {
+  const out = [];
+  const byLabel = (st) => { const m = new Map(); for (const v of st.fields.values()) m.set(v.label, m.has(v.label) ? null : v); return m; };
+  const bl = byLabel(b), al = byLabel(a);
+  for (const [el, x] of a.fields) {
+    const y = b.fields.get(el) || (al.get(x.label) ? bl.get(x.label) : null);
+    if (y && y.value !== x.value) out.push(`${x.label}: ${JSON.stringify(x.value)} → ${JSON.stringify(y.value)}`);
+  }
+  for (const d of b.dialogs) if (!a.dialogs.has(d)) out.push(`dialog "${d}" opened`);
+  for (const d of a.dialogs) if (!b.dialogs.has(d)) out.push(`dialog "${d}" closed`);
+  return out;
+};
+// Put `changed` right after the result's first key.
+// `partial` (the form was larger than one read covers): an empty diff is not "none" — say unknown.
+const withChanged = (r, list, partial = false) => {
+  if (!r || typeof r !== 'object') return r;
+  const changed = list.length ? (list.length > CHANGED_SHOWN ? [...list.slice(0, CHANGED_SHOWN), `+${list.length - CHANGED_SHOWN} more`] : list) : (partial ? 'unknown (form too large to compare)' : 'none');
+  const keys = Object.keys(r);
+  const out = {};
+  keys.forEach((key, i) => { out[key] = r[key]; if (i === 0) out.changed = changed; });
+  if (!keys.length) out.changed = changed;
+  return out;
+};
+
 // A click whose id had gone stale and fell back to text says so.
 const withIdStale = (r, args) => (r && typeof r === 'object' && args && args.__idStale && !r.idStale ? frontload(r, { idStale: true }) : r);
 
@@ -4588,7 +4652,19 @@ if (typeof window !== 'undefined') {
   window.__fastlink = window.__fastlink || {};
   window.__fastlink.run = async (action, args) => {
     NO_FRAME_NOTICE.on = !!(args && args.noFrameNotice);
-    try { return shortResult(action, withIdStale(await runPageAction(action, args), args), args || {}); } finally { NO_FRAME_NOTICE.on = false; }
+    const write = WRITE_ACTIONS.has(action) && !(args && args.dryRun);
+    let before = null, stateMs = 0;
+    if (write) { const t = nowMs(); try { initIndex(); drainPendingSync(2000, 20); before = formState(); } catch {} stateMs += nowMs() - t; }
+    try {
+      let r = withIdStale(await runPageAction(action, args), args);
+      if (write && before && r && typeof r === 'object' && !r.error && !r.dryRun) {
+        const t = nowMs();
+        try { drainPendingSync(2000, 20); const after = formState(); r = withChanged(r, diffFormState(before, after), before.partial || after.partial); } catch {}
+        stateMs += nowMs() - t;
+        window.__fastlink.lastChangedMs = Math.round(stateMs);   // cost probe for measurement, not in the result
+      }
+      return shortResult(action, r, args || {});
+    } finally { NO_FRAME_NOTICE.on = false; }
   };
   window.__fastlink.cancelWaits = () => { const n = ACTIVE_WAITS.size; for (const c of [...ACTIVE_WAITS]) c(); return n; };
 }
