@@ -34,7 +34,7 @@ const MAX_OBSERVATIONS = 8;
 // "where does this appear, and quote the whole box", which also finds a value that
 // landed in the wrong box (a header search field) and reads a box's full contents
 // rather than confirming a prefix.
-export function observationPrompt({ targets } = {}) {
+export function observationPrompt({ targets, askSeen = false } = {}) {
   const wanted = (Array.isArray(targets) ? targets : []).map(String).map(s => s.replace(/\bfast_[a-z_]+\b/gi, ' ').trim()).filter(Boolean).slice(0, 8);
   return [
     'Describe what this browser screenshot SHOWS. Report only what is visibly on the screen.',
@@ -54,7 +54,9 @@ export function observationPrompt({ targets } = {}) {
     'Do NOT explain causes, do NOT suggest what to do, do NOT name any tool or action,',
     'Do NOT say whether anything is right, wrong, complete or incomplete. No advice, no verdicts.',
     'If the screen looks fine and nothing stands out, return an empty list.',
-    'Reply strict JSON: {"observations":[string, ...]}.',
+    askSeen && wanted.length
+      ? `Reply strict JSON: {"observations":[string, ...], "seen":{${wanted.map(v => `${JSON.stringify(v)}: true|false`).join(', ')}}}, where "seen" says, for each of those names exactly as written, whether that text is visible on the screen.`
+      : 'Reply strict JSON: {"observations":[string, ...]}.',
   ].filter(Boolean).join(' ');
 }
 
@@ -81,7 +83,16 @@ export function safeJson(s) {
 
 // The checker call: ONE fresh user turn through the grokcode proxy the run already
 // drives on — no system prompt, no tools, no history.
-export async function describeWithGrok({ base64, targets, model = CHECK_MODEL }, deps = {}) {
+// `seen` (askSeen only): per requested target, true/false exactly as the checker answered. Keys it
+// was not asked about and non-boolean values are dropped, so nothing downstream parses English.
+export function seenMap(raw, targets) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const t of Array.isArray(targets) ? targets : []) if (typeof raw[t] === 'boolean') out[t] = raw[t];
+  return out;
+}
+
+export async function describeWithGrok({ base64, targets, askSeen = false, model = CHECK_MODEL }, deps = {}) {
   const send = deps.create || createMessage;
   let res;
   try {
@@ -89,14 +100,15 @@ export async function describeWithGrok({ base64, targets, model = CHECK_MODEL },
       model, maxTokens: 700,
       messages: [{ role: 'user', content: [
         { type: 'image', source: { type: 'base64', media_type: 'image/png', data: String(base64 || '').replace(/^data:image\/\w+;base64,/, '') } },
-        { type: 'text', text: observationPrompt({ targets }) },
+        { type: 'text', text: observationPrompt({ targets, askSeen }) },
       ] }],
     });
   } catch (e) {
     return { observations: [], skipped: `checker failed: ${String(e && e.message || e).slice(0, 200)}` };
   }
   const text = (res?.content || []).filter(c => c.type === 'text').map(c => c.text || '').join('\n');
-  return { observations: plainObservations(safeJson(text).observations), checkerMs: res?._timing?.latencyMs };
+  const parsed = safeJson(text);
+  return { observations: plainObservations(parsed.observations), ...(askSeen ? { seen: seenMap(parsed.seen, targets) } : {}), checkerMs: res?._timing?.latencyMs };
 }
 
 // ONE screenshot, whichever transport: the local server may return {path} or a
@@ -149,10 +161,10 @@ export function startVisualCheck(run, idx, deps = {}) {
 export function startLookCheck(run, { idx, failures }, deps = {}) {
   if (run.gate === 'off' || !failures?.length) return null;
   const targets = [...new Set(failures.map(f => f.target).filter(Boolean))];
-  return launchCheck(run, { idx, t: run.toolLog[idx]?.t, kind: 'report', failures }, targets, lookNoteText, deps);
+  return launchCheck(run, { idx, t: run.toolLog[idx]?.t, kind: 'report', failures }, targets, lookNoteText, deps, { askSeen: true });
 }
 
-function launchCheck(run, base, targets, noteText, deps) {
+function launchCheck(run, base, targets, noteText, deps, { askSeen = false } = {}) {
   run.visualChecks ||= [];
   run.pendingChecks ||= [];
   const checker = deps.model || CHECK_MODEL;
@@ -168,9 +180,10 @@ function launchCheck(run, base, targets, noteText, deps) {
     rec.shotMs = Date.now() - t0;
     if (!base64) { rec.skipped = 'no screenshot'; return; }
     let out;
-    try { out = await describe({ base64, targets }); }
+    try { out = await describe({ base64, targets, ...(askSeen ? { askSeen } : {}) }); }
     catch (e) { out = { observations: [], skipped: `checker failed: ${e.message}` }; }
     rec.checkerMs = out?.checkerMs ?? (Date.now() - t0 - rec.shotMs);
+    if (askSeen) rec.seen = seenMap(out?.seen, targets);
     const observations = (Array.isArray(out?.observations) ? out.observations : []).map(String).filter(Boolean);
     if (out?.skipped || !observations.length) { rec.skipped = out?.skipped || 'nothing observed'; return; }
     rec.observations = observations;

@@ -503,12 +503,13 @@ export function gateMode(spec = process.env.FASTRUN_GATE || 'on') {
 // The loop's decision at a report_done: { refuse: problems } (on: the model continues)
 // or { finish: fields } (the run ends 'done' with these fields).
 export function reportDone(run, args, t) {
-  const done = (fields = {}) => ({ finish: { result: args.result ?? '', evidence: args.evidence ?? '', ...fields } });
+  const done = (fields = {}) => ({ finish: { result: annotate(args.result ?? '', fields.screenMismatch), evidence: args.evidence ?? '', ...fields } });
   if (run.gate === 'off') return done();
   const problems = gateProblems(run, args);
   const unresolved = unresolvedFailures(run.toolLog);
   const claims = claimMismatch(run.toolLog, args.result);
-  const checks = { unresolvedFailures: unresolved.length ? unresolved : null, claimMismatch: claims.length ? claims : null };
+  const screen = screenMismatch(run, unresolved);
+  const checks = { unresolvedFailures: unresolved.length ? unresolved : null, claimMismatch: claims.length ? claims : null, ...(screen.length ? { screenMismatch: screen } : {}) };
   const report = { result: String(args.result ?? '').slice(0, 2000), evidence: String(args.evidence ?? '').slice(0, 4000) };
   if (problems.length && run.gate === 'record') return done({ ...checks, gateWouldRefuse: [{ t, problems, ...report }] });
   if (problems.length && run.gateRefusals.length < MAX_GATE_REFUSALS) {
@@ -537,6 +538,31 @@ export async function reportDecision(run, args, t, deps = {}) {
   if (!notes.length) return verdict;
   return verdict.refuse ? { note: notes.join('\n\n'), refuse: verdict.refuse } : { note: notes.join('\n\n') };
 }
+
+// A report accepted while it still carries a failed wait/read on a target the report look answered
+// seen:true (the checker's own per-target boolean, never its prose), with no successful
+// state-changing call since that look was handed over. Not a refusal and no judgement of the
+// report: the caller's result gets one mechanical line per target and the row gets
+// screenMismatch. Live: Azure b1d84267, the look saw "Virtual machine name" (box empty) and the
+// accepted report said that text "never appeared".
+export function screenMismatch(run, unresolved = unresolvedFailures(run.toolLog || [])) {
+  const log = run.toolLog || [];
+  const out = [];
+  for (const c of run.visualChecks || []) {
+    if (c.kind !== 'report' || c.deliveredAt == null || !c.seen) continue;
+    if (log.some(e => e.ok && isStateChanging(e) && e.t >= c.deliveredAt)) continue;
+    for (const [tg, seen] of Object.entries(c.seen)) {
+      if (seen !== true || out.some(o => sameTarget(o.target, tg))) continue;
+      const f = unresolved.find(u => !u.unverified && isReadOrWait(u) && sameTarget(u.target, tg));
+      if (f) out.push({ target: tg, name: f.name, failedAt: f.t, seenAt: c.readyAt ?? c.deliveredAt });
+    }
+  }
+  return out;
+}
+const annotate = (result, mismatches) => !mismatches?.length ? result : [
+  String(result),
+  ...mismatches.map(m => `[screen check] A screenshot taken at ${Math.round(m.seenAt / 1000)}s showed "${m.target}" visible, and the run did not act on the page after that.`),
+].join('\n');
 
 // When a report_done gets ONE look at the screen, decided on structure alone, never the report's
 // wording (phrase lists for "didn't load / blank / not there" were rejected as fragile):
@@ -591,7 +617,7 @@ export function closeVisualChecks(run) {
 const gateFields = (run) => run.gate === 'off' ? { gate: 'off' } : {
   gate: run.gate,
   ...(run.gate === 'on' ? { gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined } : { gateWouldRefuse: run.gateWouldRefuse || undefined }),
-  unresolvedFailures: run.unresolvedFailures || undefined, claimMismatch: run.claimMismatch || undefined,
+  unresolvedFailures: run.unresolvedFailures || undefined, claimMismatch: run.claimMismatch || undefined, screenMismatch: run.screenMismatch || undefined,
 };
 
 const NATIVE_TOOLS = [

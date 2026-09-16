@@ -5,8 +5,8 @@
 // further two rounds later.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recordResult, entryFacts, unverifiedWrites, reportDecision, deliverChecks, closeVisualChecks, gateProblems, unlookedFailures } from '../runner.mjs';
-import { startVisualCheck, settleShots, takeNotes, checkNoteText, lookNoteText, describeWithGrok, observationPrompt, CHECK_MODEL, MAX_VISUAL_CHECKS } from '../visual-check.mjs';
+import { recordResult, entryFacts, unverifiedWrites, reportDecision, deliverChecks, closeVisualChecks, gateProblems, unlookedFailures, screenMismatch } from '../runner.mjs';
+import { startVisualCheck, settleShots, takeNotes, checkNoteText, lookNoteText, seenMap, describeWithGrok, observationPrompt, CHECK_MODEL, MAX_VISUAL_CHECKS } from '../visual-check.mjs';
 
 const AZ = 'https://portal.azure.com/#create/Microsoft.VirtualMachine';
 const snap = (url, ...texts) => JSON.stringify({ url, content: texts.map(text => ({ text })) });
@@ -241,6 +241,71 @@ test('the look stays out of the way: a write anywhere, a screenshot since, gate 
   assert.equal(v.note, undefined);
   assert.match(capped.visualChecks.at(-1).skipped, /check cap/);
   assert.equal(unlookedFailures(capped), null, 'recorded, so never retried');
+});
+
+// ── a report that contradicts its own look is annotated, never refused again ─
+// Azure b1d84267 (~/.local/state/fastrun/runs.jsonl): the look saw "Virtual machine name" (its box
+// empty) in 1.9s; the model retried only a fast_wait, which timed out, and the accepted report
+// said that text "never appeared". Rows are that run's toolLog, previews trimmed.
+const B1_OBS = ['Virtual machine name appears in the Instance details section and the box holding it reads empty.', 'Region box reads (US) East US.', 'the form continues below the visible area.'];
+const B1_REPORT_1 = { result: 'Could not reach or fill the "Create a virtual machine" Basics form (page stayed at header-only state after 30s+ waits). No fields set.', evidence: 'fast_snapshot after fast_tab to https://portal.azure.com/#create/Microsoft.VirtualMachine repeatedly returned only portal header items.' };
+const B1_REPORT_2 = { result: 'Could not reach or fill the "Create a virtual machine" Basics form (page stayed at header-only state after 30s+ waits; "Virtual machine name" text never appeared). No fields set.', evidence: 'fast_wait for "Virtual machine name" returned "Timed out waiting for \\"Virtual machine name\\"". URL stayed https://portal.azure.com/#create/Microsoft.VirtualMachine.' };
+const runB1 = () => runOf([
+  ['fast_tab', { url: AZ }, JSON.stringify({ id: 1220563046, url: AZ, targetTab: 1220563046 })],
+  ['fast_snapshot', { full: true, screenshot: false }, JSON.stringify({ url: LOGIN, title: '', count: 0, items: [], contentCount: 0, content: [] })],
+  ['fast_wait', { text: 'Create a virtual machine', timeoutMs: 15000 }, JSON.stringify({ settling: true, found: { text: 'Create a virtual machine', contentMatch: true } })],
+  ['fast_snapshot', { full: true, screenshot: false }, HEADER_ONLY],
+  ['fast_wait', { text: 'Virtual machine name', timeoutMs: 30000 }, BUSY(28006), true],
+  ['fast_snapshot', { full: true, screenshot: false }, HEADER_ONLY],
+], { startedAt: Date.now() - 41766 });   // the look lands at ~41.8s, after every row above, as it did live
+const seenDeps = (seen) => { const d = deps(B1_OBS); const inner = d.describe; d.describe = async (a) => ({ ...(await inner(a)), seen }); return d; };
+
+test('b1d84267: the look answers per target; a later report still failing on a SEEN target is accepted with a mechanical annotation', async () => {
+  const run = runB1();
+  const d = seenDeps({ 'Virtual machine name': true });
+  const v1 = await reportDecision(run, B1_REPORT_1, 41766, d);
+  assert.equal(d.seen.described.askSeen, true, 'the look asks for per-target seen');
+  assert.deepEqual(run.visualChecks[0].seen, { 'Virtual machine name': true });
+  assert.ok(v1.note && v1.refuse, 'look + gate in one round, as before');
+  // the model's only move: a wait that times out again (not an action on the page)
+  push(run, 'fast_wait', { text: 'Virtual machine name', timeoutMs: 10000 }, JSON.stringify({ error: 'Timed out waiting for "Virtual machine name"', settling: false, headings: ['Microsoft Azure', 'Create a virtual machine'] }), true);
+  run.toolLog.at(-1).t = run.visualChecks[0].deliveredAt + 1962;
+  const v2 = await reportDecision(run, B1_REPORT_2, 47000, d);
+  assert.ok(v2.finish, 'accepted — no second refusal loop');
+  assert.equal(d.seen.shots, 1);
+  assert.deepEqual(v2.finish.screenMismatch.map(m => [m.target, m.name]), [['Virtual machine name', 'fast_wait']]);
+  assert.ok(v2.finish.result.startsWith(B1_REPORT_2.result), 'the model\'s own words are kept');
+  assert.match(v2.finish.result, /\n\[screen check\] A screenshot taken at \d+s showed "Virtual machine name" visible, and the run did not act on the page after that\.$/);
+});
+
+test('no annotation: target not seen, an action after the look, the failure resolved, or no look', async () => {
+  const notSeen = runB1();
+  await reportDecision(notSeen, B1_REPORT_1, 41766, seenDeps({ 'Virtual machine name': false }));
+  assert.deepEqual(screenMismatch(notSeen), [], 'the look did not see the target');
+  const acted = runB1();
+  await reportDecision(acted, B1_REPORT_1, 41766, seenDeps({ 'Virtual machine name': true }));
+  push(acted, 'fast_click_xy', { x: 400, y: 500 }, JSON.stringify({ clickedAt: { x: 400, y: 500 } }));
+  acted.toolLog.at(-1).t = acted.visualChecks[0].deliveredAt + 10;
+  assert.deepEqual(screenMismatch(acted), [], 'acted on the page after the look');
+  const resolved = runB1();
+  await reportDecision(resolved, B1_REPORT_1, 41766, seenDeps({ 'Virtual machine name': true }));
+  push(resolved, 'fast_wait', { text: 'Virtual machine name' }, JSON.stringify({ found: { text: 'Virtual machine name' } }));
+  assert.deepEqual(screenMismatch(resolved), [], 'the failure was resolved');
+  assert.deepEqual(screenMismatch(runB1()), [], 'no look, nothing to contradict');
+  const malformed = runB1();
+  await reportDecision(malformed, B1_REPORT_1, 41766, seenDeps({ 'Virtual machine name': 'yes', Other: true }));
+  assert.deepEqual(malformed.visualChecks[0].seen, {}, 'only booleans for asked targets count');
+  assert.deepEqual(screenMismatch(malformed), []);
+});
+
+test('seen is structured: the prompt asks per target only for the look, and the parser keeps asked booleans only', async () => {
+  assert.doesNotMatch(observationPrompt({ targets: ['Basics'] }), /"seen"/, 'write checks keep the benchmarked prompt');
+  assert.match(observationPrompt({ targets: ['Basics'], askSeen: true }), /"seen":\{"Basics": true\|false\}/);
+  assert.deepEqual(seenMap({ Basics: true, Region: false, Extra: true, Name: 'yes' }, ['Basics', 'Region', 'Name']), { Basics: true, Region: false });
+  const out = await describeWithGrok({ base64: 'QkFTRTY0', targets: ['Basics'], askSeen: true }, {
+    create: async () => ({ content: [{ type: 'text', text: JSON.stringify({ observations: ['The Basics tab is selected.'], seen: { Basics: true } }) }] }),
+  });
+  assert.deepEqual(out.seen, { Basics: true });
 });
 
 // ── what the model is told, and what the checker is asked ────────────────────
