@@ -192,16 +192,25 @@ async function navigateTab({ url, waitMs }) {
   return { id: tab.id, url, contentScript };
 }
 
+// EVERY window, not just the current one. A currentWindow-only list hid every tab in any other
+// window, e.g. one fast_tab opened on its no-current-window path, so nothing could see or close
+// those tabs and they leaked (the hvm bench rig reached 100+ tabs, 5.3 GB). Not
+// windowType:'normal' either: a page's window.open popup is a 'popup' window, and it leaks the
+// same way. `active` is per window, so `windowId` says which window each tab is active in.
+// The CURRENT window's tabs come FIRST: callers that take "the first active tab" when nothing is
+// pinned (fast-dxt/server/batch.js tabUrl) keep meaning the current window, as before.
 async function listTabs() {
-  let tabs = await chrome.tabs.query({ currentWindow: true });
-  if (tabs.length === 0) tabs = await chrome.tabs.query({ windowType: 'normal' });
+  const all = await chrome.tabs.query({});
+  let cur = new Set();
+  try { cur = new Set((await chrome.tabs.query({ currentWindow: true })).map((t) => t.id)); } catch { /* no current window */ }
+  const tabs = [...all.filter((t) => cur.has(t.id)), ...all.filter((t) => !cur.has(t.id))];
   const pinnedId = (await resolveTargetTab())?.id;
   // `trail`: the tab's timestamped URL changes (trail.js ring, ≤50) — a watcher
   // polling every few seconds still sees a 2s stop.
   return Promise.all(tabs.map(async t => {
     const trail = await trailOf(t.id);
     return {
-      id: t.id, url: t.url, title: t.title, active: t.active,
+      id: t.id, windowId: t.windowId, url: t.url, title: t.title, active: t.active,
       ...(t.id === pinnedId ? { targetTab: true } : {}),
       ...(trail.length ? { trail } : {}),
     };
