@@ -1,6 +1,6 @@
 # fast-runner tool usage
 
-341 cell(s), ALL passes, one table per toolset × model, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
+347 cell(s), ALL passes, one table per toolset × model, from `bench/tool-usage.jsonl`. Regenerate: `node bench/drive-runner.js usage`.
 
 fumble columns: `retry` = call immediately followed by the same tool on the same target; `switch` = followed by a different tool on the same target; `fumble %` = (retry+switch)/calls.
 
@@ -29,32 +29,32 @@ fumble columns: `retry` = call immediately followed by the same tool on the same
 
 Total: 66 calls across 18 distinct tools; 0 fumbles (0%).
 
-## toolset `default / grok-4.6` — 25 cell(s): multipage×5, staticform×4, overlay×4, flightsearch×4, mapsdir×4, extract×4
+## toolset `default / grok-4.6` — 31 cell(s): multipage×6, staticform×5, overlay×5, flightsearch×5, mapsdir×5, extract×5
 
 | tool | calls | errors | avg ms | retry | switch | fumble % | tests used in |
 |---|---:|---:|---:|---:|---:|---:|---|
-| fast_status | 61 | 0 | 5 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
-| fast_wait | 50 | 5 | 397 | 0 | 13 | 26 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
-| fast_click | 32 | 3 | 734 | 0 | 8 | 25 | multipage, overlay, flightsearch, mapsdir |
-| fast_snapshot | 31 | 0 | 40 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
-| fast_tab | 25 | 0 | 286 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
-| fast_fill | 19 | 0 | 204 | 0 | 0 | 0 | flightsearch, mapsdir |
-| fast_evaluate | 18 | 1 | 34 | 0 | 0 | 0 | staticform, overlay, flightsearch, mapsdir, extract |
-| fast_prewarm | 14 | 0 | 2 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir |
+| fast_status | 66 | 0 | 5 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
+| fast_wait | 61 | 5 | 374 | 0 | 16 | 26 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
+| fast_click | 39 | 3 | 648 | 0 | 10 | 26 | multipage, staticform, overlay, flightsearch, mapsdir |
+| fast_snapshot | 38 | 0 | 41 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
+| fast_tab | 31 | 0 | 302 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir, extract |
+| fast_fill | 24 | 0 | 218 | 0 | 0 | 0 | staticform, flightsearch, mapsdir |
+| fast_evaluate | 19 | 1 | 35 | 0 | 0 | 0 | staticform, overlay, flightsearch, mapsdir, extract |
+| fast_prewarm | 17 | 0 | 2 | 0 | 0 | 0 | multipage, staticform, overlay, flightsearch, mapsdir |
+| fast_select_option | 10 | 3 | 433 | 2 | 0 | 20 | overlay, flightsearch |
 | fast_click_xy | 9 | 0 | 53 | 0 | 0 | 0 | overlay, mapsdir |
-| fast_select_option | 8 | 2 | 425 | 1 | 0 | 13 | overlay, flightsearch |
-| fast_batch | 6 | 0 | 1948 | 0 | 0 | 0 | staticform, flightsearch, extract |
+| fast_text | 8 | 0 | 30 | 0 | 0 | 0 | staticform, overlay, mapsdir, extract |
+| fast_batch | 7 | 0 | 1717 | 0 | 0 | 0 | staticform, flightsearch, extract |
 | fast_list | 5 | 1 | 27 | 0 | 0 | 0 | multipage, flightsearch, mapsdir, extract |
 | fast_scout | 5 | 0 | 2827 | 0 | 0 | 0 | staticform, flightsearch |
 | fast_switch | 5 | 0 | 69 | 0 | 0 | 0 | multipage, mapsdir, extract |
-| fast_text | 5 | 0 | 25 | 0 | 0 | 0 | staticform, overlay, mapsdir, extract |
+| fast_scroll | 3 | 0 | 96 | 0 | 0 | 0 | overlay, flightsearch |
 | fast_type | 3 | 0 | 59 | 0 | 2 | 67 | overlay, mapsdir |
-| fast_scroll | 2 | 0 | 125 | 0 | 0 | 0 | overlay, flightsearch |
 | fast_fill_form | 1 | 0 | 66 | 0 | 0 | 0 | mapsdir |
 | fast_key_press | 1 | 0 | 17 | 0 | 0 | 0 | mapsdir |
 | fast_nav | 1 | 1 | 3 | 0 | 0 | 0 | multipage |
 
-Total: 301 calls across 20 distinct tools; 24 fumbles (8%).
+Total: 353 calls across 20 distinct tools; 30 fumbles (8%).
 
 ## toolset `phase2 / grok-4.3` — 279 cell(s): multipage×36, staticform×35, overlay×35, flightsearch×35, mapsdir×38, extract×35, h_conditional×7, h_datepicker×7, h_combobox×7, h_table×7, h_repeat×7, h_spa×7, h2_wizard×4, h2_slider×3, h2_tree×4, h2_autocomplete×4, h2_modal×4, h2_infinite×4
 
