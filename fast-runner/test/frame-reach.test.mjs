@@ -344,7 +344,7 @@ test('live Azure 639a6714: controls below a frame\'s fold are listed offscreen:t
   let scrolled = 0;
   pay.Element.prototype.scrollIntoView = function () { scrolled++; };
   const snap = await call('fast_snapshot', { frame: 'pay.provider', full: true });
-  const region = snap.items.find((it) => /East US/.test(it.text || ''));
+  const region = snap.items.find((it) => /East US/.test(it.value || ''));
   const images = snap.items.find((it) => /See all images/.test(it.text || ''));
   assert.ok(region && images, JSON.stringify(snap.items.map((i) => i.text)));
   assert.equal(region.offscreen, true);
@@ -363,13 +363,13 @@ test('live Azure 639a6714: controls below a frame\'s fold are listed offscreen:t
 test('live Azure probe: a frame combobox reads as label (its name) then value, first, even when the name is only an aria-label', async () => {
   setup({ payHtml: '<label id="rl">Region</label><div role="combobox" aria-labelledby="rl" aria-label="Region" tabindex="0" data-box="120,40,300,30">(US) East US</div><div role="combobox" aria-label="Image" tabindex="0" data-box="120,900,300,30">Ubuntu Server 24.04 LTS - x64 Gen2</div>' });
   const snap = await call('fast_snapshot', { frame: 'pay.provider', full: true });
-  const image = snap.items.find((it) => /Ubuntu/.test(it.text || ''));
+  const image = snap.items.find((it) => /Ubuntu/.test(it.value || ''));
   assert.ok(image, JSON.stringify(snap.items));
   assert.deepEqual(Object.keys(image).slice(0, 4), ['i', 'tag', 'label', 'value']);
   assert.equal(image.label, 'Image');
   assert.equal(image.value, 'Ubuntu Server 24.04 LTS - x64 Gen2');
   assert.equal(image.offscreen, true);
-  assert.equal(snap.items.find((it) => /East US/.test(it.text || '')).label, 'Region');
+  assert.equal(snap.items.find((it) => /East US/.test(it.value || '')).label, 'Region');
 });
 
 test('live Azure a6396ba9: an undeclared dialog (a fixed portal layer holding focus) leads the snapshot with its OK, even when the preview is capped', async () => {

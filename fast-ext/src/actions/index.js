@@ -46,6 +46,7 @@ function slimItem(it) {
   if (!it || typeof it !== 'object') return it;
   const o = { ...it };
   if (o.innerText && o.innerText === o.text) delete o.innerText;
+  if (o.text && (o.text === o.value || o.text === o.label) && o.label) delete o.text;   // a field reads label + value
   if (o.name && (o.name === o.text || o.name === o.label)) delete o.name;
   if (o.ariaLabel && (o.ariaLabel === o.label || o.ariaLabel === o.text)) delete o.ariaLabel;
   return o;

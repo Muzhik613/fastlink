@@ -683,7 +683,7 @@ export async function withFrameHitSnapshot(ctx, r, args = {}) {
   const { targets } = await frameTargets(ctx);
   const t = targets.find((x) => x.frameId === r.found.frameId) || targets.find((x) => x.url === r.found.frame);
   if (!t) return r;
-  const s = await withTimeout(ctx.run(t.frameId, 'fast_snapshot', { autoCap: true, noFrameNotice: true, ...(args.full ? { full: true } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }), REACH.snapMs);
+  const s = await withTimeout(ctx.run(t.frameId, 'fast_snapshot', { autoCap: true, noFrameNotice: true, nearText: args.text, ...(args.full ? { full: true } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }), REACH.snapMs);
   if (!s || s.error) return r;
   markSeen(ctx.tabId, [t.src]);
   const { frameNotice, opaqueFrames, ...rest } = s;

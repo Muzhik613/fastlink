@@ -1509,8 +1509,8 @@ const isEmptyFillable = (el, entry) => {
 // fast_snapshot's `full`/`limit` args bypass the cap for the complete set.
 const ITEM_CAP_DEFAULT    = 70;   // explicit fast_snapshot default
 const CONTENT_CAP_DEFAULT = 30;   // content text array default
-const AUTO_ITEM_CAP       = 30;   // action-result preview snapshot (tighter)
-const AUTO_CONTENT_CAP    = 15;
+const AUTO_ITEM_CAP       = 12;   // action-result preview: the controls around the action, not the page
+const AUTO_CONTENT_CAP    = 3;
 const RANK_INTERACTIVE_TAGS  = new Set(['input', 'button', 'select', 'textarea']);
 const RANK_INTERACTIVE_ROLES = new Set([
   'button', 'link', 'checkbox', 'radio', 'option', 'menuitem', 'tab',
@@ -1533,12 +1533,19 @@ const rankItemScore = (it, vh, vw) => {
 // counts accumulate in snap.dropped; markTruncated() turns them into the loud
 // leading `truncated:true` block. Mutates and returns `snap`.
 const noteDropped = (snap, key, n) => { if (n > 0) { snap.dropped = snap.dropped || {}; snap.dropped[key] = (snap.dropped[key] || 0) + n; } };
-const capSnapshot = (snap, itemCap, contentCap) => {
+// `near` {x,y} (an action's target): an item or block closer to it ranks higher — an
+// action's preview shows what surrounds what was acted on.
+const nearPenalty = (o, near) => {
+  if (!near || typeof o.x !== 'number') return 0;
+  const cx = o.x + (o.w || 0) / 2, cy = o.y + (o.h || 0) / 2;
+  return Math.hypot(cx - near.x, cy - near.y) / 5;
+};
+const capSnapshot = (snap, itemCap, contentCap, near = null) => {
   if (!snap || typeof snap !== 'object') return snap;
   const vh = window.innerHeight, vw = window.innerWidth;
   if (Array.isArray(snap.items) && itemCap >= 0 && snap.items.length > itemCap) {
     const ranked = snap.items
-      .map((it, idx) => ({ it, idx, s: rankItemScore(it, vh, vw) }))
+      .map((it, idx) => ({ it, idx, s: rankItemScore(it, vh, vw) - nearPenalty(it, near) }))
       .sort((a, b) => (b.s - a.s) || (a.idx - b.idx));
     noteDropped(snap, 'items', snap.items.length - itemCap);
     snap.items = ranked.slice(0, itemCap).map((x) => x.it);
@@ -1546,7 +1553,7 @@ const capSnapshot = (snap, itemCap, contentCap) => {
   }
   if (Array.isArray(snap.content) && contentCap >= 0 && snap.content.length > contentCap) {
     const ranked = snap.content
-      .map((c, idx) => ({ c, idx, s: (c.y >= 0 && c.y <= vh ? 100 : 0) - (c.y > vh * 3 ? 20 : 0) }))
+      .map((c, idx) => ({ c, idx, s: (c.y >= 0 && c.y <= vh ? 100 : 0) - (c.y > vh * 3 ? 20 : 0) - nearPenalty(c, near) }))
       .sort((a, b) => (b.s - a.s) || (a.idx - b.idx));
     noteDropped(snap, 'content', snap.content.length - contentCap);
     snap.content = ranked.slice(0, contentCap).map((x) => x.c);
@@ -1639,15 +1646,21 @@ const markTruncated = (snap, hintFor, { preview = false } = {}) => {
   const d = snap.dropped || {};
   const off = snap.offscreenItems || 0;
   delete snap.dropped; delete snap.offscreenItems;
-  if (!(d.items || d.content || d.textTrimmed || off)) return withFrameNotice(snap);
+  if (!(d.items || d.content || d.textTrimmed || off)) {
+    if (preview) { const { url, title, ...body } = snap; return withFrameNotice(body); }
+    return withFrameNotice(snap);
+  }
   const dropped = { ...d };
   if (off) dropped.offscreen = off;
   const parts = [hintFor(dropped)];
   if (snap.hint) parts.push(snap.hint);
   delete snap.hint;   // serializeSnapshot emits hint:undefined — spreading it would erase ours
-  return withFrameNotice(preview
-    ? { omitted: dropped, hint: parts.join(' | '), ...snap }
-    : { truncated: true, dropped, hint: parts.join(' | '), ...snap });
+  if (preview) {
+    // a preview says how much it left out, nothing more (the runner explains `omitted`)
+    const { url, title, ...body } = snap;
+    return withFrameNotice(parts.length > 1 ? { omitted: dropped, hint: parts.slice(1).join(' | '), ...body } : { omitted: dropped, ...body });
+  }
+  return withFrameNotice({ truncated: true, dropped, hint: parts.join(' | '), ...snap });
 };
 const offscreenHint = (d) => d.offscreen
   ? `${d.offscreen} interactive element(s) are outside the viewport (below/above the fold) and NOT listed — call fast_snapshot without viewport:true, or fast_scroll, before concluding a control is absent`
@@ -1670,7 +1683,7 @@ const autoHint = (d) => [
 // AUTO_MIN_ITEMS. Item ids (`i`) and geometry are never touched, so a caller can
 // still act on anything listed. Loss is recorded in snap.dropped for
 // markTruncated().
-const AUTO_SNAP_MAX_CHARS = 8000;
+const AUTO_SNAP_MAX_CHARS = 2500;
 const AUTO_MIN_ITEMS      = 8;
 const SETTLE_MAX_MS       = 1000;  // post-action DOM-quiet wait before the auto-snapshot
 const AUTO_WAIT_MS        = 1500;  // fill/click/select keep looking for a missing target this long
@@ -1702,10 +1715,10 @@ const byteCapSnapshot = (snap, max = AUTO_SNAP_MAX_CHARS) => {
 // truncated block. `full:true` on the action returns the whole serialize
 // uncapped (only viewport-only loss can remain); `limit:N` overrides the item cap.
 // Returns a possibly NEW object — always assign the return value.
-const capAutoSnapshot = (snap, args) => {
+const capAutoSnapshot = (snap, args, near = null) => {
   if (args && (args.full === true || args.full === 'true')) return markTruncated(snap, autoHint, { preview: true });
   const itemCap = (args && typeof args.limit === 'number' && args.limit >= 0) ? args.limit : AUTO_ITEM_CAP;
-  capSnapshot(snap, itemCap, AUTO_CONTENT_CAP);
+  capSnapshot(snap, itemCap, AUTO_CONTENT_CAP, near);
   return markTruncated(byteCapSnapshot(snap), autoHint, { preview: true });
 };
 // Rebuild `obj` with `head`'s keys first (JSON key order = what the model reads first).
@@ -1853,6 +1866,16 @@ async function runPageAction(action, args) {
     // down, or a heavy page whose serialize bailed empty. We accept the second
     // (viewport-only, time-boxed) walk — fewer round-trips beats one cheaper call.
     const hasPre = preSnap && typeof preSnap === 'object' && Array.isArray(preSnap.items) && preSnap.items.length > 0;
+    // where the action happened: the clicked item, else the focused control
+    let near = null;
+    try {
+      const c = result.clicked;
+      if (c && typeof c.x === 'number') near = { x: c.x + (c.w || 0) / 2, y: c.y + (c.h || 0) / 2 };
+      else if (document.activeElement && document.activeElement !== document.body) {
+        const ar = document.activeElement.getBoundingClientRect(); const off = offsetFor(document.activeElement);
+        near = { x: ar.x + off.ox + ar.width / 2, y: ar.y + off.oy + ar.height / 2 };
+      }
+    } catch {}
     const attachStale = (res) => {
       try {
         const vh = window.innerHeight, vw = window.innerWidth;
@@ -1861,7 +1884,7 @@ async function runPageAction(action, args) {
         const content = Array.isArray(preSnap.content) ? preSnap.content.filter(inView) : [];
         res.snapshot = capAutoSnapshot(
           { ...preSnap, count: items.length, items, contentCount: content.length, content },
-          args,
+          args, near,
         );
         res.snapshotStale = true; // match-time DOM: the fresh post-action walk was unavailable
         if (preSnap.snapshotTimedOut || preSnap.partial || preSnap.capped) {
@@ -1887,7 +1910,7 @@ async function runPageAction(action, args) {
       if ((!snap || !Array.isArray(snap.items) || snap.items.length === 0) && hasPre) {
         attachStale(result);
       } else {
-        result.snapshot = capAutoSnapshot(snap, args);
+        result.snapshot = capAutoSnapshot(snap, args, near);
         result.snapshotFresh = true; // post-action capture: reflects what the action did
         if (snap && (snap.snapshotTimedOut || snap.partial || snap.capped)) {
           result.snapshotPartial = true;
@@ -2772,7 +2795,16 @@ async function runPageAction(action, args) {
     if (args.full) return markTruncated(snap, explicitHint);
     // autoCap: the bounded preview an action's auto-snapshot carries (frames.js attaches a
     // frame's items to a wait that hit inside that frame)
-    if (args.autoCap) return capAutoSnapshot(snap, args);
+    if (args.autoCap) {
+      let near = null;
+      if (args.nearText) {
+        const q = String(args.nearText).toLowerCase();
+        const hit = (snap.items || []).find((it) => [it.text, it.label, it.ariaLabel].some((t) => t && String(t).toLowerCase().includes(q)))
+          || (snap.content || []).find((c) => c.text && c.text.toLowerCase().includes(q));
+        if (hit && typeof hit.x === 'number') near = { x: hit.x + (hit.w || 0) / 2, y: hit.y + (hit.h || 0) / 2 };
+      }
+      return capAutoSnapshot(snap, args, near);
+    }
     const itemCap = (typeof args.limit === 'number' && args.limit >= 0) ? args.limit : ITEM_CAP_DEFAULT;
     return markTruncated(capSnapshot(snap, itemCap, CONTENT_CAP_DEFAULT), explicitHint);
   }
