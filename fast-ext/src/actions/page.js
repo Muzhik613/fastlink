@@ -1100,11 +1100,27 @@ const activeDialogRoot = () => {
       let r; try { r = els[i].getBoundingClientRect(); } catch { continue; }
       if (visible(els[i], r)) return els[i];
     }
+    // The undeclared fallback must look like a dialog, not like page chrome (live Azure
+    // 0a0b5258: the fixed top header with its focused search box was read as a dialog,
+    // ranked first, and crowded the blade's form out of the snapshot): it covers the
+    // viewport centre or ≥30% of the viewport, is not a full-width strip pinned to the top
+    // or bottom edge, and holds no navigation / banner landmark.
+    const vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+    const looksLikeDialog = (el) => {
+      let r; try { r = el.getBoundingClientRect(); } catch { return false; }
+      if (!r || r.width < 2 || r.height < 2) return false;
+      const coversCentre = r.left <= vw / 2 && r.right >= vw / 2 && r.top <= vh / 2 && r.bottom >= vh / 2;
+      const bigEnough = vw > 0 && vh > 0 && (r.width * r.height) >= 0.3 * vw * vh;
+      const strip = r.width >= 0.9 * vw && r.height < 0.4 * vh && (r.top <= 2 || r.bottom >= vh - 2);
+      if (strip || !(coversCentre || bigEnough)) return false;
+      try { if (el.matches('header,nav,[role="banner"],[role="navigation"]') || el.querySelector('header,nav,[role="banner"],[role="navigation"]')) return false; } catch {}
+      return true;
+    };
     let a = document.activeElement;
     for (let k = 0; a && a !== document.body && a !== document.documentElement && k < 40; k++, a = a.parentElement) {
       if (a.parentElement !== document.body) continue;
       let cs = null; try { cs = getComputedStyle(a); } catch {}
-      if (cs && cs.position === 'fixed' && a.querySelector('button,[role="button"],input[type="submit"],input[type="button"]')) return a;
+      if (cs && cs.position === 'fixed' && a.querySelector('button,[role="button"],input[type="submit"],input[type="button"]') && looksLikeDialog(a)) return a;
     }
   } catch {}
   return null;

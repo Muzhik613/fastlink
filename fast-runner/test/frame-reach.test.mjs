@@ -378,7 +378,7 @@ test('live Azure a6396ba9: an undeclared dialog (a fixed portal layer holding fo
   const d = pay.document;
   d.querySelector('button').addEventListener('click', () => {
     const layer = d.createElement('div');
-    layer.style.position = 'fixed';
+    layer.style.position = 'fixed'; layer.setAttribute('data-box', '0,0,1024,768');   // a Fluent layer host covers the viewport
     layer.innerHTML = '<div><p>A resource group is a container that holds related resources.</p><label for="nm">Name</label><input id="nm"><button>OK</button><button>Cancel</button></div>';
     d.body.appendChild(layer);
     d.getElementById('nm').focus();
@@ -401,7 +401,7 @@ function createNewDialog(win, { validateMs = 300, refuse = false } = {}) {
   const state = { applied: null };
   d.getElementById('create').addEventListener('click', () => setTimeout(() => {
     const layer = d.createElement('div');
-    layer.style.position = 'fixed';
+    layer.style.position = 'fixed'; layer.setAttribute('data-box', '0,0,1024,768');   // a Fluent layer host covers the viewport
     layer.innerHTML = '<p>A resource group is a container</p><label for="nm">Name</label><input id="nm"><button id="ok" disabled>OK</button><button>Cancel</button>';
     d.body.appendChild(layer);
     const nm = d.getElementById('nm'), ok = d.getElementById('ok');
@@ -483,4 +483,68 @@ test('a successful click names what it hit in one short string: clicked:"<label 
   const payBtn = snap.frames[0].items.find((it) => /Pay now/.test(it.text || ''));
   const r = await call('fast_click', { id: payBtn.i, noSnapshot: true });
   assert.equal(r.clicked, 'Pay now', JSON.stringify(r));
+});
+
+test('live Azure 0a0b5258: a fixed top header strip holding the focused search box is NOT a dialog; a centred callout layer still is', async () => {
+  const { pay } = setup({ payHtml: '<label for="q">Search</label><input id="q"><p>Form body</p><button>Create new</button>' });
+  const d = pay.document;
+  const header = d.createElement('div');
+  header.style.position = 'fixed';
+  header.setAttribute('data-box', '0,0,1024,48');
+  header.innerHTML = '<button>Show portal menu</button><label for="s">Search resources</label><input id="s">';
+  d.body.appendChild(header);
+  d.getElementById('s').focus();
+  const snap = await call('fast_snapshot', { frame: 'pay.provider' });
+  assert.equal(snap.dialog, undefined, JSON.stringify(snap.dialog));
+  const nav = d.createElement('div');
+  nav.style.position = 'fixed';
+  nav.setAttribute('data-box', '0,0,400,768');   // big enough, but it holds the main navigation
+  nav.innerHTML = '<nav><button>Home</button></nav><input id="n">';
+  d.body.appendChild(nav);
+  d.getElementById('n').focus();
+  assert.equal((await call('fast_snapshot', { frame: 'pay.provider' })).dialog, undefined, 'a navigation landmark is not a dialog');
+  const callout = d.createElement('div');
+  callout.style.position = 'fixed';
+  callout.setAttribute('data-box', '300,200,420,300');
+  callout.innerHTML = '<p>A resource group is a container</p><label for="nm">Name</label><input id="nm"><button>OK</button>';
+  d.body.appendChild(callout);
+  d.getElementById('nm').focus();
+  const s2 = await call('fast_snapshot', { frame: 'pay.provider' });
+  assert.equal(s2.dialog && s2.dialog.label, 'A resource group is a container', JSON.stringify(s2.dialog));
+});
+
+test('live Azure 0a0b5258: fast_nav waits out a login redirect chain and reports it; an ordinary page pays nothing; a real sign-in page returns after a short hold', async () => {
+  setup({ topHtml: '<h1>Create a resource</h1><label for="n">Name</label><input id="n">' });
+  frames = new Map([[0, frames.get(0)]]);
+  const saved = { get: chrome.tabs.get, update: chrome.tabs.update };
+  chrome.tabs.update = async () => ({});
+  const script = (steps) => { const t0 = Date.now(); return async () => { const ms = Date.now() - t0; const s = steps.find((x) => ms < x.until) || steps[steps.length - 1]; return { id: 1, url: s.url, status: s.status }; }; };
+  const APP = 'https://portal.example/create/vm';
+  try {
+    // ordinary: loads at the asked URL
+    chrome.tabs.get = script([{ until: 100, url: APP, status: 'loading' }, { until: Infinity, url: APP, status: 'complete' }]);
+    let t0 = Date.now();
+    let r = await call('fast_nav', { url: APP, noSnapshot: true });
+    assert.ok(Date.now() - t0 < 400, `ordinary page took ${Date.now() - t0}ms`);
+    assert.equal(r.redirected, undefined);
+    // chain: /auth/login/ loads, then forwards to the app
+    chrome.tabs.get = script([
+      { until: 150, url: 'https://portal.example/auth/login/', status: 'loading' },
+      { until: 500, url: 'https://portal.example/auth/login/', status: 'complete' },
+      { until: 700, url: APP, status: 'loading' },
+      { until: Infinity, url: APP, status: 'complete' },
+    ]);
+    t0 = Date.now();
+    r = await call('fast_nav', { url: APP, noSnapshot: true });
+    assert.ok(Date.now() - t0 >= 700, `returned at ${Date.now() - t0}ms, before the app loaded`);
+    assert.equal(r.url, APP);
+    assert.deepEqual(r.redirected, ['portal.example/auth/login/']);
+    // a real sign-in page: stays on /signin — returned after the hold, not at waitMs
+    chrome.tabs.get = script([{ until: Infinity, url: 'https://login.example/signin', status: 'complete' }]);
+    t0 = Date.now();
+    r = await call('fast_nav', { url: APP, noSnapshot: true, waitMs: 10000 });
+    const ms = Date.now() - t0;
+    assert.ok(ms >= 2900 && ms < 4500, `sign-in page took ${ms}ms`);
+    assert.equal(r.url, 'https://login.example/signin');
+  } finally { chrome.tabs.get = saved.get; chrome.tabs.update = saved.update; }
 });
