@@ -128,3 +128,17 @@ test('matchChildFrames: exact URL, then same origin; an unclaimed child is not r
   assert.deepEqual(matchChildFrames(kids, ['https://b.example/y', 'https://a.example/x']).map((k) => k.id), [2, 1]);
   assert.deepEqual(matchChildFrames(kids, ['https://a.example/x', 'https://a.example/x']).map((k) => k.id), [1]);
 });
+
+test('a top wait that overruns its own deadline (a heavy page) is answered at timeoutMs + grace, and cancelled', async () => {
+  frames = [frame('https://heavy.example/', '<body>busy</body>', { top: true })];
+  const flag = { cancelled: false };
+  const neverOnTime = () => new Promise((resolve) => setTimeout(() => resolve({ error: 'Timed out waiting for "x"', late: true }), 2500));
+  const t0 = Date.now();
+  const r = await waitTextAnyFrame({ text: 'Not here', timeoutMs: 1000 }, neverOnTime, { walk: FAST, cancelTop: async () => { flag.cancelled = true; } });
+  const ms = Date.now() - t0;
+  assert.ok(ms >= 1000 && ms < 1600, `answered in ${ms}ms`);
+  assert.equal(r.error, 'Timed out waiting for "Not here"');
+  assert.equal(r.pageBusy, true);
+  assert.equal(r.late, undefined);
+  assert.equal(flag.cancelled, true);
+});

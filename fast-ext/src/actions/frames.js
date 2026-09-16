@@ -269,6 +269,7 @@ function frameProbe(needle, maxKids) {
   return { url, found, kids: kids.slice(0, maxKids).map((k) => k.src) };
 }
 
+const WAIT_GRACE_MS = 400;
 export const FRAME_WALK = { firstMs: 300, gapMs: 60, maxMs: 2000, perTick: 12, maxKids: 200, depth: 4 };
 
 const originOf = (u) => { try { return new URL(u).origin; } catch { return ''; } };
@@ -344,7 +345,15 @@ export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_
     if (cursor >= pass.length) { await pause(backoff); backoff = Math.min(backoff * 2, walk.maxMs); }
     else await pause(walk.gapMs);
   }
-  const r = await top;
+  // The wait answers at its timeoutMs whatever the page does: page.js checks its
+  // deadline only between polls, and one poll on a heavy page (a 1,000-frame
+  // test page) ran ~1s, so a 10000ms wait returned at 11.3s. Past the grace the
+  // page's wait is cancelled and the timeout is answered from here.
+  let r = await Promise.race([top, sleep(deadline + WAIT_GRACE_MS - Date.now()).then(() => null)]);
+  if (r === null && !settled) {
+    if (cancelTop) { try { await cancelTop(); } catch {} }
+    r = { error: `Timed out waiting for "${text}"`, pageBusy: true, hint: 'the page was too busy to finish its own search in time — the text was not seen; read the page (fast_snapshot / fast_screenshot) before waiting again' };
+  } else if (r === null) r = await top;
   if (!r || r.found || !r.error) return r;
   const answered = new Set([...searched.values()].map(originOf));
   const notReached = pass.slice(cursor).map((f) => f.url);
