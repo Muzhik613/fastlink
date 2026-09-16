@@ -56,7 +56,9 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   **21ms**; a 400k-node single root now aborts in **106ms** with
   `scan:{truncated:"more than 300000 composed nodes", rootsScanned:1, nodesScanned:400008}`.
   Normal pages unchanged (selenium, APG, select2 `index:0`, react-select refusal, nested-iframe
-  page byte-identical, gcpscale2 candidate parity 5001).
+  page byte-identical, gcpscale2 candidate parity 5001). Live-verified too: shipped to the owner's
+  Chrome and the full GCP `gcpform` cell ran **6/6 in 27.1s over 9 calls** on stock timeouts, so the
+  guards cost nothing on the page that motivated them.
 
 ## 2026-09-16 — walkDeep: the per-iframe forced layout is opt-in, and a root is never walked twice
 - **What:** `walkDeep(root, sel, visit, opts)` computes the iframe offset passed to `visit` only when
@@ -81,7 +83,11 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
   cell runs **6/6 in 18.6s over 10 calls**, and `fast_select_option` takes 0.8s with
   `{resolveMs: 7, rowsMs: 1, openMs: 191, pickMs: 134, readbackMs: 6, snapshotMs: 162}`.
   **Resolve went 45,619ms → 7ms.** The run before it (e629ec4) was 88.7s and 4/6 with both batch
-  steps timing out. Do not re-litigate this: the cause was the per-iframe forced synchronous layout,
+  steps timing out. **Confirmed five consecutive times** in the owner's real Chrome: 6/6 18.6s/10
+  calls, then 6/6 20.5s/9, 6/6 24.4s/9, 6/6 18.4s/7, and — importantly — 6/6 again on STOCK
+  timeouts after the temporarily raised limits (extension bridge 20s, broker 30s, server 30s) were
+  reverted, plus 6/6 27.1s/9 on the guarded build 67bcef7. So the result does not depend on the
+  lifted deadlines that were in place while this was being diagnosed. Do not re-litigate this: the cause was the per-iframe forced synchronous layout,
   because probe 5 measured that page at **9,995,921 composed nodes, 47,646 roots and 38,116
   same-origin iframes** behind only 5 top-level ones. I originally dismissed this fix as
   insufficient by pricing ~0.15ms/frame against ~600 frames; at 38,116 frames — each layout
