@@ -1069,6 +1069,44 @@ const collectOverlayEls = () => {
   return set;
 };
 
+// The dialog the user is in, or null. A declared one (<dialog open>, role=dialog /
+// alertdialog, aria-modal) that is visible — the last in document order is the one
+// on top; else the portal layer holding focus: an ancestor of the focused element
+// that is position:fixed, a direct child of <body> (where portals mount) and holds a
+// button. That covers dialogs that declare nothing (live Azure: the resource group
+// "Create new" callout inside the reactblade frame reported no dialog; the model
+// typed the name and never pressed its OK). Bounded: 50 declared candidates, 40
+// ancestors. Pure given the DOM.
+const DIALOG_SEL = 'dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]';
+const activeDialogRoot = () => {
+  try {
+    const els = document.querySelectorAll(DIALOG_SEL);
+    for (let i = Math.min(els.length, 50) - 1; i >= 0; i--) {
+      let r; try { r = els[i].getBoundingClientRect(); } catch { continue; }
+      if (visible(els[i], r)) return els[i];
+    }
+    let a = document.activeElement;
+    for (let k = 0; a && a !== document.body && a !== document.documentElement && k < 40; k++, a = a.parentElement) {
+      if (a.parentElement !== document.body) continue;
+      let cs = null; try { cs = getComputedStyle(a); } catch {}
+      if (cs && cs.position === 'fixed' && a.querySelector('button,[role="button"],input[type="submit"],input[type="button"]')) return a;
+    }
+  } catch {}
+  return null;
+};
+// How the snapshot names a dialog: aria-label, aria-labelledby, its first heading, else its first text. Pure.
+const dialogLabel = (d) => {
+  try {
+    const own = d.getAttribute('aria-label');
+    if (own) return cleanLabel(own).slice(0, 80);
+    const by = (d.getAttribute('aria-labelledby') || '').split(/\s+/).map((id) => document.getElementById(id)).filter(Boolean);
+    if (by.length) return cleanLabel(by.map((e) => e.textContent).join(' ')).slice(0, 80);
+    const h = d.querySelector('h1,h2,h3,h4,[role="heading"]');
+    if (h) return cleanLabel(h.textContent).slice(0, 80);
+    return cleanLabel(d.textContent).slice(0, 60);
+  } catch { return ''; }
+};
+
 // Read the index → snapshot payload. Single layout pass for all rect reads.
 // Cleans up entries whose elements have been detached (defense in depth;
 // MutationObserver usually catches removals first).
@@ -1128,6 +1166,10 @@ const serializeSnapshot = async (viewportOnly, opts) => {
   if (opts && opts.overlay) {
     try { overlayEls = collectOverlayEls(); } catch { overlayEls = null; }
   }
+  // An open dialog leads the snapshot: its controls rank first (a capped preview never
+  // drops its OK), and `dialog` names it with the ids of what is inside.
+  const dialogRoot = activeDialogRoot();
+  const dialogItems = [];
   const items = [];
   const content = [];
   let timedOut = false;
@@ -1224,6 +1266,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       if (entry.type)        item.type = entry.type;
       if (off.inFrame)       item.inFrame = true;
       if (overlayEls && overlayEls.has(el)) item.inOverlay = true;
+      if (dialogRoot && dialogRoot.contains(el)) { item.inDialog = true; dialogItems.push(item); }
       if (offscreen)         item.offscreen = true;
       if (entry.weak)        item.clickable = 'script';
       if (proxied)           item.via = 'label';   // the input is hidden; its <label> is what is drawn
@@ -1253,6 +1296,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
   if (fillable >= 2) hint = `${fillable} empty fillable fields visible; fill them in one fast_fill {fields:{label:value}} or one fast_batch` + (hint ? ' | ' + hint : '');
   return {
     url: location.href, title: document.title,
+    ...(dialogRoot && dialogItems.length ? { dialog: { label: dialogLabel(dialogRoot), items: dialogItems.slice(0, 20).map((it) => ({ i: it.i, tag: it.tag, ...(it.role ? { role: it.role } : {}), ...(it.label ? { label: it.label } : {}), ...(it.text ? { text: it.text.slice(0, 60) } : {}), ...(it.value ? { value: it.value } : {}) })) } } : {}),
     fillable: fillable || undefined,
     hint: hint || undefined,
     count: items.length, items,
@@ -1451,7 +1495,7 @@ const RANK_INTERACTIVE_ROLES = new Set([
 ]);
 const rankItemScore = (it, vh, vw) => {
   let r = 0;
-  if (it.inOverlay) r += 1000;                              // open menu/dropdown items: always first
+  if (it.inOverlay || it.inDialog) r += 1000;               // open menu/dropdown/dialog items: always first
   if (it.clickable) r -= 10;                                 // script-only target: after real controls/links
   else if (RANK_INTERACTIVE_TAGS.has(it.tag)) r += 100;
   else if (it.tag === 'a' && it.text) r += 40;
@@ -1872,15 +1916,6 @@ async function runPageAction(action, args) {
     return (el.innerText || el.textContent || '');
   };
   const maskIfPassword = (el, v) => (el && el.type === 'password') ? '•'.repeat(Math.min(String(v).length, 32)) : v;
-  // Visible open dialogs — for fast_click's dialogOpened/dialogClosed signal.
-  const countDialogs = () => {
-    let n = 0;
-    try {
-      const els = document.querySelectorAll('dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]');
-      for (let i = 0; i < els.length && i < 50; i++) { let r; try { r = els[i].getBoundingClientRect(); } catch { continue; } if (visible(els[i], r)) n++; }
-    } catch {}
-    return n;
-  };
 
   const flashEl = (el, label) => {
     try {
@@ -3924,7 +3959,7 @@ async function runPageAction(action, args) {
     })();
     const willNavigate = linkNav || formSubmitNav;
     const urlBefore = location.href;
-    const dialogsBefore = countDialogs();
+    const dialogBefore = activeDialogRoot();
     const checkedBefore = checkedOf(el);
     // The label the index reads for this element, before and after the click: a
     // control that renames itself when clicked (a sort header "Salary: Activate to
@@ -3957,9 +3992,9 @@ async function runPageAction(action, args) {
     }
     if (sel) { head.hint = sel.hint; head.selectField = sel.selectField; }
     if (scrolledIntoView) head.scrolledIntoView = true;
-    const dNow = countDialogs();
-    if (dNow > dialogsBefore) head.dialogOpened = true;
-    else if (dNow < dialogsBefore) head.dialogClosed = true;
+    const dialogNow = activeDialogRoot();
+    if (dialogNow && dialogNow !== dialogBefore) head.dialogOpened = dialogLabel(dialogNow) || true;
+    else if (dialogBefore && !dialogNow) head.dialogClosed = true;
     const focused = describeEl(document.activeElement);
     if (focused && focused.tag !== 'body') head.focused = focused;
     return frontload(out, head);

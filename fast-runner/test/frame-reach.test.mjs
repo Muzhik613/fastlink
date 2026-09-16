@@ -355,3 +355,25 @@ test('live Azure probe: a frame combobox reads as label (its name) then value, f
   assert.equal(image.offscreen, true);
   assert.equal(snap.items.find((it) => /East US/.test(it.text || '')).label, 'Region');
 });
+
+test('live Azure a6396ba9: an undeclared dialog (a fixed portal layer holding focus) leads the snapshot with its OK, even when the preview is capped', async () => {
+  const many = Array.from({ length: 60 }, (_, k) => `<button data-box="20,${40 + k * 30},120,24">Row action ${k}</button>`).join('');
+  const { pay } = setup({ payHtml: `<label for="rg">Resource group</label><div role="combobox" id="rg" aria-label="Resource group" tabindex="0">(New) vm_group</div><button>Create new</button>${many}` });
+  const d = pay.document;
+  d.querySelector('button').addEventListener('click', () => {
+    const layer = d.createElement('div');
+    layer.style.position = 'fixed';
+    layer.innerHTML = '<div><p>A resource group is a container that holds related resources.</p><label for="nm">Name</label><input id="nm"><button>OK</button><button>Cancel</button></div>';
+    d.body.appendChild(layer);
+    d.getElementById('nm').focus();
+  });
+  const click = await call('fast_click', { frame: 'pay.provider', text: 'Create new' });
+  assert.match(String(click.dialogOpened), /resource group/i, JSON.stringify(click).slice(0, 300));
+  const snap = click.snapshot;
+  assert.ok(snap.dialog, JSON.stringify(Object.keys(snap)));
+  assert.deepEqual(snap.dialog.items.map((it) => it.text || it.label), ['Name', 'OK', 'Cancel']);
+  const ok = snap.items.find((it) => it.text === 'OK');
+  assert.ok(ok && ok.inDialog, 'the capped preview kept the dialog\'s OK');
+  assert.match(ok.i, /^f7:/);
+  assert.match(snap.dialog.items[1].i, /^f7:/, 'dialog ids are namespaced like the items');
+});
