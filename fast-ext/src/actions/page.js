@@ -2657,11 +2657,6 @@ async function runPageAction(action, args) {
     let emptyHit = null;   // { el, text } — the last stale/invisible match seen
     const liveHasText = (el) => { try { return !!el && (el.textContent || '').toLowerCase().includes(t); } catch { return false; } };
     const boxVisible = (el) => { let r; try { r = el.getBoundingClientRect(); } catch { return false; } return visible(el, r); };
-    const resolveEmpty = () => {
-      const el = emptyHit.el;
-      const found = { text: emptyHit.text, tag: el.tagName ? el.tagName.toLowerCase() : undefined, contentMatch: true };
-      return resolve(withSnap({ found, emptyContainer: true, waitedMs: (args.timeoutMs || 5000), hint: `"${args.text || selector}" matched only an element with no visible box/content (stale or hidden container) — the view has not rendered; wait for text that only the finished view shows, or read again` }));
-    };
     // Cheap text-only scan over the index — no rect reads, no layout.
     // Only when we find a match do we serialize that ONE entry with
     // coords, so a polling fast_wait doesn't repeatedly force layout
@@ -2726,7 +2721,19 @@ async function runPageAction(action, args) {
         return el;
       } catch { return null; }
     };
-    return new Promise((resolve) => {
+    return new Promise((settle) => {
+      // Cancellable: when the background finds the text inside a sub-frame first
+      // (frames.js waitTextAnyFrame), it calls window.__fastlink.cancelWaits() so
+      // this wait stops polling instead of running on to its deadline.
+      let done = false;
+      const resolve = (v) => { done = true; ACTIVE_WAITS.delete(cancel); settle(v); };
+      const cancel = () => resolve({ cancelled: true, error: 'fast_wait cancelled: the text was found in a sub-frame first' });
+      ACTIVE_WAITS.add(cancel);
+      const resolveEmpty = () => {
+        const el = emptyHit.el;
+        const found = { text: emptyHit.text, tag: el.tagName ? el.tagName.toLowerCase() : undefined, contentMatch: true };
+        return resolve(withSnap({ found, emptyContainer: true, waitedMs: (args.timeoutMs || 5000), hint: `"${args.text || selector}" matched only an element with no visible box/content (stale or hidden container) — the view has not rendered; wait for text that only the finished view shows, or read again` }));
+      };
       // A content/body match: resolve found.contentMatch without requiring an
       // interactive element. Attach coords when we can locate a containing
       // element (visible), but never drop the match for lack of one. Still
@@ -2780,6 +2787,7 @@ async function runPageAction(action, args) {
         } }));
       };
       const poll = () => {
+        if (done) return;
         polls++;
         if (selector) {
           if (pollSelector() !== null) return;
@@ -4114,6 +4122,9 @@ async function runPageAction(action, args) {
  }
 }
 
+// The fast_wait polls still running in this document, each as its cancel function.
+const ACTIVE_WAITS = new Set();
+
 // Self-install. The background's bridge calls window.__fastlink.run(action, args).
 // We DELIBERATELY do NOT build the index here. Eager indexing on every page load
 // made this script a background parasite — on heavy SPAs (e.g. GCP) the initial
@@ -4124,4 +4135,5 @@ async function runPageAction(action, args) {
 if (typeof window !== 'undefined') {
   window.__fastlink = window.__fastlink || {};
   window.__fastlink.run = runPageAction;
+  window.__fastlink.cancelWaits = () => { const n = ACTIVE_WAITS.size; for (const c of [...ACTIVE_WAITS]) c(); return n; };
 }

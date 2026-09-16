@@ -1,6 +1,6 @@
 // node --test — fast_type's focus contract (fast-ext/src/actions/input.js), sliced
 // from the source so there is one source of truth, with chrome/CDP stubbed.
-// Three parts: inspectFocusInFrame (what ONE frame reports), resolveFocus (the
+// Three parts: inspectFocusInFrame (what ONE frame reports), followFocus (the
 // top → iframe → field chain across frames, cross-origin included) and typeText
 // (the guards + the verified/reason contract).
 // Motivating runs: Azure portal, whose create-VM blade is a cross-origin iframe —
@@ -14,28 +14,47 @@ const src = readFileSync(new URL('../../fast-ext/src/actions/input.js', import.m
   .replace(/^import[^\n]*\n/gm, '')
   .replace(/^export /gm, '');
 
-// the real frames.js enumeration, bound to a stubbed chrome
-const { inAllFrames: realInAllFrames } = await import('../../fast-ext/src/actions/frames.js');
-const inAllFramesVia = (chrome) => (...a) => { const prev = globalThis.chrome; globalThis.chrome = chrome; try { return realInAllFrames(...a); } finally { globalThis.chrome = prev; } };
+// the real frames.js frame tree, bound to a stubbed chrome
+const { frameTree: realFrameTree } = await import('../../fast-ext/src/actions/frames.js');
+const frameTreeVia = (chrome) => (...a) => { const prev = globalThis.chrome; globalThis.chrome = chrome; try { return realFrameTree(...a); } finally { globalThis.chrome = prev; } };
 
-// One sandbox per test: CDP commands are recorded; each executeScript call pops
-// the next scripted list of per-frame injection results.
-function sandbox({ injections = [], window: win, document: doc, location: loc } = {}) {
-  const cdpCalls = [];
-  const queue = [...injections];
-  const chrome = {
-    debugger: {
-      attach: async () => {},
-      sendCommand: async (_t, method, params) => { cdpCalls.push({ method, params }); },
-      onDetach: { addListener() {} },
-    },
+// One sandbox per test: CDP commands are recorded. Each scripted focus state is
+// a map frameId → that frame's report; a probe starts at frame 0 (which moves
+// on to the next scripted state) and follows the chain one frame per
+// executeScript call, exactly as probeFocus does. A frame with no report is one
+// the extension cannot inject into. Every non-top frame of a state is a child
+// of the top frame in webNavigation's tree, at BLADE_URL (or `tree` overrides).
+const frameIdsCalls = [];
+const BLADE_URL = 'https://sandbox-1.reactblade.portal.azure.net/blade';
+function stubChrome(states, { tree, sendCommand } = {}) {
+  const queue = [...states];
+  let cur = {};
+  return {
+    debugger: { attach: async () => {}, sendCommand: sendCommand || (async () => {}), onDetach: { addListener() {} } },
     storage: { local: { get: async () => ({}) } },
-    scripting: { executeScript: async () => (queue.length ? queue.shift() : []) },
+    webNavigation: {
+      getAllFrames: async () => [{ frameId: 0, parentFrameId: -1, url: 'https://portal.azure.com/' },
+        ...(tree || Object.keys(cur).filter((k) => k !== '0').map((k) => ({ frameId: Number(k), parentFrameId: 0, url: BLADE_URL })))],
+    },
+    scripting: {
+      executeScript: async ({ target }) => {
+        const [id] = target.frameIds;
+        frameIdsCalls.push(target.frameIds);
+        if (id === 0 && queue.length) cur = queue.shift();
+        const r = typeof cur === 'function' ? cur()[id] : cur[id];
+        if (!r) throw new Error(`No frame with id ${id}`);
+        return [{ frameId: id, result: r }];
+      },
+    },
   };
+}
+function sandbox({ injections = [], tree, window: win, document: doc, location: loc } = {}) {
+  const cdpCalls = [];
+  const chrome = stubChrome(injections, { tree, sendCommand: async (_t, method, params) => { cdpCalls.push({ method, params }); } });
   const getInjectableTab = async () => ({ tab: { id: 1 } });
-  const api = new Function('chrome', 'getInjectableTab', 'inAllFrames', 'window', 'document', 'location', 'navigator',
-    `${src}\nreturn { typeText, clickXY, inspectFocusInFrame, resolveFocus };`)(
-    chrome, getInjectableTab, inAllFramesVia(chrome), win, doc, loc, { platform: 'Linux x86_64' });
+  const api = new Function('chrome', 'getInjectableTab', 'frameTree', 'window', 'document', 'location', 'navigator',
+    `${src}\nreturn { typeText, clickXY, inspectFocusInFrame, followFocus };`)(
+    chrome, getInjectableTab, frameTreeVia(chrome), win, doc, loc, { platform: 'Linux x86_64' });
   return { ...api, cdpCalls };
 }
 
@@ -47,10 +66,9 @@ const el = (tag, props = {}) => ({
   getAttribute: (k) => (props.attrs && k in props.attrs ? props.attrs[k] : null),
   ...props,
 });
-const topWindow = () => { const w = { length: 0 }; w.parent = w; return w; };
 const docWith = (active, body = el('body')) => ({ activeElement: active, body, documentElement: el('html') });
-const inFrame = (doc, win = topWindow(), href = 'https://portal.azure.com/') =>
-  sandbox({ window: win, document: doc, location: { href, host: new URL(href).host } }).inspectFocusInFrame();
+const inFrame = (doc, href = 'https://portal.azure.com/') =>
+  sandbox({ document: doc, location: { href, host: new URL(href).host } }).inspectFocusInFrame();
 
 test('the document/body having focus is a fact the probe states, not a null', () => {
   const body = el('body');
@@ -58,30 +76,17 @@ test('the document/body having focus is a fact the probe states, not a null', ()
   assert.equal(d.tag, 'body');
   assert.equal(d.editable, false);
   assert.match(d.reason, /document itself has focus/);
-  assert.deepEqual(d.path, []);
   assert.equal(inFrame(docWith(null)).tag, 'none');
 });
 
-test('a frame whose focus is on an <iframe> names WHICH child window it is, by identity', () => {
-  const childWin = {};
-  const win = topWindow();
-  win.length = 2; win[0] = {}; win[1] = childWin;
-  const frame = { tagName: 'IFRAME', src: 'https://sandbox-1.reactblade.portal.azure.net/blade', getAttribute: () => null, contentWindow: childWin };
-  const d = inFrame(docWith(frame), win);
-  assert.equal(d.tag, 'iframe');
-  assert.equal(d.child, 1);
-  assert.equal(d.label, 'sandbox-1.reactblade.portal.azure.net');
+test('a frame whose focus is on an <iframe> names that iframe\'s URL and host', () => {
+  const frame = { tagName: 'IFRAME', src: 'https://sandbox-1.reactblade.portal.azure.net/blade', getAttribute: () => null };
+  assert.deepEqual(inFrame(docWith(frame)), { tag: 'iframe', src: 'https://sandbox-1.reactblade.portal.azure.net/blade', label: 'sandbox-1.reactblade.portal.azure.net' });
 });
 
-test('a nested frame computes its own path from the top, cross-origin WindowProxy indexing only', () => {
-  const top = topWindow();
-  const mid = { length: 1, parent: top };
-  top.length = 2; top[0] = {}; top[1] = mid;
-  const leaf = { length: 0, parent: mid };
-  mid[0] = leaf;
+test('a field in a frame reports its value and label', () => {
   const input = el('input', { value: 'fastlink-bench-vm', attrs: { 'aria-label': 'Virtual machine name' } });
-  const d = inFrame(docWith(input), leaf, 'https://sandbox-1.reactblade.portal.azure.net/blade');
-  assert.deepEqual(d.path, [1, 0]);
+  const d = inFrame(docWith(input), 'https://sandbox-1.reactblade.portal.azure.net/blade');
   assert.equal(d.editable, true);
   assert.equal(d.value, 'fastlink-bench-vm');
   assert.equal(d.label, 'Virtual machine name');
@@ -106,47 +111,64 @@ test('a password field is editable but NOT readable; a button is neither', () =>
   assert.match(btn.reason, /holds no editable value/);
 });
 
-// ── resolveFocus: the chain across frames ────────────────────────────────────
+// ── followFocus: the chain across frames, one injection per level ─────────────
 const HOST = 'sandbox-1.reactblade.portal.azure.net';
-const BLADE = { tag: 'iframe', child: 0, label: HOST };
+const BLADE = { tag: 'iframe', src: BLADE_URL, label: HOST };
 const field = (value, label = 'Virtual machine name', extra = {}) => ({ tag: 'input', type: 'text', editable: true, readable: true, label, value, valueLen: String(value).length, ...extra });
 const BODY = { tag: 'body', type: '', editable: false, readable: true, reason: 'the document itself has focus — no field is focused', label: '', value: '', valueLen: 0 };
-// top frame focused on the blade iframe, the blade (cross-origin) focused on `inner`
-const crossOrigin = (inner) => [
-  { frameId: 0, result: { path: [], host: 'portal.azure.com', ...BLADE } },
-  { frameId: 7, result: { path: [0], host: HOST, ...inner } },
-];
-const topOnly = (d) => [{ frameId: 0, result: { path: [], host: 'example.com', ...d } }];
+// top frame focused on the blade iframe (frame 7), the blade (cross-origin) focused on `inner`
+const crossOrigin = (inner) => ({ 0: BLADE, 7: inner });
+const topOnly = (d) => ({ 0: d });
+const kidsOf = (list) => async (id) => (id === 0 ? list : []);
+const follow = (state, kids = Object.keys(state).filter((k) => k !== '0').map((k) => ({ id: Number(k), url: BLADE_URL }))) =>
+  sandbox().followFocus(async (id) => state[id] || null, kidsOf(kids));
 
-test('a field inside a CROSS-ORIGIN iframe is found, read and located to its frame', () => {
-  const d = sandbox().resolveFocus(crossOrigin(field('fastlink-bench-vm')));
+test('a field inside a CROSS-ORIGIN iframe is found, read and located to its frame', async () => {
+  const d = await follow(crossOrigin(field('fastlink-bench-vm')));
   assert.equal(d.editable, true);
   assert.equal(d.readable, true);
   assert.equal(d.value, 'fastlink-bench-vm');
   assert.equal(d.frameId, 7);
   assert.deepEqual(d.frames, [HOST]);
-  assert.equal(d.path, undefined, 'bookkeeping does not leak into the descriptor');
+  assert.equal(d.src, undefined, 'bookkeeping does not leak into the descriptor');
 });
 
-test('a stale focused field in a subframe the chain does not lead to is ignored', () => {
-  const d = sandbox().resolveFocus([
-    { frameId: 0, result: { path: [], host: 'example.com', ...field('top value', 'Search') } },
-    { frameId: 3, result: { path: [0], host: 'ads.example', ...field('stale', 'Email') } },
-  ]);
+test('only the frames on the focus chain are injected — never every frame of the page', async () => {
+  frameIdsCalls.length = 0;
+  const s = sandbox({ injections: [crossOrigin(field('')), crossOrigin(field('vm'))] });
+  await s.typeText({ text: 'vm' });
+  assert.deepEqual(frameIdsCalls, [[0], [7], [0], [7]], 'probe before + read-back after, two frames each');
+});
+
+test('the focused iframe maps to its frame by URL, else origin; same-URL siblings → the one holding focus', async () => {
+  const other = 'https://ads.example/x';
+  let d = await follow({ 0: BLADE, 3: field('ad', 'Ad'), 7: field('vm') }, [{ id: 3, url: other }, { id: 7, url: BLADE_URL + '#redirected' }]);
+  assert.equal(d.frameId, 7, 'same origin when the committed URL differs from src');
+  d = await follow({ 0: BLADE, 5: BODY, 7: field('vm') }, [{ id: 5, url: BLADE_URL }, { id: 7, url: BLADE_URL }]);
+  assert.equal(d.frameId, 7);
+  assert.equal(d.value, 'vm');
+});
+
+test('a focused top-frame field ends the chain at frame 0', async () => {
+  const d = await follow({ 0: field('top value', 'Search'), 3: field('stale', 'Email') });
   assert.equal(d.label, 'Search');
   assert.equal(d.frameId, 0);
 });
 
-test('a focused frame that never reported (not injectable) is reachable:false, not a guess', () => {
-  const d = sandbox().resolveFocus([{ frameId: 0, result: { path: [], host: 'example.com', ...BLADE } }]);
-  assert.equal(d.tag, 'iframe');
-  assert.equal(d.reachable, false);
-  assert.equal(d.readable, false);
-  assert.match(d.reason, /^unreadable: focus is inside a frame \(sandbox-1\.reactblade\.portal\.azure\.net\) the extension cannot inject into/);
+test('a focused frame that cannot be injected, or is not in the frame tree, is reachable:false, not a guess', async () => {
+  for (const [state, kids] of [[{ 0: BLADE }, [{ id: 7, url: BLADE_URL }]], [{ 0: BLADE }, []]]) {
+    const d = await follow(state, kids);
+    assert.equal(d.tag, 'iframe');
+    assert.equal(d.reachable, false);
+    assert.equal(d.readable, false);
+    assert.equal(d.frameId, 0);
+    assert.match(d.reason, /^unreadable: focus is inside a frame \(sandbox-1\.reactblade\.portal\.azure\.net\) the extension cannot inject into/);
+  }
+  assert.match((await follow({})).reason, /the page could not be inspected/);
 });
 
 // ── typeText: guards ─────────────────────────────────────────────────────────
-const UNREACHABLE = [{ frameId: 0, result: { path: [], host: 'example.com', ...BLADE } }];
+const UNREACHABLE = { 0: BLADE };   // the blade frame is not in the tree
 
 test('clear:true on a field inside a cross-origin iframe now select-alls that field and replaces', async () => {
   const s = sandbox({ injections: [crossOrigin(field('fastlink-bench-vm')), crossOrigin(field('vm-2'))] });
@@ -284,21 +306,16 @@ test('REGRESSION doubled text: filling the same field twice with clear:true leav
   // a field model: Ctrl+A+Delete empties it, insertText appends at the caret
   let value = 'fastlink-bench-vm';
   const probe = () => crossOrigin(field(value, 'Virtual machine name', { underPointer: true }));
-  const cdpCalls = [];
-  const chrome = {
-    debugger: {
-      attach: async () => {}, onDetach: { addListener() {} },
-      sendCommand: async (_t, method, params) => {
-        cdpCalls.push(method);
-        if (method === 'Input.dispatchKeyEvent' && params.type === 'keyDown' && params.key === 'Delete') value = '';
-        if (method === 'Input.insertText') value += params.text;
-      },
+  const chrome = stubChrome([], {
+    sendCommand: async (_t, method, params) => {
+      if (method === 'Input.dispatchKeyEvent' && params.type === 'keyDown' && params.key === 'Delete') value = '';
+      if (method === 'Input.insertText') value += params.text;
     },
-    storage: { local: { get: async () => ({}) } },
-    scripting: { executeScript: async () => probe() },
-  };
-  const { typeText } = new Function('chrome', 'getInjectableTab', 'inAllFrames', 'window', 'document', 'location', 'navigator',
-    `${src}\nreturn { typeText };`)(chrome, async () => ({ tab: { id: 1 } }), inAllFramesVia(chrome), undefined, undefined, undefined, { platform: 'Linux' });
+  });
+  chrome.scripting.executeScript = async ({ target }) => [{ frameId: target.frameIds[0], result: probe()[target.frameIds[0]] }];
+  chrome.webNavigation.getAllFrames = async () => [{ frameId: 0, parentFrameId: -1, url: 'https://portal.azure.com/' }, { frameId: 7, parentFrameId: 0, url: BLADE_URL }];
+  const { typeText } = new Function('chrome', 'getInjectableTab', 'frameTree', 'window', 'document', 'location', 'navigator',
+    `${src}\nreturn { typeText };`)(chrome, async () => ({ tab: { id: 1 } }), frameTreeVia(chrome), undefined, undefined, undefined, { platform: 'Linux' });
   for (let i = 0; i < 2; i++) {
     const r = await typeText({ text: 'fastlink-bench-vm', clear: true, force: true });
     assert.equal(r.verified, true);

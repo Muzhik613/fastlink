@@ -1,15 +1,14 @@
 // Frame reach: the ONE way FastLink looks inside every frame of a tab,
 // cross-origin iframes included.
 //
-// The extension holds <all_urls>, so chrome.scripting.executeScript with
-// allFrames:true runs in every http(s) frame and returns each frame's result
-// with its frameId. The page's same-origin policy stops the TOP document from
-// reaching into a cross-origin iframe; it does not stop the extension. No
-// webNavigation permission is needed: each injected function reads its own
-// location.href, so frames are matched by URL from inside themselves.
+// The extension holds <all_urls>, so chrome.scripting.executeScript runs in any
+// http(s) frame — all of them (allFrames:true) or exactly the ones named
+// (frameIds, from webNavigation.getAllFrames below). The page's same-origin
+// policy stops the TOP document from reaching into a cross-origin iframe; it
+// does not stop the extension.
 //
 // Reach is deliberately narrow. Only the fixed functions in this codebase are
-// injected (the focus probe in input.js, the field reader and the text probe
+// injected (the focus probe in input.js, the field reader and the frame probe
 // below). Callers pass DATA (a URL substring, label strings, a text), never code.
 //
 // Frames the extension may not inject into (another extension's page, the web
@@ -178,69 +177,182 @@ export async function frameRead({ frame, fields } = {}) {
   return { frames: matched.map((a) => a.url), fields: out };
 }
 
+// ── Frame tree ───────────────────────────────────────────────────────────────
+// Which frame is which comes from chrome.webNavigation.getAllFrames: it runs in
+// the browser process (no script in any page, 4ms for 4 frames, ~440ms for
+// 1,000) and gives every frame, cross-origin included, with its parent. What
+// the browser does NOT know is whether a frame is rendered; only its parent
+// document does, so a parent lists its rendered <iframe>s by URL and those URLs
+// are matched to that parent's child frames here.
+
+// Map parentFrameId → [{ id, url }] in the browser's order. Empty map on failure.
+export async function frameTree(tabId) {
+  const byParent = new Map();
+  let all = [];
+  try { all = (await chrome.webNavigation.getAllFrames({ tabId })) || []; } catch {}
+  for (const f of all) {
+    if (f.parentFrameId < 0 || f.errorOccurred) continue;
+    if (!byParent.has(f.parentFrameId)) byParent.set(f.parentFrameId, []);
+    byParent.get(f.parentFrameId).push({ id: f.frameId, url: f.url });
+  }
+  return byParent;
+}
+
+// The child frames of one parent that its rendered <iframe> elements point at:
+// each src (in the parent's priority order) takes one unclaimed child whose URL
+// is exactly it, else one of the same origin. A child no rendered element
+// claims is a hidden / zero-size / not-http frame and is not returned. Pure.
+export function matchChildFrames(children, srcs) {
+  const free = [...(children || [])];
+  const origin = (u) => { try { return new URL(u).origin; } catch { return ''; } };
+  const out = [];
+  for (const src of srcs || []) {
+    let i = free.findIndex((c) => c.url === src);
+    if (i < 0) i = free.findIndex((c) => origin(c.url) && origin(c.url) === origin(src));
+    if (i >= 0) out.push(free.splice(i, 1)[0]);
+  }
+  return out;
+}
+
 // ── Text wait across frames ──────────────────────────────────────────────────
-// Runs in every frame. The top frame reports only the iframes it holds (its own
-// text is page.js's fast_wait, which keeps doing that job). A sub-frame reports
-// whether its rendered-document text contains `needle` (lowercased, whitespace
-// collapsed; script/style/template/noscript text does not count).
-function textInFrame(needle) {
+// COST MODEL (measured, headless Chrome, a page of 5,000 iframes — Chrome
+// loads at most ~1,000 sub-frames per page, the rest stay empty elements): ONE
+// allFrames injection is ~1.2-2s cold / ~110ms warm, and every same-origin
+// frame's script runs on the TOP document's main thread, so broadcasting a
+// probe every 250ms made a top-frame text wait 13x slower (74ms → 966ms) and
+// overran a 3s timeout by ~800ms. So the wait never broadcasts. It walks the
+// frame tree from the top, injecting into a few NAMED frames per tick
+// (target.frameIds):
+//   • a frame is visited only when its parent renders it (a box of at least
+//     2×2 px, not visibility:hidden) and it is http(s) — in-view first, then by area;
+//   • at most FRAME_WALK.perTick frames per tick, FRAME_WALK.gapMs apart; a
+//     finished pass backs off (firstMs → doubling → maxMs) before the next;
+//   • the first tick waits FRAME_WALK.firstMs, so text already in the top
+//     document resolves through page.js alone, with no frame work at all.
+
+// Runs in ONE frame (ISOLATED world). Reports this frame's URL; when `needle`
+// is given, whether its rendered text contains it (script/style/template/
+// noscript text does not count); and, unless it was found, the URLs of its
+// rendered http(s) child frames — in-view first, then by area, at most
+// `maxKids`, the element scan bounded to ~30ms.
+function frameProbe(needle, maxKids) {
   const url = location.href;
-  const iframes = [...document.querySelectorAll('iframe,frame')].map((f) => {
-    try { return new URL(f.getAttribute('src') || '', location.href).href; } catch { return ''; }
-  }).filter((u) => /^https?:/.test(u));
-  if (window === window.top) return { url, top: true, iframes };
-  let text = '';
-  if (document.body) {
+  let found = false;
+  if (needle && document.body) {
     const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let text = '';
     for (let t = tw.nextNode(); t; t = tw.nextNode()) {
       const p = t.parentElement;
       if (p && p.closest('script,style,template,noscript,[hidden]')) continue;
       text += t.nodeValue;
     }
+    found = text.replace(/\s+/g, ' ').toLowerCase().includes(needle);
   }
-  return { url, top: false, iframes, found: text.replace(/\s+/g, ' ').toLowerCase().includes(needle) };
+  if (found) return { url, found, kids: [] };
+  const kids = [];
+  const els = document.querySelectorAll('iframe,frame');
+  const vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+  const t0 = Date.now();
+  for (let i = 0; i < els.length; i++) {
+    if ((i & 127) === 127 && Date.now() - t0 > 30) break;
+    const el = els[i];
+    let src = '';
+    try { src = new URL(el.getAttribute('src') || '', location.href).href; } catch {}
+    if (!/^https?:/.test(src)) continue;
+    const r = el.getBoundingClientRect();
+    if (!(r.width >= 2 && r.height >= 2)) continue;
+    try { if (getComputedStyle(el).visibility === 'hidden') continue; } catch {}
+    const inView = r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+    kids.push({ src, inView, area: r.width * r.height });
+  }
+  kids.sort((a, b) => (b.inView - a.inView) || (b.area - a.area));
+  return { url, found, kids: kids.slice(0, maxKids).map((k) => k.src) };
 }
 
+export const FRAME_WALK = { firstMs: 300, gapMs: 60, maxMs: 2000, perTick: 12, maxKids: 200, depth: 4 };
+
 const originOf = (u) => { try { return new URL(u).origin; } catch { return ''; } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
+
+// Inject frameProbe into exactly these frames. A frame that cannot be injected
+// (another extension's page, a frame torn down since it was listed) fails the
+// whole call, so a failed batch is retried one frame at a time. Returns
+// Map frameId → result | null.
+async function probeFrames(tabId, ids, needle, maxKids) {
+  const out = new Map(ids.map((id) => [id, null]));
+  const run = async (frameIds) => {
+    const res = await chrome.scripting.executeScript({ target: { tabId, frameIds }, world: 'ISOLATED', func: frameProbe, args: [needle, maxKids] });
+    for (const r of res || []) if (r && out.has(r.frameId)) out.set(r.frameId, r.result ?? null);
+  };
+  try { await run(ids); } catch {
+    if (ids.length > 1) for (const id of ids) { try { await run([id]); } catch {} }
+  }
+  return out;
+}
 
 // fast_wait {text} that can see inside frames. `topWait` is page.js's own
-// top-frame wait (a promise-returning function); it runs untouched, so slow
-// content in the top document resolves exactly as before. Meanwhile every
-// sub-frame is polled: text rendered inside one resolves the wait at once
-// (inFrame:true + the frame URL) instead of burning the whole timeout. If the
-// top wait times out, its result gains `frames: {searched, unsearched}` —
-// the origins that were searched, and those of iframes that could not be.
-export async function waitTextAnyFrame(args, topWait, { pollMs = 250 } = {}) {
+// top-frame wait (a promise-returning function); it runs untouched. Rendered
+// sub-frames are walked in bounded ticks (FRAME_WALK above): text found inside
+// one resolves the wait at once (inFrame:true + the frame URL), and `cancelTop`
+// stops page.js's still-running wait so it does not poll on behind the answer.
+// If the top wait times out, its result gains `frames: {searched, unsearched}`
+// — the origins searched, and those of rendered frames that were not.
+export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_WALK } = {}) {
   const text = String((args && args.text) || '');
   const needle = text.replace(/\s+/g, ' ').trim().toLowerCase();
   const got = await getInjectableTab();
   if (got.error || !needle) return topWait();
+  const tabId = got.tab.id;
   const t0 = Date.now();
   const deadline = t0 + ((args && args.timeoutMs) || 5000);
-  let settled = null;
-  const top = Promise.resolve(topWait()).then((r) => { settled = { r }; return r; });
-  let last = null;
-  while (!settled) {
-    try { last = (await inAllFrames(got.tab.id, textInFrame, [needle])).map((a) => a.result); } catch {}
-    if (settled) break;
-    const hit = last && last.find((a) => !a.top && a.found);
-    if (hit) {
-      return {
-        found: { text, frame: hit.url }, inFrame: true, waitedMs: Date.now() - t0,
-        note: `"${text}" is inside a sub-frame (${hit.url}); fast_click/fast_fill act on the top document only — act on it with fast_click_xy + fast_type`,
-      };
+  let settled = false;
+  const top = Promise.resolve(topWait()).then((r) => { settled = true; return r; });
+  const pause = (ms) => Promise.race([top, sleep(Math.min(ms, deadline - Date.now()))]);
+
+  const searched = new Map();     // frameId → url
+  const failed = new Map();       // frameId → url
+  let pass = [], cursor = 0, backoff = walk.firstMs, tree = new Map();
+  await pause(walk.firstMs);
+  while (!settled && Date.now() < deadline) {
+    if (cursor >= pass.length) {
+      // a new pass: the frame tree as it is now, from the top document down
+      tree = await frameTree(tabId);
+      const topKids = tree.size ? (await probeFrames(tabId, [0], null, walk.maxKids)).get(0) : null;
+      pass = topKids ? matchChildFrames(tree.get(0), topKids.kids).map((k) => ({ ...k, depth: 1 })) : [];
+      cursor = 0;
+      if (!pass.length) { await pause(backoff); backoff = Math.min(backoff * 2, walk.maxMs); continue; }
     }
-    if (Date.now() >= deadline) break;
-    await Promise.race([top, new Promise((r) => setTimeout(r, pollMs))]);
+    if (settled) break;
+    const batch = pass.slice(cursor, cursor + walk.perTick);
+    cursor += batch.length;
+    const res = await probeFrames(tabId, batch.map((f) => f.id), needle, walk.maxKids);
+    if (settled) break;
+    for (const f of batch) {
+      const r = res.get(f.id);
+      if (!r) { failed.set(f.id, f.url); continue; }
+      searched.set(f.id, r.url);
+      failed.delete(f.id);
+      if (r.found) {
+        if (cancelTop) { try { await cancelTop(); } catch {} }
+        return {
+          found: { text, frame: r.url }, inFrame: true, waitedMs: Date.now() - t0,
+          note: `"${text}" is inside a sub-frame (${r.url}); fast_click/fast_fill act on the top document only — act on it with fast_click_xy + fast_type`,
+        };
+      }
+      if (f.depth < walk.depth) for (const k of matchChildFrames(tree.get(f.id), r.kids)) pass.push({ ...k, depth: f.depth + 1 });
+    }
+    if (cursor >= pass.length) { await pause(backoff); backoff = Math.min(backoff * 2, walk.maxMs); }
+    else await pause(walk.gapMs);
   }
   const r = await top;
-  if (!r || r.found || !r.error || !last) return r;
-  const answered = new Set(last.filter((a) => !a.top).map((a) => originOf(a.url)));
-  const unsearched = [...new Set(last.flatMap((a) => a.iframes).map(originOf))].filter((o) => o && !answered.has(o));
+  if (!r || r.found || !r.error) return r;
+  const answered = new Set([...searched.values()].map(originOf));
+  const notReached = pass.slice(cursor).map((f) => f.url);
+  const unsearched = [...new Set([...failed.values(), ...notReached].map(originOf))].filter((o) => o && !answered.has(o));
   if (!answered.size && !unsearched.length) return r;
   return {
     ...r,
     frames: { searched: [...answered], unsearched },
-    ...(unsearched.length ? { framesHint: `not found in the top document or any searchable frame; frames from ${unsearched.join(', ')} could not be searched, so the text may be there` } : {}),
+    ...(unsearched.length ? { framesHint: `not found in the top document or any searched frame; frames from ${unsearched.join(', ')} could not be searched, so the text may be there` } : {}),
   };
 }

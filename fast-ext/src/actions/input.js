@@ -1,5 +1,5 @@
 import { getInjectableTab } from '../util.js';
-import { inAllFrames } from './frames.js';
+import { frameTree } from './frames.js';
 
 const CDP_VERSION = '1.3';
 
@@ -119,50 +119,36 @@ export async function clickXY({ x, y, button, clickCount }) {
   return out;
 }
 
-// Runs in EVERY frame of the tab (chrome.scripting allFrames, MAIN world) and
-// describes that frame's focused element. Self-contained (no closures) —
-// chrome.scripting serializes it.
+// Runs in ONE frame (chrome.scripting, ISOLATED world) and describes that
+// frame's focused element. Self-contained (no closures) — chrome.scripting serializes it.
 //
 // The extension holds <all_urls>, so a CROSS-ORIGIN iframe is injectable like
 // any other frame: its field can be read, verified and selected from inside
 // that frame. The page's own same-origin policy stops the TOP document from
 // reaching in; it does not stop the extension. What IS unreachable is a frame
 // the extension may not inject into at all (another extension's page, the web
-// store) — resolveFocus names that case.
+// store) — followFocus names that case.
 //
-// Each frame reports its PATH from the top (its index in each ancestor's
-// window list — WindowProxy identity and indexing are allowed cross-origin),
-// and a frame whose focus sits on an <iframe> reports WHICH child it is, so the
-// chain top → child → … → the real field is followed exactly, with no guessing
-// from document.hasFocus() (false whenever the Chrome window is in the
-// background, which is the normal state while an agent drives it).
+// A frame whose focus sits on an <iframe> reports that iframe's URL, which
+// followFocus matches to the frame's child in webNavigation's frame tree, so
+// the chain top → child → … → the real field is followed one injection per level, with no guessing from document.hasFocus() (false
+// whenever the Chrome window is in the background, the normal state while an
+// agent drives it).
 function inspectFocusInFrame() {
   const NON_TEXT = ['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'image', 'range', 'color', 'hidden'];
   const trim = (s, n) => (typeof s === 'string' && s.length > n ? s.slice(0, n) + '…' : (s || ''));
-  const path = [];
-  try {
-    for (let w = window; w !== w.parent; w = w.parent) {
-      const p = w.parent;
-      let idx = -1;
-      for (let i = 0; i < p.length; i++) if (p[i] === w) { idx = i; break; }
-      path.unshift(idx);
-    }
-  } catch { return null; }
   let el = document.activeElement;
   // an open shadow root keeps its own focused element — follow it down
   for (let depth = 0; depth < 20 && el && el.shadowRoot && el.shadowRoot.activeElement; depth++) el = el.shadowRoot.activeElement;
   const tag = el ? (el.tagName || '').toLowerCase() : 'none';
-  const host = location.host || '';
   if (tag === 'iframe' || tag === 'frame') {
-    let child = -1;
-    try { for (let i = 0; i < window.length; i++) if (window[i] === el.contentWindow) { child = i; break; } } catch {}
-    let src = '';
-    try { src = new URL(el.src || '', location.href).host; } catch {}
-    return { path, host, child, tag: 'iframe', label: src || (el.getAttribute && el.getAttribute('title')) || '' };
+    let src = '', host = '';
+    try { const u = new URL(el.src || '', location.href); src = u.href; host = u.host; } catch {}
+    return { tag: 'iframe', src, label: host || (el.getAttribute && el.getAttribute('title')) || '' };
   }
   if (!el || el === document.body || el === document.documentElement) {
     return {
-      path, host, tag: el === document.documentElement ? 'html' : el ? 'body' : 'none',
+      tag: el === document.documentElement ? 'html' : el ? 'body' : 'none',
       type: '', editable: false, readable: true,
       reason: 'the document itself has focus — no field is focused',
       label: '', value: '', valueLen: 0,
@@ -181,7 +167,7 @@ function inspectFocusInFrame() {
   if (tag === 'input' || tag === 'textarea') value = el.value == null ? '' : String(el.value);
   else if (el.isContentEditable) value = el.textContent || '';
   const out = {
-    path, host, tag, type: el.type || '', editable, readable: editable,
+    tag, type: el.type || '', editable, readable: editable,
     label: trim(label, 80), value: trim(value, 300), valueLen: value.length,
   };
   // Is the focused field the thing under the mouse pointer? After a coordinate
@@ -208,39 +194,69 @@ function inspectFocusInFrame() {
   return out;
 }
 
-// Follow the per-frame reports from the top frame down to the element that
-// really has focus. Returns one descriptor: { tag, type, editable, readable,
-// reason?, label, value, valueLen, frames, frameId, reachable? } — `frames` is
-// the host of every iframe crossed on the way down, `frameId` is the frame the
-// field lives in (for a follow-up injection into exactly that frame).
-function resolveFocus(injections) {
-  const byPath = new Map();
-  for (const r of injections || []) {
-    if (r && r.result && Array.isArray(r.result.path)) byPath.set(r.result.path.join('/'), { ...r.result, frameId: r.frameId });
-  }
+// Follow focus from the top frame down to the element that really has it, ONE
+// frame at a time: `runIn(frameId)` injects inspectFocusInFrame into exactly
+// that frame and resolves its report, or null when the frame cannot be
+// injected; `childrenOf(frameId)` lists that frame's child frames [{id, url}]
+// (webNavigation, asked only when focus is inside a frame). Cost = the depth
+// of the focus chain, never the page's frame count (probing every frame took
+// ~7s per fast_type on a 1,000-frame page).
+// Returns one descriptor: { tag, type, editable, readable, reason?, label,
+// value, valueLen, frames, frameId, reachable? } — `frames` is the host of
+// every iframe crossed on the way down, `frameId` the frame the field lives in.
+const NO_FIELD = new Set(['body', 'html', 'none']);
+async function followFocus(runIn, childrenOf) {
   const frames = [];
-  let cur = byPath.get('');
-  if (!cur) {
-    return { tag: 'none', type: '', editable: false, readable: false, reachable: false, reason: 'unreadable: the page could not be inspected', label: '', value: '', valueLen: 0, frames };
-  }
-  for (let depth = 0; depth < 20 && cur.tag === 'iframe'; depth++) {
-    frames.push(cur.label || 'iframe');
-    const next = cur.child >= 0 ? byPath.get([...cur.path, cur.child].join('/')) : null;
-    if (!next) {
-      return {
-        tag: 'iframe', type: '', editable: false, readable: false, reachable: false,
-        reason: `unreadable: focus is inside a frame (${cur.label || 'iframe'}) the extension cannot inject into`,
-        label: cur.label || '', value: '', valueLen: 0, frames, frameId: cur.frameId,
-      };
+  const unreachable = (via) => ({
+    tag: 'iframe', type: '', editable: false, readable: false, reachable: false,
+    reason: `unreadable: focus is inside a frame (${via.label || 'iframe'}) the extension cannot inject into`,
+    label: via.label || '', value: '', valueLen: 0, frames, frameId: via.frameId,
+  });
+  let frameId = 0, via = null;
+  let d = await runIn(0);
+  for (let depth = 0; depth < 20; depth++) {
+    if (!d) {
+      if (via) return unreachable(via);
+      return { tag: 'none', type: '', editable: false, readable: false, reachable: false, reason: 'unreadable: the page could not be inspected', label: '', value: '', valueLen: 0, frames };
     }
-    cur = next;
+    if (d.tag !== 'iframe') {
+      const { src, ...rest } = d;
+      return { ...rest, frames, frameId };
+    }
+    frames.push(d.label || 'iframe');
+    via = { label: d.label, frameId };
+    // the focused <iframe> → its frame: same URL, else same origin; several
+    // same-URL siblings → the one whose document holds a focused element
+    const kids = (await childrenOf(frameId)) || [];
+    const origin = (u) => { try { return new URL(u).origin; } catch { return ''; } };
+    let cands = kids.filter((k) => k.url === d.src);
+    if (!cands.length) cands = kids.filter((k) => origin(k.url) && origin(k.url) === origin(d.src));
+    if (!cands.length) return unreachable(via);
+    let next = null, nextId = cands[0].id;
+    for (const c of cands) {
+      const r = await runIn(c.id);
+      if (!r) continue;
+      if (!next) { next = r; nextId = c.id; }
+      if (!NO_FIELD.has(r.tag)) { next = r; nextId = c.id; break; }
+      if (cands.length === 1) break;
+    }
+    d = next;
+    frameId = nextId;
   }
-  const { path, child, host, ...d } = cur;
-  return { ...d, frames };
+  return via ? unreachable(via) : { tag: 'none', type: '', editable: false, readable: false, reachable: false, reason: 'unreadable: the page could not be inspected', label: '', value: '', valueLen: 0, frames };
 }
 
 async function probeFocus(tabId) {
-  return resolveFocus(await inAllFrames(tabId, inspectFocusInFrame, [], 'MAIN'));
+  let tree = null;
+  return followFocus(
+    async (frameId) => {
+      try {
+        const [r] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: 'ISOLATED', func: inspectFocusInFrame });
+        return (r && r.result) || null;
+      } catch { return null; }
+    },
+    async (frameId) => { if (!tree) tree = await frameTree(tabId); return tree.get(frameId) || []; },
+  );
 }
 
 // How a refusal names what had focus.
