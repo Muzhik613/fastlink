@@ -3730,7 +3730,11 @@ async function runPageAction(action, args) {
       }
     }
     const scrolledIntoView = revealIfOffscreen(item, el);
-    const sel = selectHintFor(el);
+    // The "use fast_select_option instead" redirect is for a click on a dropdown's
+    // TRIGGER (clicking it only opens the list). A click on an entry of the open
+    // list IS the pick — it committed — so the redirect there contradicts what
+    // just happened; every committed role:"option" click carried it.
+    const sel = (el.closest && el.closest(OPTIONISH)) ? null : selectHintFor(el);
     // willNavigate is a best-effort HINT (the batch re-bind keys off ACTUAL
     // navigation, not this) — but predict the common navigating clicks so callers
     // get a useful signal: (a) a real same-window link, and (b) a form-submit

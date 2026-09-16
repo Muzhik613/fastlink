@@ -33,6 +33,18 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — a click that already picked an option does not tell you to use fast_select_option
+- **What:** `fast_click` attaches the "this is a select control; use fast_select_option instead" redirect
+  only when the clicked element is NOT an entry of an open list (`[role=option|menuitem|menuitemradio|
+  menuitemcheckbox|treeitem]`, or a descendant of one).
+- **Why:** holdout-2 by-hand pass: every committed `fast_click {role:"option"}` (Syncfusion EJ2, National
+  Rail) came back with "use fast_select_option instead" — a redirect for a click that had ALREADY made the
+  pick. The hint is for a click on a dropdown's TRIGGER, where clicking only opens the list.
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** the trigger case is unchanged — clicking a combobox/native select still gets the redirect
+  with `selectField`. Only the option row loses it.
+- **Status:** committed; proven live on two sites with open ARIA listboxes.
+
 ## 2026-09-16 — a row you can READ is a row you can CLICK: plain text targets, container narrowing, and a named virtualized scroller
 - **What:** four rules in `fast_click`, all generic. (1) The last-resort target (`pointerTargetByText` →
   `textTargetByText`) no longer requires `cursor:pointer`: the SMALLEST visible element whose own text /
