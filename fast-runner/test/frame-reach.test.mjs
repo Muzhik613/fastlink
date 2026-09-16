@@ -458,26 +458,19 @@ test('an action\'s snapshot preview says omitted (an honest count), never trunca
   assert.equal(s.truncated, true);
 });
 
-test('fast_nav waits out a redirect hop and returns the landed page\'s snapshot; an empty shell is re-read until content shows', async () => {
-  setup({ topHtml: '<p>Portal is loading.</p>' });
+test('fast_nav waits for the load to complete and returns the page\'s snapshot; noSnapshot skips it', async () => {
+  setup({ topHtml: '<h1>Create a resource</h1><label for="n">Name</label><input id="n">' });
   frames = new Map([[0, frames.get(0)]]);
-  const top = frames.get(0).win;
-  top.document.body.innerHTML = '';
   const t0 = Date.now();
-  let url = 'https://shop.example/auth/login/';
   const saved = { get: chrome.tabs.get, update: chrome.tabs.update };
   chrome.tabs.update = async () => ({});
-  chrome.tabs.get = async () => {
-    const ms = Date.now() - t0;
-    if (ms > 300) url = SHOP;
-    return { id: 1, url, status: ms > 350 ? 'complete' : 'loading' };
-  };
-  setTimeout(() => { top.document.body.innerHTML = '<h1>Create a resource</h1><label for="n">Name</label><input id="n">'; }, 900);
+  chrome.tabs.get = async () => ({ id: 1, url: SHOP, status: Date.now() - t0 > 200 ? 'complete' : 'loading' });
   const r = await call('fast_nav', { url: SHOP });
-  chrome.tabs.get = saved.get; chrome.tabs.update = saved.update;
-  assert.equal(r.url, SHOP, JSON.stringify(r).slice(0, 300));
-  assert.ok(Date.now() - t0 >= 750, 'waited for the URL to stay put after the load completed');
+  assert.ok(Date.now() - t0 >= 200, 'waited for the load');
+  assert.ok(Date.now() - t0 < 1500, 'no extra settle window');
+  assert.equal(r.url, SHOP);
   assert.ok(r.snapshot && r.snapshot.items.some((it) => it.tag === 'input'), JSON.stringify(r.snapshot).slice(0, 300));
   const skip = await call('fast_nav', { url: SHOP, noSnapshot: true });
+  chrome.tabs.get = saved.get; chrome.tabs.update = saved.update;
   assert.equal(skip.snapshot, undefined);
 });

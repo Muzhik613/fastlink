@@ -61,24 +61,19 @@ async function focusTabWindow(tab) {
 // settleLoaded polls chrome.tabs.get rather than listening for onUpdated: a load that
 // finished before a listener attached would burn the whole timeout on every fast_tab.
 //
-// Wait for the tab's page to be LOADED and stay put: status 'complete' and the same
-// URL for LOAD_STABLE_MS, capped at waitMs (default 10000). A redirect hop (a login
-// page that forwards to the app) starts a new load, so it is waited out too — the
-// caller's first read lands on the page it was sent to, not a blank auth shell (live
-// Azure: fast_tab returned in 0.1s, the snapshot read portal.azure.com/auth/login/ empty,
-// and the model had to wait and read again). Returns the final URL (null: tab gone).
-const LOAD_STABLE_MS = 400;
+// Wait for the tab's page to finish loading (status 'complete' with a committed URL),
+// capped at waitMs (default 10000). No extra settle: a redirect hop after the load shows
+// up in the returned URL and snapshot, and the caller decides (measured: a 400ms
+// URL-stable window was ~all of fast_tab's 430ms on an instant page).
 async function settleLoaded(tabId, waitMs) {
   const cap = typeof waitMs === 'number' ? waitMs : 10000;
   const deadline = Date.now() + cap;
-  let lastUrl = null, stableSince = Date.now(), t = null;
   for (;;) {
+    let t;
     try { t = await chrome.tabs.get(tabId); } catch { return null; }   // tab closed under us
-    const url = t.url || t.pendingUrl || '';
-    if (t.status !== 'complete' || url !== lastUrl) { lastUrl = url; stableSince = Date.now(); }
-    else if (Date.now() - stableSince >= LOAD_STABLE_MS) return url;
-    if (Date.now() >= deadline) return url || null;
-    await new Promise((r) => setTimeout(r, 100));
+    if (t.status === 'complete' && t.url) return t.url;
+    if (Date.now() >= deadline) return t.url || t.pendingUrl || null;
+    await new Promise((r) => setTimeout(r, 50));
   }
 }
 
