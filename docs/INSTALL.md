@@ -117,8 +117,7 @@ path, optional HTTP flags, optional env):
     "--http-port=9879"
   ],
   "env": {
-    "FASTLINK_TOKEN": "<optional shared secret>",
-    "GEMINI_API_KEY": "<optional, see Step 7>"
+    "FASTLINK_TOKEN": "<optional shared secret>"
   }
 }
 ```
@@ -212,28 +211,13 @@ See **`docs/UPDATING.md`**.
 1. Chrome is open with at least one normal `http(s)://` tab; the FastLink extension is loaded
    (icon visible).
 2. In Claude, call **`fast_status`**. Expect `connected: true` and an extension client count ≥ 1.
-3. Smoke test: `fast_snapshot` (or `fast_scout`) on the active tab returns page content.
+3. Smoke test: `fast_snapshot` on the active tab returns page content.
 
 If `fast_status` shows not-connected, see Troubleshooting below.
 
 ---
 
-## Step 7 — Optional: Gemini API key (vision / scout tier)
-
-`fast_scout`, `fast_point`, `fast_fill_vision`, `fast_do` use a fast multimodal model. Without a
-key they report `disabled`; everything else works.
-
-- Get a **free** key: https://aistudio.google.com/apikey
-- Provide it either way:
-  - Set `GEMINI_API_KEY` in the MCP `env` (Step 4a JSON), **or**
-  - Put `GEMINI_API_KEY=...` in `~/fastlink-secrets.txt` (the portable default the server reads;
-    override the path with `FASTLINK_SECRETS_FILE`).
-
-Default model is `gemini-2.5-flash-lite` (override with `FASTLINK_GEMINI_MODEL`).
-
----
-
-## Step 8 — Optional: second Chrome profile (slots)
+## Step 7 — Optional: second Chrome profile (slots)
 
 To drive two Chrome profiles without collision, install the extension in the 2nd profile and set
 its **Broker slot** to `secondary` on the extension's **options page** → it uses port `9877`

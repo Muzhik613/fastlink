@@ -37,14 +37,12 @@ debugging.
 **What you can do**
 - 🔎 **Read any page** — Claude gets a structured snapshot of the DOM and visible
   text, or a screenshot, so it understands what's on screen.
-- 🖱️ **Real interactions** — click, type, fill forms, select options, drag, scroll,
+- 🖱️ **Real interactions** — click, type, fill forms, select options, scroll,
   and press keys, delivered as *trusted* input so strict sites behave normally.
 - 🧭 **Navigate** — open, reload, and move between tabs on your instruction.
-- 🐞 **Debug** — capture console messages and network request logs, and wait for
-  the page to go idle before acting.
-- 👁️ **Visual targeting** — optional Gemini-powered tools locate elements from a
-  screenshot when the DOM is awkward.
-- ⚡ **Macros** — save and replay common sequences.
+- ⏱️ **Wait** — wait for text to appear or the page to go idle before acting.
+- 📸 **Screenshots** — for elements outside the DOM (canvas, cross-origin frames),
+  Claude reads a screenshot and clicks by coordinate.
 
 **Two ways to connect**
 1. **Local (default):** pairs with Claude Code / Claude Desktop over a localhost
@@ -101,7 +99,7 @@ explicitly enables per origin — disclose this if asked.)
 ## Data-use disclosures  (Dashboard → Privacy → "What user data do you collect")
 Check and disclose:
 - **Web history / Website content** — page content/snapshots are sent to the
-  user's Claude assistant (and Gemini for visual tools) to perform the requested
+  user's Claude assistant to perform the requested
   action. _Not_ sold; _not_ used for ads; _not_ used for unrelated purposes.
 - **Authentication information** — the relay device token (the user's own
   account credential), stored locally.
@@ -134,7 +132,7 @@ Host `PRIVACY-POLICY.md` at a public URL and paste it here (e.g. the relay site
 
 > Note: FastLink uses the name "Claude". Anthropic trademark — keep the
 > "independent tool, not affiliated with/endorsed by Anthropic" disclaimer in the
-> description to reduce brand-impersonation review risk. Same for "Gemini"/Google.
+> description to reduce brand-impersonation review risk.
 
 ---
 

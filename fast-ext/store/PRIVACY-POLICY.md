@@ -10,8 +10,7 @@ where it goes, and what is — and isn't — stored.
 **Plain-language summary:** FastLink is a pipe between your browser and your
 Claude assistant. It does not sell your data, show ads, profile you, or use your
 data to train any model. Page content travels only to the Claude assistant you
-have connected, plus (for visual tools) Google's Gemini API, so Claude can do
-what you asked it to do.
+have connected, so Claude can do what you asked it to do.
 
 ---
 
@@ -44,15 +43,6 @@ your connected Claude assistant:
 This data is captured **on demand**, to fulfill the action you requested through
 Claude. FastLink does not continuously record your browsing.
 
-### Visual (Gemini) processing
-Some FastLink tools that locate elements or read screenshots visually
-(`fast_scout`, `fast_point`, `fast_fill_vision`, `fast_do`, `fast_locate`) send
-the relevant **screenshot/image and your instruction** to Google's Gemini
-Generative Language API for processing, then use the result to act on the page.
-Screenshots are held in memory as data and returned inline — they are **not**
-written to disk by the relay. Google's handling of API requests is governed by
-Google's API terms/privacy policy.
-
 ### Credentials and configuration (stored locally on your device)
 Stored in `chrome.storage.local` / `chrome.storage.session` on your machine:
 - A **device token** — a bearer credential identifying this browser to your own
@@ -78,8 +68,6 @@ database) stores the following account/operational data:
   origin.
 - **Audit log:** an append-only record of actions taken (tool name, origin, a
   short argument summary, success/failure) so you can see what was done.
-- **Your Gemini API key**, *if you choose to provide one* — stored **encrypted
-  at rest** (AES-GCM).
 
 The relay routes live commands and page data between claude.ai and your browser
 **in transit**; it does not store your page snapshots, screenshots, or page
@@ -100,9 +88,7 @@ content as part of normal operation.
 ## Data sharing
 Your data is shared only as needed to perform the action you requested:
 - with **the Claude assistant you connected** (Anthropic's Claude Code / Desktop /
-  claude.ai), governed by Anthropic's terms and privacy policy; and
-- with **Google's Gemini API**, for the visual tools listed above, governed by
-  Google's terms and privacy policy.
+  claude.ai), governed by Anthropic's terms and privacy policy.
 
 No other third parties receive your data.
 

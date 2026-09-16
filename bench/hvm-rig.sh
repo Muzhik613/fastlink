@@ -17,7 +17,7 @@ export DISPLAY=:98
 RIG_PROFILE=/home/dev/.local/share/fastlink-bench-profile
 RIG_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 RIG_CHROME=$(ls -d /home/dev/.local/share/fastlink-bench-chrome/chrome/linux-*/chrome-linux64/chrome 2>/dev/null | tail -1)
-# secrets (GEMINI_API_KEY for fast_scout/fast_point) live outside the repo, never committed
+# secrets live outside the repo, never committed
 [ -f /home/dev/.config/fastrun/env ] && set -a && . /home/dev/.config/fastrun/env && set +a
 
 listening() { ss -ltn 2>/dev/null | grep -q ":$1 "; }

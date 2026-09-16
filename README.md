@@ -73,6 +73,6 @@ extension, then verify with `fast_status`.
   MCP↔broker `9870`; optional HTTP transport `9879`.
 - **Web Store:** not published, and there is no self-hosted `.crx` channel — use Load-unpacked
   (Developer mode). `fast-ext/scripts/package.sh` builds the uploadable zip if one is ever cut.
-- **Optional Gemini key** enables the vision tier (`fast_point`, `fast_fill_vision`);
-  everything else works without it.
+- **Non-DOM targets** (canvas, cross-origin iframes): `fast_screenshot` → `fast_click_xy` / `fast_type`.
+  There is no model-backed vision tier and no API key to configure.
 </content>
