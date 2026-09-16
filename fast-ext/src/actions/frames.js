@@ -535,18 +535,8 @@ export async function actWithFrames(ctx, action, args = {}) {
     return n && n.frameNotice ? { frameNotice: n.frameNotice, opaqueFrames: n.opaqueFrames, ...r } : r;
   };
   if (!targets.length) return topCall(new Set());
-  const noTarget = action === 'fast_click' && !(args.text != null && String(args.text).trim() !== '');
-  if (noTarget) {
-    // no text and no id while frames are on screen: an index could mean an item of
-    // the top document or of any frame — say exactly what to pass
-    if (typeof args.index !== 'number') return ctx.run(0, action, args);   // page.js names the two forms
-    const n = args.index;
-    return {
-      error: `index:${n} with no text is ambiguous on this page — nothing was clicked; pass id:"${n}" for snapshot item ${n} of the top document, ${targets.map((t) => `id:"f${t.frameId}:${n}" for item ${n} in ${t.origin}`).join(', ')}, or text:"<label>"`,
-      code: 'no_target',
-      frames: targets.map((t) => ({ ...frameTag(t), box: t.box })),
-    };
-  }
+  // no text and no id: page.js refuses it (an index is not an item id) — nothing to search frames for
+  if (action === 'fast_click' && !(args.text != null && String(args.text).trim() !== '')) return ctx.run(0, action, args);
 
   const multiKey = MULTI[action];
   let entries = null;   // [[key, spec]] for the per-field forms

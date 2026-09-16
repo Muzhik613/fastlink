@@ -443,6 +443,9 @@ const INDEX = (typeof window !== 'undefined' && window.__fastlinkIndex)
       // / unindexElement so the option lookup is always a Set scan.
       options: new Set(),
       nextId: 0,
+      // id → the label a snapshot SHOWED for it (text/label/aria-label). An id acts only
+      // while its element still carries that label; an id never shown is refused.
+      served: new Map(),
       ready: false,
       capped: false,       // node-walk ceiling hit → index is intentionally partial
       initStarted: false,
@@ -1069,6 +1072,18 @@ const collectOverlayEls = () => {
   return set;
 };
 
+// What a snapshot showed an item as — compared again before an id is acted on. Pure.
+// A field is identified by its NAME (a dropdown's shown text is its value, which changes
+// legitimately); anything else by its aria-label, else its text.
+const servedLabel = (it) => cleanLabel(String(it.label || it.ariaLabel || it.text || '')).slice(0, 200);
+// Record the items a result returns (every snapshot / preview goes out through markTruncated).
+const noteServed = (items) => {
+  if (!Array.isArray(items)) return;
+  if (!INDEX.served) INDEX.served = new Map();
+  if (INDEX.served.size > 20000) INDEX.served.clear();
+  for (const it of items) if (it && typeof it.i === 'number') INDEX.served.set(it.i, servedLabel(it));
+};
+
 // The dialog the user is in, or null. A declared one (<dialog open>, role=dialog /
 // alertdialog, aria-modal) that is visible — the last in document order is the one
 // on top; else the portal layer holding focus: an ancestor of the focused element
@@ -1620,6 +1635,7 @@ const withFrameNotice = (out) => {
 // truncated:true, and the model spent a turn re-reading before acting).
 const markTruncated = (snap, hintFor, { preview = false } = {}) => {
   if (!snap || typeof snap !== 'object') return snap;
+  noteServed(snap.items);
   const d = snap.dropped || {};
   const off = snap.offscreenItems || 0;
   delete snap.dropped; delete snap.offscreenItems;
@@ -3696,34 +3712,36 @@ async function runPageAction(action, args) {
     const hasText = args.text != null && String(args.text).trim() !== '';
     const hasId = args.id != null && args.id !== '';
     if (!hasText && !hasId) {
-      // No text and no id: never search for the string "undefined" (live Azure: three
-      // {frame, role:"button", index:131} clicks, each "No element matching \"undefined\"").
-      // An index with nothing to count matches of is a snapshot item's i.
-      if (typeof args.index !== 'number') {
-        return { error: `fast_click needs a target — pass id:"${idP}<i>" (an item's i from fast_snapshot) or text:"<label>"; nothing was clicked`, code: 'no_target' };
-      }
-      args.id = args.index;
-      args.__idFromIndex = true;
-      delete args.index;
+      // No text and no id names no element. An `index` counts matches of `text`; without
+      // text it is NOT an item id — reading it as one clicked the wrong control (live Azure
+      // 5a6edf40: {tag:"button", index:11} meant "the 12th button" and clicked item 11, the
+      // Advanced wizard tab). Refused, whatever else is given.
+      return { error: `fast_click needs a target — pass id:"${idP}<i>" (an item's i from fast_snapshot) or text:"<label>"${typeof args.index === 'number' ? '; index only picks among matches of text, it is not an item id' : ''}; nothing was clicked`, code: 'no_target' };
     }
     let preMatched = null;
-    if (args.id != null && args.id !== '') {
+    if (hasId) {
+      // An id acts only on the element a snapshot SHOWED under that id, still carrying the
+      // label it showed: an id no snapshot of this document listed (a guess, or one from a
+      // page since reloaded), an element since removed, or one the page re-labelled in place
+      // (a reused "Next" that now reads "Create") is refused — never clicked.
       const want = Number(args.id);
+      const shown = INDEX.served ? INDEX.served.get(want) : undefined;   // read BEFORE anything re-serializes
       const el0 = Number.isFinite(want) ? elById(want) : null;
       snap = await serializeSnapshot(false, { matchAll: true });
       const it = el0 && el0.isConnected ? snap.items.find((x) => x.i === want) : null;
-      const textOk = !it || !hasText || matchItems([it], args.text).length > 0;
-      const roleFits = !it || !wantRole || roleOk(it);
-      if (it && textOk && roleFits) preMatched = [it];
-      else if (!hasText) {
-        const what = args.__idFromIndex ? `index ${want} (read as snapshot item i:${want}, since no text was given)` : `id ${idP}${want}`;
-        return {
-          error: it && !roleFits
-            ? `${what} is a <${it.tag}>${it.role ? ` role=${it.role}` : ''}, not role "${args.role}" — nothing was clicked; pass id:"${idP}<i>" of the element you mean, or text:"<label>"`
-            : `${what} is no longer on the page (the element was re-rendered or removed) — nothing was clicked; take a fresh fast_snapshot and pass id:"${idP}<i>", or text:"<label>"`,
-          idStale: true,
-        };
-      }
+      // read the element LIVE: the index entry can hold stale text (text-node edits are not
+      // observed), and stale text would let a relabelled control pass as the one listed
+      let now = null;
+      if (it) { try { const fresh = makeClickEntry(el0); now = servedLabel({ label: fresh.label || (it.label && fresh.ariaLabel) || (it.label && fresh.placeholder) || (it.label && fresh.name) || null, ariaLabel: fresh.ariaLabel, text: fresh.text }); } catch { now = servedLabel(it); } }
+      const why = !Number.isFinite(want) ? `id ${JSON.stringify(args.id)} is not an item id`
+        : shown === undefined ? `id ${idP}${want} was not listed by any snapshot of this page`
+        : !it ? `id ${idP}${want} ("${shown}") is no longer on the page (the element was re-rendered or removed)`
+        : now !== shown ? `id ${idP}${want} was "${shown}" when listed and now reads "${now}"`
+        : (hasText && !matchItems([it], args.text).length) ? `id ${idP}${want} ("${now}") does not carry the text ${JSON.stringify(args.text)}`
+        : (wantRole && !roleOk(it)) ? `id ${idP}${want} is a <${it.tag}>${it.role ? ` role=${it.role}` : ''}, not role "${args.role}"`
+        : null;
+      if (!why) preMatched = [it];
+      else if (!hasText) return { error: `${why} — nothing was clicked; take a fresh fast_snapshot and pass the id it lists, or text:"<label>"`, idStale: true, ...(now ? { labelNow: now } : {}) };
       else args.__idStale = true;
     }
     for (;;) {

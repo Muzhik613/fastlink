@@ -60,12 +60,14 @@ test('an unrelated miss carries no such hint', async () => {
   assert.doesNotMatch(String(miss.hint || ''), /you just clicked/);
 });
 
-test('top document: index with no text is snapshot item i; no text/id/index names both forms', async () => {
+test('top document: index with no text is refused (not an item id); an id from a snapshot clicks; no text/id names both forms', async () => {
   const w = page(HEADER);
   const snap = await run(w, 'fast_snapshot', {});
   const name = snap.items.find((it) => /Name/.test(it.text || ''));
-  const r = await run(w, 'fast_click', { index: name.i, noSnapshot: true });
-  assert.equal(r.clicked.text, 'Name: Activate to sort', JSON.stringify(r).slice(0, 300));
+  const byIndex = await run(w, 'fast_click', { index: name.i, noSnapshot: true });
+  assert.equal(byIndex.code, 'no_target', JSON.stringify(byIndex).slice(0, 300));
+  const byId = await run(w, 'fast_click', { id: String(name.i), noSnapshot: true });
+  assert.equal(byId.clicked.text, 'Name: Activate to sort', JSON.stringify(byId).slice(0, 300));
   const none = await run(w, 'fast_click', { noSnapshot: true });
   assert.equal(none.error, 'fast_click needs a target — pass id:"<i>" (an item\'s i from fast_snapshot) or text:"<label>"; nothing was clicked');
 });

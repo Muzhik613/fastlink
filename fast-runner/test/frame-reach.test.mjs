@@ -179,33 +179,48 @@ test('a miss names only the frames that could NOT be read; a miss with every fra
   assert.equal(snap.frames, undefined);
 });
 
-test('live Azure: {frame, role:"button", index:N} with no text clicks snapshot item N of that frame, never "undefined"', async () => {
-  setup();
+test('SAFETY live Azure 5a6edf40: {frame, tag:"button", index:N} with no text is refused — an index is never read as an item id', async () => {
+  const { pay } = setup();
   const snap = await call('fast_snapshot', {});
-  const f = snap.frames[0];
-  const pay = f.items.find((it) => /Pay now/.test(it.text || ''));
-  const cardInput = f.items.find((it) => it.tag === 'input');
-  const n = Number(pay.i.split(':')[1]);
+  const pay1 = snap.frames[0].items.find((it) => /Pay now/.test(it.text || ''));
+  const n = Number(pay1.i.split(':')[1]);
   let clicked = 0;
-  frames.get(7).win.document.querySelector('button').addEventListener('click', () => { clicked++; });
-  const r = await call('fast_click', { frame: 'pay.provider', role: 'button', index: n, noSnapshot: true });
-  assert.equal(clicked, 1, JSON.stringify(r));
-  assert.equal(r.inFrame.frameId, 7);
-  // an index whose item is not a button: refused, naming the exact id form
-  const m = Number(cardInput.i.split(':')[1]);
-  const bad = await call('fast_click', { frame: 'pay.provider', role: 'button', index: m, noSnapshot: true });
-  assert.match(bad.error, new RegExp(`index ${m} \\(read as snapshot item i:${m}, since no text was given\\) is a <input>.*pass id:"f7:<i>"`));
-  assert.equal(clicked, 1);
-  // no text, no id, no index: the two valid forms with the real frame id
-  const none = await call('fast_click', { frame: 'pay.provider', role: 'button', noSnapshot: true });
-  assert.match(none.error, /^fast_click needs a target — pass id:"f7:<i>" \(an item's i from fast_snapshot\) or text:"<label>"/);
-  assert.doesNotMatch(JSON.stringify([r, bad, none]), /undefined/);
+  pay.document.querySelector('button').addEventListener('click', () => { clicked++; });
+  for (const args of [{ frame: 'pay.provider', tag: 'button', index: n }, { frame: 'pay.provider', role: 'button', index: 0 }, { tag: 'button', index: n }]) {
+    const r = await call('fast_click', { ...args, noSnapshot: true });
+    assert.match(r.error, /^fast_click needs a target — pass id:".*<i>" \(an item's i from fast_snapshot\) or text:"<label>"; index only picks among matches of text, it is not an item id; nothing was clicked$/, JSON.stringify(r));
+  }
+  assert.equal(clicked, 0);
+  const none = await call('fast_click', { frame: 'pay.provider', noSnapshot: true });
+  assert.match(none.error, /^fast_click needs a target — pass id:"f7:<i>"/);
+  assert.doesNotMatch(JSON.stringify(none), /undefined/);
 });
 
-test('index with no text and no frame, while frames are on screen: refused with every exact id form', async () => {
-  setup();
-  const r = await call('fast_click', { role: 'button', index: 3, noSnapshot: true });
-  assert.match(r.error, /^index:3 with no text is ambiguous on this page — nothing was clicked; pass id:"3" for snapshot item 3 of the top document, id:"f7:3" for item 3 in https:\/\/pay\.provider\.example, or text:"<label>"$/);
+test('SAFETY: after the frame re-renders and reorders its buttons, an old id is refused — never clicks the new occupant', async () => {
+  const { pay } = setup({ payHtml: '<div id="bar"><button id="next">Next</button><button id="back">Back</button></div>' });
+  const d = pay.document;
+  const snap = await call('fast_snapshot', {});
+  const next = snap.frames[0].items.find((it) => it.text === 'Next');
+  const hits = [];
+  // (1) React reuses the node in place: "Next" now reads "Create"
+  d.getElementById('next').textContent = 'Create';
+  d.getElementById('next').addEventListener('click', () => hits.push('create'));
+  const r1 = await call('fast_click', { id: next.i, noSnapshot: true });
+  assert.equal(r1.idStale, true, JSON.stringify(r1));
+  assert.match(r1.error, /was "Next" when listed and now reads "Create" — nothing was clicked/);
+  assert.equal(r1.labelNow, 'Create');
+  // (2) the bar re-renders: every node replaced, order swapped
+  const snap2 = await call('fast_snapshot', {});
+  const back = snap2.frames[0].items.find((it) => it.text === 'Back');
+  d.getElementById('bar').innerHTML = '<button id="del">Delete</button><button id="back2">Back</button>';
+  d.getElementById('del').addEventListener('click', () => hits.push('delete'));
+  const r2 = await call('fast_click', { id: back.i, noSnapshot: true });
+  assert.equal(r2.idStale, true, JSON.stringify(r2));
+  assert.match(r2.error, /\("Back"\) is no longer on the page/);
+  // (3) an id no snapshot listed (a guess past the end) is refused
+  const r3 = await call('fast_click', { id: 'f7:999', noSnapshot: true });
+  assert.match(r3.error, /f7:999 was not listed by any snapshot of this page/);
+  assert.deepEqual(hits, []);
 });
 
 test('fast_snapshot puts frames right after url/title, before the top document\'s own items', async () => {

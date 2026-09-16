@@ -44,7 +44,7 @@ export const TOOLS = [
         frame: { type: 'string', description: 'Act inside the visible frame whose URL contains this (see `frames` / `framesNote` in fast_snapshot, or an ambiguity refusal\'s candidates). Omit to let the tool find the document that holds the target.' },
         role: { type: 'string', description: 'Restrict to elements whose [role] attribute equals this (e.g. "menuitem", "option", "button", "tab"). Use when text alone matches the wrong element.' },
         tag: { type: 'string', description: 'Restrict to elements whose HTML tag equals this (lowercase, e.g. "a", "button", "mat-option"). Use for design-system custom elements.' },
-        index: { type: 'number', description: 'With `text`: pick the N-th match (0-based) in stable DOCUMENT order (deterministic across re-renders), NOT rank order; omit to take the best-ranked match. With NO text: snapshot item i:N of the document you name (the top document, or the frame given by `frame`) — prefer `id`, which names the frame itself ("f7:42").' },
+        index: { type: 'number', description: 'With `text` only: pick the N-th match (0-based) in document order. Not an item id — use `id` for that.' },
         screenshot: { type: 'boolean', description: 'If true, capture a screenshot after clicking and return its /tmp path in the result.' },
         screenshotFormat: { type: 'string', enum: ['png', 'jpeg'], description: 'Format for the inline screenshot (default png).' },
         noSnapshot: { type: 'boolean', description: 'If true, skip the fresh post-click snapshot and return just the action outcome.' },
