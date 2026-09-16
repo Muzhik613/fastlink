@@ -103,3 +103,18 @@ Frontdesk owns: image, Container DO, Workflow caller, profile snapshot/restore, 
 1. Runner ↔ xAI: through grokcode proxy (:8790, recommended, one token owner) vs own client (duplicate refresh, race on auth.json).
 2. Effort: `low` vs `medium` for the loop; measure in phase 1.
 3. Hold timeout default (240s?) and whether `grok_run` can also run fire-and-forget.
+
+## Open ideas (parked — owner's call)
+
+- **Caller-declared targets → "requested target never written" (2026-09-16, parked).** Live Azure
+  bb75f0a8 reported "Four Basics fields filled" with only VM name and Resource group set; Region and
+  Image never appear in any call, so no failure and no gate check fired. The requested field list
+  exists only in the task sentence, and extracting it is English parsing, so no dumb check can see
+  it from the task alone. Recommendation if picked up: an optional `targets:[...]` on
+  grok_run / cli / bench/run.js (the bench can feed it from suite.js checkpoints). At report_done
+  every declared target with no successful write naming it (fill/select/type target, `{fields}` /
+  `selections` keys) and no verified read-back gets one mechanical result line, like
+  screenMismatch, never a refusal. Caveat: a field set through a different label is a false
+  positive. bb75f0a8 set Resource group via the Create-new dialog's "Name" field, so a target needs
+  aliases, or a verified read-back of the target label must count as written. Changes the grok_run
+  interface, hence parked.
