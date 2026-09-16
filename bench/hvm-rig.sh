@@ -18,9 +18,8 @@ RIG_PROFILE=/home/dev/.local/share/fastlink-bench-profile
 # The rig profile's broker SLOT LABEL. It must never be primary/secondary, which are the owner's
 # Profile 1 / Profile 6. bench/rig.js resets the whole browser (every tab in every window → one
 # about:blank) before each cell only when this is set AND the cell is pinned to this connected
-# install; everywhere else a cell closes only its own tabs. ONE-TIME SETUP: the rig profile must
-# carry this label (options page → Broker slot → Custom "rig"). Until it does, the extension says
-# hello as "primary" and every rig cell refuses to start. That is loud and safe.
+# install; everywhere else a cell closes only its own tabs. rig_up puts this label on the rig
+# profile itself (see rig_label) and does not return 0 until the broker shows it connected.
 export FASTLINK_RIG_INSTALL=rig
 RIG_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 RIG_CHROME=$(ls -d /home/dev/.local/share/fastlink-bench-chrome/chrome/linux-*/chrome-linux64/chrome 2>/dev/null | tail -1)
@@ -56,13 +55,33 @@ rig_up() {
       --window-size=1600,1000 about:blank
     sleep 6
   fi
-  # proof, not assumption: the extension must be on the broker before a cell starts
+  # proof, not assumption: the extension must be on the broker AS THE RIG LABEL before a cell starts.
+  # A fresh or wiped profile says hello as "primary"; the first miss hands it the label (rig_label),
+  # a second try covers a hand-off that landed before the extension had loaded.
   for i in $(seq 1 20); do
-    st=$(cd "$RIG_REPO" && timeout 20 node -e 'import("./bench/fastlink.js").then(m=>m.status()).then(s=>{console.log(s.connected?"connected":"not-connected");process.exit(0)}).catch(()=>{console.log("broker-error");process.exit(0)})' 2>/dev/null | tail -1)
-    [ "$st" = connected ] && { echo "rig up: extension connected (display $DISPLAY, proxy $GROKCODE_URL)"; return 0; }
+    st=$(cd "$RIG_REPO" && timeout 20 node -e 'import("./bench/fastlink.js").then(m=>m.status()).then(s=>{const on=Object.keys(s.installs||{}).filter(k=>s.installs[k]?.connected);console.log(on.includes(process.argv[1])?"rig":"connected:"+(on.join(",")||"none"));process.exit(0)}).catch(()=>{console.log("broker-error");process.exit(0)})' "$FASTLINK_RIG_INSTALL" 2>/dev/null | tail -1)
+    [ "$st" = rig ] && { echo "rig up: install \"$FASTLINK_RIG_INSTALL\" connected (display $DISPLAY, proxy $GROKCODE_URL)"; return 0; }
+    if [ "$i" = 1 ] || [ "$i" = 10 ]; then rig_label || return 1; fi
     sleep 3
   done
-  echo "rig NOT up: extension never connected to the broker ($st)"; return 1
+  echo "rig NOT up: install \"$FASTLINK_RIG_INSTALL\" never connected to the broker ($st)"; return 1
+}
+
+# Put the slot label on the rig profile with no click and no root: hand the running rig Chrome its
+# own options page with ?slot=<label> (fast-ext/options.js applyLaunchSlot stores it and reloads the
+# extension, or does nothing if it is already set). A second chrome with the same --user-data-dir
+# only forwards the URL to the running browser and exits. The extension id is derived from
+# manifest.json "key", so it is fixed and survives a wiped profile.
+# Not Chrome managed storage: Chrome for Testing reads policy only from root-owned /etc/opt.
+rig_label() {
+  local id
+  # Only ever a hand-off: with no rig Chrome running this would START one without the rig flags.
+  pgrep -u "$USER" -f "user-data-dir=$RIG_PROFILE" > /dev/null && [ -x "$RIG_CHROME" ] \
+    || { echo "rig_label: no running rig Chrome to hand the slot label to"; return 1; }
+  id=$(node -e 'const k=Buffer.from(require(process.argv[1]).key,"base64");const h=require("crypto").createHash("sha256").update(k).digest("hex").slice(0,32);console.log([...h].map(c=>String.fromCharCode(97+parseInt(c,16))).join(""))' "$RIG_REPO/fast-ext/manifest.json") \
+    || { echo "rig_label: cannot derive the extension id from fast-ext/manifest.json"; return 1; }
+  RIG_LOG="$RIG_PROFILE/chrome-label.log" daemon "$RIG_CHROME" --user-data-dir="$RIG_PROFILE" \
+    "chrome-extension://$id/options.html?slot=$FASTLINK_RIG_INSTALL"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then rig_up; fi

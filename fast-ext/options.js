@@ -557,6 +557,24 @@ function onInstallSlotChange() {
   commitInstallSlot(id, id === 'secondary' ? 'Secondary (port 9877)' : 'Primary (port 9876)');
 }
 
+// Launch-time slot: options.html?slot=<label> sets this browser's slot with no click. It exists for
+// a Chrome nobody can click on: bench/hvm-rig.sh hands this URL to the headless rig Chrome it
+// launched. Web pages cannot navigate here (options.html is not web_accessible), so only whoever
+// starts this Chrome can pass it. Narrow on purpose: the label must ALREADY be canonical
+// ([a-z0-9_-], alnum first, ≤32); anything else is refused, never rewritten. Writes and reloads only
+// when it differs from the stored slot, so opening the URL again is a no-op.
+async function applyLaunchSlot() {
+  let raw = null;
+  try { raw = new URLSearchParams(location.search).get('slot'); } catch {}
+  if (raw == null) return;
+  const id = sanitizeInstallId(raw);
+  if (!id || id !== raw) { showMsg(`Ignored ?slot="${raw}": a slot label is [a-z0-9_-], starting with a letter or digit, at most 32 characters.`, 'err'); return; }
+  let current = 'primary';
+  try { current = sanitizeInstallId((await chrome.storage.local.get(INSTALL_ID_KEY))?.[INSTALL_ID_KEY]) || 'primary'; } catch {}
+  if (current === id) return;
+  await commitInstallSlot(id, `“${id}” (from the launch URL)`);
+}
+
 function onApplyCustomInstall() {
   const input = $('install-custom');
   const id = sanitizeInstallId(input?.value);
@@ -783,6 +801,7 @@ try {
 } catch {}
 
 async function init() {
+  await applyLaunchSlot(); // first, so a rig's slot lands even if a later render throws
   await render();
   renderControls();
   renderDebugger();
