@@ -638,3 +638,13 @@ test('live Oracle 44743f3c: a checkable option labelled "Select <thing>" inside 
   assert.equal(r.dialogStillOpen, undefined, JSON.stringify(r));
   assert.notEqual(r.verified, false, JSON.stringify(r));
 });
+
+test('fast_click carries debug-only phase timings (_debug.phases + swTotalMs); other actions do not', async () => {
+  const { pay } = setup();
+  const r = await call('fast_click', { frame: 'pay.provider', text: 'Pay now' });
+  assert.ok(r._debug && r._debug.phases, JSON.stringify(r).slice(0, 300));
+  for (const k of ['resolveMs', 'dispatchMs', 'actionMs', 'changedBeforeMs', 'changedAfterMs', 'settleMs', 'serializeMs', 'totalMs']) assert.equal(typeof r._debug.phases[k], 'number', k);
+  assert.equal(typeof r._debug.swTotalMs, 'number');
+  const f = await call('fast_fill', { frame: 'pay.provider', match: 'Card number', value: '1', noSnapshot: true });
+  assert.equal(f._debug, undefined);
+});

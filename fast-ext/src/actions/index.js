@@ -127,7 +127,11 @@ export async function dispatchAction(action, args) {
   notifyOverlay({ phase: 'start', id: evtId, action, args });
   try {
     // card numbers are masked to their last 4 digits in every result (frames.js)
+    const tRun = Date.now();
     const r = slimResult(maskCardNumbers(await runOne(action, args)));
+    // debug-only phase timings (page.js `_debug`): add the service worker's whole time — frame
+    // routing, dry runs, bridge round trips — so page time and extension time can be told apart
+    if (r && typeof r === 'object' && r._debug && typeof r._debug === 'object') r._debug = { ...r._debug, swTotalMs: Date.now() - tRun };
     // Pass error payloads through whole — diagnostics/available/etc. must survive to the LLM.
     if (r && typeof r === 'object' && 'error' in r && r.error !== undefined) {
       notifyOverlay({ phase: 'end', id: evtId, ok: false, error: r.error });

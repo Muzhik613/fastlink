@@ -22,7 +22,7 @@ const run = (w, a, x) => w.__fastlink.run(a, { noSnapshot: true, ...x });
 
 test('click miss: one line with the closest names, nothing else', async () => {
   const r = await run(page(), 'fast_click', { text: 'Create VM' });
-  assert.deepEqual(Object.keys(r), ['error']);
+  assert.deepEqual(Object.keys(r).filter((k) => k !== '_debug'), ['error'], 'only _debug (stripped by the runner) rides along');
   assert.equal(r.error, 'No element matching "Create VM" (nothing done); closest: "Create new", "(New) vm_group", "Review + create"');
 });
 

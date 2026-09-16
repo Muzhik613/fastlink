@@ -1878,7 +1878,9 @@ async function runPageAction(action, args) {
     // Then let the re-render the action triggered finish (DOM quiet for 150ms,
     // ≤ SETTLE_MAX_MS) so the snapshot shows the result of the action, not the
     // frame before it. A page still mutating at the cap is flagged `settling`.
+    const tSettle = nowMs();
     const settle = await settleDom(settleMs);
+    phase('settleMs', nowMs() - tSettle);
     // FRESH POST-ACTION SNAPSHOT (field-feedback #1): re-walk the DOM AFTER the
     // action settles so the returned snapshot reflects what the action DID — a
     // dropdown it opened, a framework re-render, a revealed panel — instead of the
@@ -1928,7 +1930,9 @@ async function runPageAction(action, args) {
       // and bails at budgetMs, so a heavy page can't turn a click/fill into a 30s
       // timeout or freeze the renderer. drainMs first flushes the mutations the
       // action just produced so they appear in THIS fresh walk.
+      const tSer = nowMs();
       const snap = await serializeSnapshot(true, { budgetMs: 2000, drainMs: 30, indexMs: 1500 });
+      phase('serializeMs', nowMs() - tSer);
       // A navigating click can tear the page down so the fresh walk returns empty
       // — fall back to the match-time snapshot rather than returning nothing.
       if ((!snap || !Array.isArray(snap.items) || snap.items.length === 0) && hasPre) {
@@ -4114,7 +4118,10 @@ async function runPageAction(action, args) {
     // Native controls keep el.click() (their activation behaviour: a label-proxied
     // radio's input is checked by it); a script-only target or a custom widget gets
     // the full pointer sequence a person's click produces.
+    phase('resolveMs', nowMs() - t0);
+    const tDispatch = nowMs();
     if (item.clickable || !NATIVE_CLICK.test(el.tagName)) pointerSeq(el); else el.click();
+    phase('dispatchMs', nowMs() - tDispatch);
     const out = await withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
     // What the click DID leads the result: where the page is now, whether the URL
     // moved, whether a dialog opened/closed, and what holds focus.
@@ -4149,6 +4156,7 @@ async function runPageAction(action, args) {
     if (inDialogBefore && checkedOf(el) === null && CONFIRM.test(confirmText)) {
       const tC = nowMs();
       while (dialogNow && dialogNow === dialogBefore && dialogNow.isConnected && nowMs() - tC < AUTO_WAIT_MS) { await wait(100); dialogNow = activeDialogRoot(); }
+      phase('confirmWaitMs', nowMs() - tC);
       if (dialogNow && dialogNow === dialogBefore && dialogNow.isConnected) {
         head.verified = false;
         head.dialogStillOpen = dialogLabel(dialogNow) || true;
@@ -4703,6 +4711,11 @@ const withChanged = (r, list, partial = false) => {
   return out;
 };
 
+// Per-phase timings of one fast_click (debug only: the result carries them as `_debug`, which
+// the runner logs and strips before the model reads the result). null when not timing.
+let PHASES = null;
+const phase = (name, ms) => { if (PHASES) PHASES[name] = (PHASES[name] || 0) + Math.round(ms); };
+
 // A click whose id had gone stale and fell back to text says so; one re-resolved by its label says that.
 const withIdStale = (r, args) => {
   if (!r || typeof r !== 'object' || !args) return r;
@@ -4730,20 +4743,27 @@ if (typeof window !== 'undefined') {
   window.__fastlink.run = async (action, args) => {
     NO_FRAME_NOTICE.on = !!(args && args.noFrameNotice);
     const write = WRITE_ACTIONS.has(action) && !(args && args.dryRun);
+    const timing = action === 'fast_click' && !(args && args.dryRun);
+    PHASES = timing ? {} : null;
+    const tAll = nowMs();
     let before = null, stateMs = 0;
-    if (write) { const t = nowMs(); try { initIndex(); drainPendingSync(2000, 20); before = formState(); } catch {} stateMs += nowMs() - t; }
+    if (write) { const t = nowMs(); try { initIndex(); drainPendingSync(2000, 20); before = formState(); } catch {} stateMs += nowMs() - t; phase('changedBeforeMs', nowMs() - t); }
     try {
+      const tAct = nowMs();
       let r = withIdStale(await runPageAction(action, args), args);
+      phase('actionMs', nowMs() - tAct);
       if (write && before && r && typeof r === 'object' && !r.error && !r.dryRun) {
         const t = nowMs();
         try { drainPendingSync(2000, 20); const after = formState(); r = withChanged(r, diffFormState(before, after), before.partial || after.partial); } catch {}
         stateMs += nowMs() - t;
+        phase('changedAfterMs', nowMs() - t);
         window.__fastlink.lastChangedMs = Math.round(stateMs);   // cost probe for measurement, not in the result
       }
       const out = shortResult(action, r, args || {});
       try { noteServedDeep(out); } catch {}
+      if (PHASES && out && typeof out === 'object') { phase('totalMs', nowMs() - tAll); out._debug = { phases: PHASES }; }
       return out;
-    } finally { NO_FRAME_NOTICE.on = false; }
+    } finally { NO_FRAME_NOTICE.on = false; PHASES = null; }
   };
   window.__fastlink.cancelWaits = () => { const n = ACTIVE_WAITS.size; for (const c of [...ACTIVE_WAITS]) c(); return n; };
 }
