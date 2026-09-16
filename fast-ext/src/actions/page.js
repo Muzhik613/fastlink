@@ -4140,9 +4140,13 @@ async function runPageAction(action, args) {
     // A confirm button of an open dialog (OK / Save / Create / Apply / Done / …) that leaves
     // the dialog open did not take: the page refused it (a validation message, a busy
     // check). Closing can be async, so the dialog gets AUTO_WAIT_MS to go away.
-    const CONFIRM = /^(ok|okay|save|apply|create|done|confirm|submit|add|yes|continue|update|select)\b/i;
+    // A confirm is a BUTTON whose label is the verb, at most one more word ("OK", "Save changes",
+    // "Select image") — not a checkable option whose label starts with the verb (live Oracle
+    // 44743f3c: the card "Select Canonical Ubuntu 26.04" was checked, came back verified:false /
+    // dialogStillOpen and cost a 1.5s wait, twice).
+    const CONFIRM = /^(ok|okay|save|apply|create|done|confirm|submit|add|yes|continue|update|select)(\s+\S+)?$/i;
     const confirmText = cleanLabel(item.text || item.label || '');
-    if (inDialogBefore && CONFIRM.test(confirmText)) {
+    if (inDialogBefore && checkedOf(el) === null && CONFIRM.test(confirmText)) {
       const tC = nowMs();
       while (dialogNow && dialogNow === dialogBefore && dialogNow.isConnected && nowMs() - tC < AUTO_WAIT_MS) { await wait(100); dialogNow = activeDialogRoot(); }
       if (dialogNow && dialogNow === dialogBefore && dialogNow.isConnected) {

@@ -629,3 +629,12 @@ test('live Oracle 46acec38: an id handed out by a wait hit is recorded (clickabl
   assert.equal(r.reResolved, true, JSON.stringify(r));
   assert.deepEqual(hits, ['Canonical Ubuntu']);
 });
+
+test('live Oracle 44743f3c: a checkable option labelled "Select <thing>" inside a dialog is not a confirm (no dialogStillOpen, no wait)', async () => {
+  const { pay } = setup({ payHtml: '<div role="dialog" aria-label="Side Panel" data-box="0,0,1024,768"><label><input type="checkbox" id="cu"> Select Canonical Ubuntu 26.04</label><button id="sel">Select image</button></div>' });
+  const t0 = Date.now();
+  const r = await call('fast_click', { frame: 'pay.provider', text: 'Select Canonical Ubuntu 26.04', noSnapshot: true });
+  assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0}ms`);
+  assert.equal(r.dialogStillOpen, undefined, JSON.stringify(r));
+  assert.notEqual(r.verified, false, JSON.stringify(r));
+});
