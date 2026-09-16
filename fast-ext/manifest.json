@@ -4,7 +4,7 @@
   "name": "FastLink",
   "version": "0.4.4",
   "description": "Let Claude read and control your active Chrome tab — snapshot the DOM, click, fill forms, and run multi-step batches.",
-  "permissions": ["tabs", "scripting", "activeTab", "alarms", "webRequest", "declarativeNetRequest", "storage", "identity", "debugger", "notifications", "sidePanel"],
+  "permissions": ["tabs", "scripting", "activeTab", "alarms", "webRequest", "storage", "identity", "debugger", "notifications", "sidePanel"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js", "type": "module" },
   "side_panel": { "default_path": "sidepanel.html" },
@@ -18,7 +18,7 @@
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["src/overlay.js", "src/readAloud.js"],
+      "js": ["src/overlay.js"],
       "run_at": "document_start",
       "world": "ISOLATED",
       "all_frames": false

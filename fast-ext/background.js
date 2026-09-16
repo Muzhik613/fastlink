@@ -5,7 +5,6 @@ import { dispatchAction }                         from './src/actions/index.js';
 import { installTrail }                           from './src/actions/trail.js';
 import { isInjectableUrl }                        from './src/util.js';
 import { reloadSelf }                             from './src/reloadSelf.js';
-import './src/edgeTts.js';   // Edge neural TTS engine for the "Read aloud" widget (self-registering)
 
 startBufferListeners();
 
