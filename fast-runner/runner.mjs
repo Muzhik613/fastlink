@@ -654,15 +654,24 @@ export function loadToolset(spec = process.env.FASTRUN_TOOLSET || 'default') {
   return { name, file, allow: ts.allow, rename: ts.rename || {}, describe: ts.describe || {} };
 }
 
+// Server tools that are NEVER model-facing, whatever a toolset says ("*" or an explicit allow).
+// Applied here, after the toolset's own allow-filter, and nowhere else. fast_frame_read is the
+// bench scorer's read of fields inside cross-origin frames (f7f3925); the scorer calls it through
+// its own handler (bench/fastlink.js), never through a runner toolset. Not fast_evaluate: that is
+// also a scorer instrument, but toolset.phase2-eval.json passes it to the model on purpose (the
+// owner's A/B, bench/hvm-queue-feedback.sh), and phase2/no-cdp already leave it out.
+export const HIDDEN_TOOLS = new Set(['fast_frame_read']);
+
 // allow-filter, rename (Grok-facing name -> real name on call), describe overrides (keyed by REAL
 // name; ask_caller/report_done accept one too, so a toolset can tighten the report without
-// touching the baseline).
+// touching the baseline). A HIDDEN_TOOLS entry is dropped last, so it is also never in `back`.
 export function buildTools(mcpTools, toolset) {
   const allowAll = toolset.allow.includes('*');
   const back = new Map();
   const tools = [];
   for (const t of mcpTools) {
     if (!allowAll && !toolset.allow.includes(t.name)) continue;
+    if (HIDDEN_TOOLS.has(t.name)) continue;
     const name = toolset.rename[t.name] || t.name;
     back.set(name, t.name);
     tools.push({ name, description: toolset.describe[t.name] || t.description || '', input_schema: t.inputSchema || { type: 'object', properties: {} } });

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadToolset, buildTools, buildSystem } from '../runner.mjs';
+import { loadToolset, buildTools, buildSystem, HIDDEN_TOOLS } from '../runner.mjs';
 import { TOOLS } from '../../fast-dxt/server/tools.js';
 
 // Tools that attach chrome.debugger (fast-ext/src/actions/input.js tier + its importers).
@@ -16,10 +16,10 @@ test('default toolset = every server tool + native, descriptions untouched, inst
   const ts = loadToolset();
   assert.equal(ts.name, 'default');
   const { tools, back } = buildTools(TOOLS, ts);
-  assert.equal(tools.length, TOOLS.length + NATIVE.length);
   assert.equal(TOOLS.length, 22);
+  assert.equal(tools.length, TOOLS.length - HIDDEN_TOOLS.size + NATIVE.length);
   assert.ok(TOOLS.some(t => t.name === 'fast_ext_reload'), 'ops tool fast_ext_reload is on the server (default "*" exposes it)');
-  for (const t of TOOLS) {
+  for (const t of TOOLS.filter(t => !HIDDEN_TOOLS.has(t.name))) {
     const seen = tools.find(x => x.name === t.name);
     assert.equal(seen.description, t.description);
     assert.equal(seen.input_schema, t.inputSchema);
@@ -28,6 +28,19 @@ test('default toolset = every server tool + native, descriptions untouched, inst
   assert.match(tools.find(t => t.name === 'report_done').description, /^Finish the task\. result = concise/, 'baseline native descriptions untouched');
   assert.match(buildSystem(ts, 'ESSAY'), /Tool guidance from FastLink:\nESSAY$/);
   assert.match(buildSystem(ts, ''), /Today is \w+ \d{4}-\d{2}-\d{2} \(America\/Chicago\)/, 'system prompt carries today\'s date + timezone');
+});
+
+test('fast_frame_read is on the server but never model-facing: absent under default, phase2, every shipped toolset and an explicit allow', () => {
+  assert.ok(TOOLS.some(t => t.name === 'fast_frame_read'), 'the scorer tool exists on the server');
+  assert.ok(HIDDEN_TOOLS.has('fast_frame_read'));
+  assert.ok(!HIDDEN_TOOLS.has('fast_evaluate'), 'phase2-eval offers fast_evaluate on purpose');
+  for (const name of ['default', 'phase2', 'phase2-eval', 'no-cdp']) {
+    const { tools, back } = buildTools(TOOLS, loadToolset(name));
+    assert.ok(!names(tools).includes('fast_frame_read'), name);
+    assert.equal(back.has('fast_frame_read'), false, `${name}: a call to it maps to nothing`);
+  }
+  const { tools } = buildTools(TOOLS, { name: 'x', allow: ['fast_snapshot', 'fast_frame_read'], rename: {}, describe: {} });
+  assert.deepEqual(names(tools), ['fast_snapshot', ...NATIVE]);
 });
 
 test('"default" and unset and FASTRUN_TOOLSET resolve the same file', () => {
