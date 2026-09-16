@@ -267,16 +267,27 @@ const labelFor = (el, forLookup) => {
 // ancestors; the first ancestor that contains exactly ONE <label> not wrapping the
 // control is the field group, so return that label's text. Stop at the first
 // ancestor holding multiple labels (ambiguous — that's a form section, not a field).
+// Only "is there exactly ONE such label" matters, so stop at the SECOND one
+// instead of materializing every label and calling contains() on each: a high
+// ancestor on a console SPA holds thousands, and this ran per candidate
+// (GCP: 138,869 querySelectorAll('label') calls in one fast_select_option).
 const containerLabel = (el) => {
   let p = el.parentElement;
   for (let hops = 0; p && hops < 5; hops++, p = p.parentElement) {
-    let labels = [];
-    try { labels = Array.from(p.querySelectorAll('label')).filter((l) => !l.contains(el)); } catch {}
-    if (labels.length === 1) {
-      const t = cleanLabel(labels[0].textContent);
+    let found = null, n = 0;
+    try {
+      const labels = p.querySelectorAll('label');
+      for (let i = 0; i < labels.length && n < 2; i++) {
+        const l = labels[i];
+        if (l.contains(el)) continue;   // a wrapping label belongs to the control
+        if (++n === 1) found = l;
+      }
+    } catch {}
+    if (n === 1 && found) {
+      const t = cleanLabel(found.textContent);
       if (t) return t;
     }
-    if (labels.length > 1) break; // ambiguous group — don't climb into a section
+    if (n > 1) break; // ambiguous group — don't climb into a section
   }
   return '';
 };
@@ -2744,6 +2755,9 @@ async function runPageAction(action, args) {
     // widgets) and never a landmark/container — GCP's hidden "Skip links"
     // [aria-label] div once won "Application type" over the real combobox.
     const CONTROLISH = 'select,input,textarea,[role="combobox"],[role="listbox"],[role="textbox"],[role="searchbox"],[aria-haspopup],[contenteditable="true"],[contenteditable=""]';
+    // What may be named as a dropdown at all (see isSelectish below): DROPDOWN_SEL's
+    // popup semantics, a control that declares an expanded state, or a native control.
+    const SELECTISH = `${DROPDOWN_SEL},[aria-expanded],select,input,textarea`;
     const LANDMARK_ROLES = /^(banner|complementary|contentinfo|main|navigation|region|form|group|dialog|alertdialog|search|toolbar|tabpanel|presentation|none|heading|list|table|grid)$/;
     // Cost model (a heavy SPA under a render storm: thousands of [aria-label]
     // elements, every layout read forced): ONE composed-tree walk that also
@@ -2818,8 +2832,18 @@ async function runPageAction(action, args) {
       // containerLabel answers with ONE label of the ≤5-ancestor field group, so it
       // can only match when a hit label sits inside that group — skip it otherwise.
       const nearHit = (el) => { let a = el; for (let i = 0; i < 5 && a.parentElement; i++) a = a.parentElement; return hitLabels.some(l => a.contains(l)); };
+      // A DROPDOWN is select-like: popup/expanded semantics, or a native form
+      // control. Matching on name alone over every [aria-label]/[placeholder]
+      // element let a LANDMARK win — GCP's breadcrumb <nav> and its <a>s carry
+      // the field name from a nearby label and were reported as "4 visible
+      // dropdowns match", so even at full speed the pick was refused. Narrowing
+      // here (before the tier loop, not in toControls after it) is also what
+      // keeps the scan cheap: the pool drops from every labelled element on the
+      // page to the handful that could actually be a dropdown.
+      const isSelectish = (el) => { try { return el.matches(SELECTISH); } catch { return false; } };
+      const selPool = pool.filter(isSelectish);
       const isCtl = (el) => el.matches && el.matches(CONTROLISH);
-      const ordered = pool.filter(isCtl).concat(pool.filter(el => !isCtl(el)));
+      const ordered = selPool.filter(isCtl).concat(selPool.filter(el => !isCtl(el)));
       // Tiers: wired label (for=/wrapping/aria-labelledby) OR a sibling <label> in
       // the same field group (rescues react-select inputs whose only aria-label is
       // an opaque internal id — Greenhouse), then aria-label, then placeholder.

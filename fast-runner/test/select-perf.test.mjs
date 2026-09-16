@@ -124,6 +124,31 @@ test('resolution cost does not scale with DOCUMENT size — no document-wide wal
     `doubling the page multiplied the DOM queries ${small.counts.queries} -> ${big.counts.queries}: something walks the document per candidate/row again`);
 });
 
+// 2026-09-15, GCP: matching a dropdown by NAME over every [aria-label]/[placeholder]
+// element let landmarks win — the breadcrumb <nav> and its <a>s picked up the field
+// name from a nearby label and were reported as "4 visible dropdowns match", so the
+// pick was refused on a page whose real control was found. A dropdown is select-like.
+test('a <nav>/<a> carrying the field name is never a dropdown candidate', async (t) => {
+  const html = '<!doctype html><html><body><div id="wrap">'
+    + '<nav><a href="#">Google Auth Platform</a><a href="#">Clients</a><a href="#">Create client</a></nav>'
+    + '<label for="app">Application type</label>'
+    + '<select id="app"><option value="">Select</option><option value="web">Web application</option></select>'
+    + '</div></body></html>';
+  const { window: win } = new JSDOM(html, { pretendToBeVisual: true, runScripts: 'outside-only' });
+  t.after(() => win.close());
+  const RECT = { x: 0, y: 0, left: 0, top: 0, right: 200, bottom: 20, width: 200, height: 20 };
+  win.Element.prototype.getBoundingClientRect = () => RECT;
+  win.requestIdleCallback = win.requestIdleCallback
+    || ((cb) => win.setTimeout(() => cb({ timeRemaining: () => 0, didTimeout: true }), 0));
+  win.cancelIdleCallback = win.cancelIdleCallback || ((h) => win.clearTimeout(h));
+  win.eval(PAGE_JS);
+
+  const res = await select(win, { field: 'Application type', option: 'Web application' });
+  assert.equal(res.error, undefined, `the one real dropdown must win outright, got: ${JSON.stringify(res).slice(0, 300)}`);
+  assert.equal(res.verified, true);
+  assert.equal(win.document.getElementById('app').value, 'web');
+});
+
 // The cheap path must still do everything 9d18d4d added, or it is not a fix.
 test('repeated-row behaviour is preserved: ambiguity refused and named, index:N picks one row', async (t) => {
   const { win } = makePage();

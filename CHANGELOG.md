@@ -33,6 +33,41 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-15 — fast_select_option on GCP, part 2: a dropdown candidate must be select-like (a `<nav>` was one); containerLabel stops at the second label
+- **What:** (a) `fast_select_option` narrows its candidate pool to `SELECTISH`
+  (`DROPDOWN_SEL`, `[aria-expanded]`, or a native `select/input/textarea`) BEFORE the name-matching
+  tier loop, so a landmark can never be named as a dropdown. (b) `containerLabel` stops as soon as
+  it sees a SECOND non-wrapping label instead of `Array.from(p.querySelectorAll('label')).filter(l
+  => l.contains(el))` — it only ever needed "is there exactly one".
+- **Why:** after the row-scan fix shipped (fa51868), GCP's OAuth form STILL died on the 20s
+  deadline. Probing the real tab (DOM-API counters installed around a direct
+  `window.__fastlink.run` call, so the bridge deadline did not truncate it) showed the call actually
+  took **88,966ms** and that the cost was CALL COUNT, not per-query cost: `querySelectorAll('label')`
+  **138,869 times** (696ms of self-time), 54,645 rect reads, while the composed-tree walk was only
+  4,960 roots / 4ms — walkDeep and forced layout were both innocent. The `label` storm is
+  `containerLabel` running per candidate over a pool that was every `[aria-label]`/`[placeholder]`
+  element on the page, each hop materializing thousands of labels and calling `contains` on each.
+  9d18d4d is again the origin: the old `findField` RETURNED on the first match, the new `findFields`
+  evaluates the whole pool. The same over-wide pool was also a correctness bug — GCP's breadcrumb
+  `<nav>` and its `<a>`s picked the field name up from a nearby label and the call refused with
+  "4 visible dropdown(s) match", naming a `<nav>` whose value was "Google Auth Platform Clients
+  Create client". `<nav>`/`<a>` have implicit landmark roles, so the existing `LANDMARK_ROLES` test
+  (which reads the `role` ATTRIBUTE) never excluded them.
+- **Files:** `fast-ext/src/actions/page.js`, `fast-runner/test/select-perf.test.mjs`.
+- **Watch out:** a custom dropdown with NO select semantics at all (no role, no `aria-haspopup`, no
+  `aria-expanded`, not a native control) is no longer matchable by name — it was only ever matchable
+  by accident, and the miss report still lists `dropdownCandidates()`. `[aria-expanded]` is in
+  `SELECTISH` precisely so a `<div role="button" aria-expanded>` widget still resolves.
+- **Status:** committed; fast-runner 56/56 (new test: a `<nav>`/`<a>` carrying the field name is
+  never a candidate). On a landmark-shaped repro: `querySelectorAll('label')` **5,000 → 0**
+  (total querySelectorAll 5,016 → 16), `resolveMs` **1,700ms → 15ms**. Real pages unchanged or
+  better: selenium web-form verified 10ms; APG select-only verified; react-select.com byte-identical
+  refusal; select2 unchanged — it sometimes lists a third candidate (its own unlabelled internal
+  search field, `value:""`), but that is timing-dependent and PRE-EXISTING (12b368c produced 2 and
+  then 3 candidates on consecutive runs), neither caused nor fixed here, and `index:0` still picks
+  Alaska through the hidden backing select. GCP itself still needs the lead's re-test in the
+  owner's Chrome.
+
 ## 2026-09-15 — fast_select_option regression: the repeated-row scan was O(fields × document); bounded, memoized, and now guarded by a perf test
 - **What:** `rowContextOf` (page.js) is bounded and memoized. (a) ONE `label[for]` map per
   invocation feeds every `fieldKey` via `labelFor(el, rowForLookup)`; (b) `rowContextOf` answers
