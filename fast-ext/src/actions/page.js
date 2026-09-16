@@ -961,8 +961,10 @@ const disconnectObserver = (reason) => {
 // permanently deaf observer left settles and waits blind (live Oracle 4cbfe776: sinceMutMs
 // 81,240 while panels opened and closed).
 const STORM_RETRY_MS = 10000;
-// How long a click waits for the page to START reacting (see fast_click): a popup opener, any other button.
-const REACT_OPENER_MS = 800, REACT_CLICK_MS = 300;
+// How long a click waits for the page to react (see fast_click): a popup opener, any other button;
+// once it reacts, until REACT_QUIET_MS pass with no mutation (within the same cap); and while a new
+// modal backdrop stands with no new dialog yet, until the dialog comes, at most REACT_MODAL_MS.
+const REACT_OPENER_MS = 800, REACT_CLICK_MS = 300, REACT_QUIET_MS = 100, REACT_MODAL_MS = 1500;
 
 const setupObserver = () => {
   if (INDEX.observer || typeof MutationObserver === 'undefined') return;
@@ -1145,6 +1147,42 @@ const activeDialogRoot = () => {
     }
   } catch {}
   return null;
+};
+// Visible dialogs and modal backdrops now. A backdrop is a layer that covers the whole viewport,
+// is fixed (or absolute), holds no control and no text, and is tinted or named like one
+// (backdrop / overlay / scrim / …). It often mounts before its dialog has a role or a name
+// (live Oracle 8c427c0f: the page dimmed ~1s before the image picker showed). Opacity is not
+// required: a fading-in backdrop starts at 0. Bounded: 50 dialogs; body's subtree to depth 3,
+// 400 elements (where portals mount). { dialogs, backdrops: [element] }.
+const BACKDROP_HINT = /backdrop|overlay|scrim|dimmer|underlay|mask|curtain/i;
+const modalLayers = () => {
+  const out = { dialogs: 0, backdrops: [] };
+  try {
+    const ds = document.querySelectorAll(DIALOG_SEL);
+    for (let i = 0; i < ds.length && i < 50; i++) { let r; try { r = ds[i].getBoundingClientRect(); } catch { continue; } if (visible(ds[i], r)) out.dialogs++; }
+    const vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+    if (!vw || !vh || !document.body) return out;
+    const cand = [];
+    let level = [...document.body.children];
+    for (let depth = 0; depth < 3 && level.length && cand.length < 400; depth++) {
+      const next = [];
+      for (const el of level) { if (cand.length >= 400) break; cand.push(el); next.push(...el.children); }
+      level = next;
+    }
+    for (const el of cand) {
+      if (/^(SCRIPT|STYLE|LINK|META|TEMPLATE|NOSCRIPT|SVG|IFRAME)$/i.test(el.tagName)) continue;
+      let cs; try { cs = getComputedStyle(el); } catch { continue; }
+      if ((cs.position !== 'fixed' && cs.position !== 'absolute') || cs.display === 'none' || cs.visibility === 'hidden') continue;
+      let r; try { r = el.getBoundingClientRect(); } catch { continue; }
+      if (r.left > 2 || r.top > 2 || r.right < vw - 2 || r.bottom < vh - 2) continue;
+      if ((el.textContent || '').trim() || el.querySelector('button,input,select,textarea,a[href],[role="button"],[tabindex]')) continue;
+      const bg = String(cs.backgroundColor || '');
+      const tinted = bg && bg !== 'transparent' && !/^rgba\([^)]*,\s*0\)$/.test(bg);
+      const cls = typeof el.className === 'string' ? el.className : (el.getAttribute('class') || '');
+      if (tinted || BACKDROP_HINT.test(`${cls} ${el.id}`)) out.backdrops.push(el);
+    }
+  } catch {}
+  return out;
 };
 // How the snapshot names a dialog: aria-label, aria-labelledby, its first heading, else its first text. Pure.
 const dialogLabel = (d) => {
@@ -4141,18 +4179,36 @@ async function runPageAction(action, args) {
     // missed: the settle sees a quiet page and returns at once (live Oracle caff4e8f: the first
     // "Change image" click came back changed "none" in 18ms, the picker opened, the model clicked
     // again and closed it).
-    let reactCap = 0;
+    let reactCap = 0, layersBefore = null;
     try {
       if (el.closest('[aria-haspopup]:not([aria-haspopup="false"]),[aria-expanded],[aria-controls],[aria-owns]')) reactCap = REACT_OPENER_MS;
       else if (checkedOf(el) === null && (el.tagName === 'BUTTON' || el.tagName === 'A' || /^(button|link|tab|menuitem)$/i.test(el.getAttribute('role') || '') || item.clickable)) reactCap = REACT_CLICK_MS;
+      if (reactCap) layersBefore = modalLayers();
     } catch {}
     const tDispatch = nowMs();
     if (item.clickable || !NATIVE_CLICK.test(el.tagName)) pointerSeq(el); else el.click();
     phase('dispatchMs', nowMs() - tDispatch);
     if (reactCap) {
       const tR = nowMs();
-      if (observerLive()) { while (!(INDEX.lastMutMs && INDEX.lastMutMs >= tDispatch) && nowMs() - tR < reactCap) await wait(25); }
-      else await wait(Math.min(150, reactCap));
+      const live = observerLive();
+      const reacted = () => INDEX.lastMutMs && INDEX.lastMutMs >= tDispatch;
+      const settle = async (cap) => { while (nowMs() - INDEX.lastMutMs < REACT_QUIET_MS && nowMs() - tR < cap) await wait(25); };
+      if (live) {
+        while (!reacted() && nowMs() - tR < reactCap) await wait(25);
+        // the first mutation is often a backdrop or an animation frame, not the finished panel
+        // (live Oracle 8c427c0f: reactWaitMs 25, the picker showed a second later): settle until quiet
+        if (reacted()) await settle(reactCap);
+      } else await wait(Math.min(150, reactCap));
+      // a new modal backdrop and no new dialog: the dialog is on its way (or has no role / name yet)
+      const modalPending = () => {
+        if (!layersBefore) return false;
+        const m = modalLayers();
+        return m.dialogs <= layersBefore.dialogs && m.backdrops.some((b) => !layersBefore.backdrops.includes(b));
+      };
+      if (modalPending()) {
+        while (modalPending() && nowMs() - tR < REACT_MODAL_MS) await wait(50);
+        if (live) await settle(REACT_MODAL_MS);   // its name and content land a tick after its role
+      }
       phase('reactWaitMs', nowMs() - tR);
     }
     const out = await withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
@@ -4709,15 +4765,16 @@ const formState = () => {
   // dialogs by ELEMENT, not name: a same-named panel opening inside another (Oracle's image
   // picker is a "Side Panel" inside the "Side Panel" create form) is its own open/close
   const dialogs = new Map();   // element → label
-  let view = { current: '', headings: [] };
+  let view = { current: '', headings: [] }, backdrops = [];
   try {
     const els = document.querySelectorAll(DIALOG_SEL);
     for (let i = 0; i < els.length && i < 50; i++) {
       let r; try { r = els[i].getBoundingClientRect(); } catch { continue; }
-      if (visible(els[i], r)) dialogs.set(els[i], dialogLabel(els[i]) || 'dialog');
+      if (visible(els[i], r)) dialogs.set(els[i], dialogLabel(els[i]));
     }
     const act = activeDialogRoot();
-    if (act && !dialogs.has(act)) dialogs.set(act, dialogLabel(act) || 'dialog');
+    if (act && !dialogs.has(act)) dialogs.set(act, dialogLabel(act));
+    backdrops = modalLayers().backdrops;
     // the view: the current step / page / tab and the visible headings (a wizard's Next changes these
     // without touching a field — live Oracle caff4e8f: three Next clicks said "none" while the wizard
     // moved Security → Networking → Storage)
@@ -4732,10 +4789,10 @@ const formState = () => {
     for (const [el, label] of dialogs) {
       let nested = false;
       for (const other of dialogs.keys()) if (other !== el && other.contains(el)) { nested = true; break; }
-      dialogs.set(el, `dialog "${label}"${nested ? ' (nested)' : ''}`);
+      dialogs.set(el, `${label ? `dialog "${label}"` : 'dialog (no name yet)'}${nested ? ' (nested)' : ''}`);
     }
   } catch {}
-  return { fields, dialogs, view, partial };
+  return { fields, dialogs, view, backdrops, partial };
 };
 // "Label: \"old\" → \"new\"", "dialog \"X\" opened/closed". A field the page re-rendered (a new
 // element) is matched by its label when that label is unique on both sides. Pure given states.
@@ -4762,6 +4819,11 @@ const diffFormState = (a, b) => {
   const shut = (key, n) => (n > 0 ? `${key} closed (${n} still open)` : `${key} closed`);
   for (const [key, n] of nb) if (n > (na.get(key) || 0)) dialogLines.push(open(key, n));
   for (const [key, n] of na) if (n > (nb.get(key) || 0)) dialogLines.push(shut(key, nb.get(key) || 0));
+  // a modal backdrop that came or went with no dialog line to say so (its dialog not yet a dialog)
+  if (!dialogLines.length && a.backdrops && b.backdrops) {
+    if (b.backdrops.some((x) => !a.backdrops.includes(x))) dialogLines.push('a modal opened (its dialog not named yet)');
+    else if (a.backdrops.some((x) => !b.backdrops.includes(x))) dialogLines.push('a modal closed');
+  }
   // the view line, unless a dialog line already says what changed
   if (a.view && b.view && !dialogLines.length) {
     if (a.view.current !== b.view.current && (a.view.current || b.view.current)) out.push(`step: ${JSON.stringify(a.view.current)} → ${JSON.stringify(b.view.current)}`);
