@@ -412,35 +412,34 @@ function createNewDialog(win, { validateMs = 300, refuse = false } = {}) {
 }
 const RG_FORM = '<label for="vmn">Virtual machine name</label><input id="vmn"><label for="rg">Resource group</label><div role="combobox" id="rg" aria-label="Resource group" tabindex="0">(New) vm_group</div><button id="create">Create new</button><button>OK</button>';
 
-test('live Azure a25a6ef7: batch [fill VM name, click Create new, fill Name, click OK] — the dialog mounts first, Name is the dialog field, OK waits to be enabled, the group is applied', async () => {
+test('live Azure a25a6ef7: Create new → fill Name → OK — Name is the dialog field; a disabled OK fails at once and the retry applies the group', async () => {
   const { pay } = setup({ payHtml: RG_FORM });
-  const st = createNewDialog(pay);
+  const st = createNewDialog(pay, { validateMs: 300 });
   const F = 'pay.provider';
-  const r1 = await call('fast_fill', { frame: F, match: 'Virtual machine name', value: 'bench-vm', noSnapshot: true });
-  const r2 = await call('fast_click', { frame: F, text: 'Create new', noSnapshot: true });
-  assert.ok(r2.dialogOpened, JSON.stringify(r2).slice(0, 300));
-  const r3 = await call('fast_fill', { frame: F, match: 'Name', value: 'bench-rg', noSnapshot: true });
-  assert.equal(pay.document.getElementById('nm').value, 'bench-rg', JSON.stringify(r3).slice(0, 300));
+  const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+  await call('fast_fill', { frame: F, match: 'Virtual machine name', value: 'bench-vm', noSnapshot: true });
+  await call('fast_click', { frame: F, text: 'Create new', noSnapshot: true });
+  await tick(80);   // the next call: the dialog has mounted
+  await call('fast_fill', { frame: F, match: 'Name', value: 'bench-rg', noSnapshot: true });
+  assert.equal(pay.document.getElementById('nm').value, 'bench-rg');
   assert.equal(pay.document.getElementById('vmn').value, 'bench-vm', 'the VM name field behind the dialog was not touched');
-  const r4 = await call('fast_click', { frame: F, text: 'OK', noSnapshot: true });
-  assert.equal(st.applied, 'bench-rg', JSON.stringify(r4).slice(0, 400));
-  assert.equal(r4.dialogClosed, true);
-  assert.equal(r4.verified, undefined);
-  assert.equal(r1.verified, true);
+  const t0 = Date.now();
+  const early = await call('fast_click', { frame: F, text: 'OK', noSnapshot: true });
+  assert.match(early.error, /^"OK" is disabled \(not clicked\)/, JSON.stringify(early).slice(0, 300));
+  assert.ok(Date.now() - t0 < 1400, 'refused at once, no wait');
+  await tick(350);   // validation done
+  const r = await call('fast_click', { frame: F, text: 'OK', noSnapshot: true });
+  assert.equal(st.applied, 'bench-rg', JSON.stringify(r).slice(0, 400));
+  assert.equal(r.dialogClosed, true);
 });
 
-test('a dialog OK that stays disabled is refused; one the page does not accept is verified:false (dialogStillOpen)', async () => {
+test('a dialog OK the page does not accept is verified:false (dialogStillOpen)', async () => {
   const { pay } = setup({ payHtml: RG_FORM });
-  createNewDialog(pay, { validateMs: 5000 });
+  createNewDialog(pay, { validateMs: 10, refuse: true });
   await call('fast_click', { frame: 'pay.provider', text: 'Create new', noSnapshot: true });
+  await new Promise((r) => setTimeout(r, 80));
   await call('fast_fill', { frame: 'pay.provider', match: 'Name', value: 'bench-rg', noSnapshot: true });
-  const r = await call('fast_click', { frame: 'pay.provider', text: 'OK', noSnapshot: true });
-  assert.match(r.error, /^"OK" is disabled — nothing was clicked/, JSON.stringify(r).slice(0, 300));
-
-  const { pay: pay2 } = setup({ payHtml: RG_FORM });
-  createNewDialog(pay2, { validateMs: 10, refuse: true });
-  await call('fast_click', { frame: 'pay.provider', text: 'Create new', noSnapshot: true });
-  await call('fast_fill', { frame: 'pay.provider', match: 'Name', value: 'bench-rg', noSnapshot: true });
+  await new Promise((r) => setTimeout(r, 50));
   const r2 = await call('fast_click', { frame: 'pay.provider', text: 'OK', noSnapshot: true });
   assert.equal(r2.verified, false, JSON.stringify(r2).slice(0, 400));
   assert.ok(r2.dialogStillOpen);

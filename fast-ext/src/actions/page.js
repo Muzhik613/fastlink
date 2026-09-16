@@ -4005,33 +4005,17 @@ async function runPageAction(action, args) {
     const labelBefore = labelRead();
     // A disabled control ignores the click, so a click on one must not report success
     // (live Azure batch: "OK" pressed while the dialog was still validating the name —
-    // "4/4 steps ok", resource group never created). Give the page AUTO_WAIT_MS to enable
-    // it (a validation still running), then refuse.
+    // "4/4 steps ok", resource group never created). Refused at once; retrying is the caller's call.
     const isDisabled = (e) => { try { return e.disabled === true || e.getAttribute('aria-disabled') === 'true' || !!(e.closest && e.closest('fieldset[disabled]')); } catch { return false; } };
     if (isDisabled(el)) {
-      const tD = nowMs();
-      while (el.isConnected && isDisabled(el) && nowMs() - tD < AUTO_WAIT_MS) await wait(100);
-      if (!el.isConnected || isDisabled(el)) {
-        return { error: `${JSON.stringify(cleanLabel(item.text || item.label || args.text || '').slice(0, 60))} is disabled — nothing was clicked`, disabled: true, target: { i: item.i, tag: item.tag, text: item.text },
-          hint: 'the page has not enabled it: a required field is empty or invalid, or a check is still running — read the form\'s messages (fast_snapshot) and fix that first' };
-      }
+      return { error: `${JSON.stringify(cleanLabel(item.text || item.label || args.text || '').slice(0, 60))} is disabled (not clicked) — a required field is empty or invalid, or a check is still running`, disabled: true };
     }
     const inDialogBefore = !!(dialogBefore && dialogBefore.contains(el));
     // Native controls keep el.click() (their activation behaviour: a label-proxied
     // radio's input is checked by it); a script-only target or a custom widget gets
     // the full pointer sequence a person's click produces.
-    const clickAt = nowMs();
     if (item.clickable || !NATIVE_CLICK.test(el.tagName)) pointerSeq(el); else el.click();
     const out = await withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
-    // With no snapshot (a batch step with a follower) nothing waited for what the click
-    // started: let the DOM go quiet (≤600ms) so the dialog/panel it opened has mounted
-    // before this result reports it and the next step resolves against it.
-    if (args.noSnapshot === true || args.noSnapshot === 'true' || args.noSnapshot === 1) {
-      // first give the page up to 150ms to START changing (a portal mounts a tick later), then let it settle
-      const tq = nowMs();
-      while (!(INDEX.lastMutMs && INDEX.lastMutMs >= clickAt) && nowMs() - tq < 150) await wait(20);
-      if (INDEX.lastMutMs && INDEX.lastMutMs >= clickAt) await settleDom(600);
-    }
     // What the click DID leads the result: where the page is now, whether the URL
     // moved, whether a dialog opened/closed, and what holds focus.
     const head = { clicked: item, url: location.href, urlChanged: location.href !== urlBefore };
