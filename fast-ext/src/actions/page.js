@@ -3709,6 +3709,13 @@ async function runPageAction(action, args) {
           ? `the view sits inside a scroll container (${hosts.map(h => `${h.selector}: ${h.contentPx}px of content in ${h.viewPx}px`).join('; ')}) that may render only the rows in view — a row further down is NOT in the DOM yet: fast_scroll {selector:"${hosts[0].selector}", pixels:400}, repeat, and click again`
           : null;
         const missTail = scrollHint ? { ...tail, hint: [tail.hint, scrollHint].filter(Boolean).join(' | ') } : tail;
+        // the text was the label of the element the previous click hit, which renamed itself
+        const lc = INDEX.lastClick;
+        const q = cleanLabel(String(args.text || '')).toLowerCase();
+        if (lc && lc.labelNow && lc.path === pagePath() && q && lc.labels.some((l) => l === q || l.includes(q))) {
+          missTail.hint = [`that was the label of the element you just clicked; it now reads ${JSON.stringify(lc.labelNow)}`, missTail.hint].filter(Boolean).join(' | ');
+          missTail.labelNow = lc.labelNow;
+        }
         return { error: `No element matching "${args.text}". Nothing was clicked.`, ...missTail, ...(secHint || {}), ...(hosts.length ? { scrollers: hosts } : {}), diagnostics: diagnoseNoMatch(args.text) };
       }
       await wait(150);
@@ -3843,7 +3850,12 @@ async function runPageAction(action, args) {
     const urlBefore = location.href;
     const dialogsBefore = countDialogs();
     const checkedBefore = checkedOf(el);
-    flashEl(el, 'click');
+    // The label the index reads for this element, before and after the click: a
+    // control that renames itself when clicked (a sort header "Salary: Activate to
+    // sort" → "…to invert sorting") must not leave the caller holding a label that
+    // no longer exists.
+    const labelRead = () => { try { return el.isConnected ? makeClickEntry(el).text : null; } catch { return null; } };
+    const labelBefore = labelRead();
     // Native controls keep el.click() (their activation behaviour: a label-proxied
     // radio's input is checked by it); a script-only target or a custom widget gets
     // the full pointer sequence a person's click produces.
@@ -3852,6 +3864,12 @@ async function runPageAction(action, args) {
     // What the click DID leads the result: where the page is now, whether the URL
     // moved, whether a dialog opened/closed, and what holds focus.
     const head = { clicked: item, url: location.href, urlChanged: location.href !== urlBefore };
+    const labelNow = labelRead();
+    if (labelNow && labelBefore != null && labelNow !== labelBefore) head.labelNow = labelNow;
+    INDEX.lastClick = {
+      labels: [...new Set([item.text, item.label, item.ariaLabel, labelBefore, args.text].filter(Boolean).map((t) => cleanLabel(String(t)).toLowerCase()))],
+      labelNow: head.labelNow || null, path: pagePath(),
+    };
     // A check-type control reports its state AFTER the click: a radio is verified
     // when it is now selected, a checkbox when the click toggled it.
     const checkedNow = checkedOf(el);
