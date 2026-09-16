@@ -1177,7 +1177,11 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     }
     const isOverlayEl = overlayEls && overlayEls.has(el);
     const outOfView = !isOverlayEl && (rect.bottom < 0 || rect.top > vh || rect.right < 0 || rect.left > vw);
-    const offscreen = outOfView && entry.kind === 'click' && (matchAll || viewportOnly);
+    // Every returned control outside this document's viewport says so, with its
+    // position: a full read lists controls below the fold too (live Azure: Region and
+    // Image sit below the blade frame's fold), and the flag tells the caller they are
+    // there but not on screen (actions scroll them into view first).
+    const offscreen = outOfView && entry.kind === 'click';
     if (viewportOnly && outOfView) {
       if (entry.kind === 'click') offscreenItems++;
       if (!(matchAll && entry.kind === 'click')) continue;

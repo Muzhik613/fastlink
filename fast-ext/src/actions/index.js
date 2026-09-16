@@ -127,6 +127,8 @@ async function runOne(action, args) {
   // inside them, results come back in top-page space
   if (action === 'fast_snapshot') return snapshotWithFrames(await frameCtx(), args || {});
   if (FRAME_AWARE.has(action)) { const ctx = await frameCtx(); return withAppeared(ctx, await actWithFrames(ctx, action, args || {})); }
+  // fast_scroll {frame}: scroll inside one visible frame (its document or a scroller in it)
+  if (action === 'fast_scroll' && args?.frame) return inNamedFrame(await frameCtx(), 'fast_scroll', args);
   // fast_wait {frame}: a wait scoped to one visible frame (text or selector)
   if (action === 'fast_wait' && args?.frame) { const ctx = await frameCtx(); return withAppeared(ctx, await inNamedFrame(ctx, 'fast_wait', args)); }
   if (action === 'fast_wait' && args?.text && !args?.selector) {

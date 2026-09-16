@@ -322,3 +322,24 @@ test('a frame that appears after the last fast_snapshot is named once, in one li
   const again = await call('fast_click', { text: 'Nothing like this', noSnapshot: true });
   assert.equal(again.framesAppeared, undefined, 'said once, not on every call');
 });
+
+test('live Azure 639a6714: controls below a frame\'s fold are listed offscreen:true in a full read; an action scrolls them into view in the frame; fast_scroll takes frame', async () => {
+  const { pay } = setup({ payHtml: '<h2>Basics</h2><label for="vm">Virtual machine name</label><input id="vm" data-box="20,40,300,30"><label id="rl" data-box="20,900,80,20">Region</label><div role="combobox" aria-labelledby="rl" aria-haspopup="listbox" tabindex="0" data-box="120,900,300,30">(US) East US</div><button data-box="20,1400,160,30">See all images</button>' });
+  let scrolled = 0;
+  pay.Element.prototype.scrollIntoView = function () { scrolled++; };
+  const snap = await call('fast_snapshot', { frame: 'pay.provider', full: true });
+  const region = snap.items.find((it) => /East US/.test(it.text || ''));
+  const images = snap.items.find((it) => /See all images/.test(it.text || ''));
+  assert.ok(region && images, JSON.stringify(snap.items.map((i) => i.text)));
+  assert.equal(region.offscreen, true);
+  assert.deepEqual([images.offscreen, images.y], [true, 300 + 1400]);
+  assert.equal(snap.items.find((it) => it.tag === 'input').offscreen, undefined);
+  let clicked = 0;
+  pay.document.querySelector('button').addEventListener('click', () => { clicked++; });
+  const r = await call('fast_click', { id: images.i, noSnapshot: true });
+  assert.equal(clicked, 1, JSON.stringify(r));
+  assert.ok(scrolled >= 1, 'scrolled into view inside the frame before the click');
+  const sc = await call('fast_scroll', { frame: 'pay.provider', noSnapshot: true });
+  assert.equal(sc.inFrame.frameId, 7, JSON.stringify(sc));
+  assert.equal(sc.scrolled, true);
+});
