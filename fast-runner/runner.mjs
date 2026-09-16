@@ -5,7 +5,8 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMessage, ensureProxy, MODEL } from './xai.mjs';
-import { connect, claudeMcpEnv } from './fastlink-client.mjs';
+import { connect } from './fastlink-client.mjs';
+import { startVisualCheck, settleShots, takeNotes } from './visual-check.mjs';
 import { startRecording, stopRecording } from './recorder.mjs';
 
 const STATE_DIR = join(homedir(), '.local', 'state', 'fastrun');
@@ -458,7 +459,7 @@ export function gateProblems(run, args) {
   else {
     let last = -1;
     for (let i = log.length - 1; i >= 0; i--) if (isStateChanging(log[i])) { last = i; break; }
-    const selfVerified = last >= 0 && log[last].ok && log[last].verified === true;
+    const selfVerified = last >= 0 && log[last].ok && (log[last].verified === true || log[last].seen === true);
     if (!selfVerified && !log.slice(last + 1).some(e => e.ok && isRead(e))) {
       problems.push(last >= 0
         ? `no tool has read the page since your last ${log[last].name}; call fast_snapshot or fast_text (its own auto-snapshot is not a read-back) and cite what it returned`
@@ -476,7 +477,7 @@ export function gateProblems(run, args) {
   }
   // one refusal per run: a prior refusal that recorded unresolvedFailures already said this
   if (!(run.gateRefusals || []).some(r => r.unresolvedFailures)) {
-    for (const f of unresolvedFailures(log)) problems.push(`your last attempt to ${describe(f)} failed and was never retried; retry it or explain in \`result\` why it is not needed`);
+    for (const f of unresolvedFailures(log).filter(f => !(f.unverified && log.some(e => e.seen && e.t === f.t)))) problems.push(`your last attempt to ${describe(f)} failed and was never retried; retry it or explain in \`result\` why it is not needed`);
   }
   // same one-refusal rule for an action the result claims but no call performed
   if (!(run.gateRefusals || []).some(r => r.claimMismatch)) {
@@ -519,18 +520,42 @@ export function reportDone(run, args, t) {
   return done(checks);
 }
 
-// What happens at a report_done, in order: the VISUAL NOTE gets its own reserved
-// round and goes FIRST, then the evidence gate. The note is the only check with
-// EYES — the gate can only re-argue what is already in the tool log — so it must
-// never be crowded out by refusals. Live proof (Azure, 6ff5592): the gate refused
-// twice on WORDING, the model rewrote an already-honest result three times, and by
-// the time the note's turn came the shared budget was gone; the one check that
-// could have looked at the empty Subscription / Resource group / Region fields
-// never ran. One note round + up to MAX_GATE_REFUSALS refusals, not N shared.
-export async function reportDecision(run, args, t, deps) {
-  const note = await visualNoteRound(run, deps);   // no-op unless a write went unread
-  if (note) return { note };
-  return reportDone(run, args, t);
+// What happens at a report_done: any visual check still owed to the model (a write
+// made in the same turn as the report) is awaited and handed over TOGETHER with
+// whatever the gate has to say, in ONE round — never note first and gate problems
+// a round later (Azure 5f06a066: note at turn 8, the gate's problems only at turn
+// 10 and 11). A report the gate would accept still gets one round with the note,
+// so the model sees the screen before its report is recorded.
+export async function reportDecision(run, args, t) {
+  const notes = await deliverChecks(run);
+  const verdict = reportDone(run, args, t);
+  if (!notes.length) return verdict;
+  return verdict.refuse ? { note: notes.join('\n\n'), refuse: verdict.refuse } : { note: notes.join('\n\n') };
+}
+
+// Hand over the finished visual checks: each one's observations are a read of the
+// page right after its write — they join the evidence corpus (tagged with the URL
+// the screenshot was taken on) and mark that write as seen, so the gate neither
+// asks for a read-back the model already holds nor calls the write a failure.
+export async function deliverChecks(run, opts) {
+  const out = await takeNotes(run, opts);
+  for (const { rec } of out) {
+    run.toolLog[rec.idx].seen = true;
+    run.corpus.push(corpusRow(rec.observations, rec.url));
+  }
+  return out.map(o => o.text);
+}
+
+// What the model did after each check reached it: whether it changed the page, and
+// the first thing it said. Called once, as the run finishes.
+export function closeVisualChecks(run) {
+  for (const c of run.visualChecks || []) {
+    if (c.deliveredAt == null || c.actedAfter != null) continue;
+    c.actedAfter = (run.toolLog || []).slice(c.idx + 1).some(e => e.ok && isStateChanging(e) && e.t >= c.deliveredAt);
+    const said = (run.messages || []).slice(c.msgIdx).find(m => m.role === 'assistant' && m.content.some(x => x.type === 'text' && x.text.trim()));
+    c.model_response = said ? said.content.filter(x => x.type === 'text').map(x => x.text).join('\n').trim().slice(0, 2000) : '';
+    delete c.msgIdx;
+  }
 }
 
 // The gate fields a run row / snapshot carries, per mode.
@@ -539,142 +564,6 @@ const gateFields = (run) => run.gate === 'off' ? { gate: 'off' } : {
   ...(run.gate === 'on' ? { gateRefusals: run.gateRefusals, gateOverridden: run.gateOverridden || undefined } : { gateWouldRefuse: run.gateWouldRefuse || undefined }),
   unresolvedFailures: run.unresolvedFailures || undefined, claimMismatch: run.claimMismatch || undefined,
 };
-
-// ── End-of-run visual note ───────────────────────────────────────────────────
-// A cross-origin iframe (Azure's portal blade) cannot be read back by any tool we
-// have, so the evidence gate cannot catch a claim that rests on a write into one.
-// When a run reaches report_done with such a write, we take ONE screenshot and
-// ask the vision tier what is ON the screen — then hand those observations to the
-// model as an observation plus an invitation.
-//
-// The note stays DUMB ON PURPOSE. It states what is visible; it does not classify
-// widgets, does not name a tool, does not diagnose and does not deliver a verdict
-// — rebuilding the model's judgement in code is what produced the bugs this is
-// meant to catch. The model may fix something or explain why the screen is
-// expected; BOTH are accepted, and both are recorded on the run row so we can
-// audit whether these notes earn their cost.
-const NOTE_LEAD = 'Before I record this: one of your writes could not be read back from the page, so I took a screenshot and showed it to a second model in a fresh conversation. It was given that image and the task text, nothing else — it cannot see your plan, your history or your tools. Here is what it says is on the screen right now:';
-const NOTE_TAIL = 'Anything you want to fix, or is that expected? Both are fine: fix it and report again, or call report_done again and say in `result` why the screen looks like this. Your next report_done is accepted either way.';
-export const visualNoteText = (observations) => [NOTE_LEAD, ...observations.map(o => `- ${o}`), NOTE_TAIL].join('\n');
-
-// ONE screenshot, whichever transport this run uses: the local server saves the
-// PNG and returns {path}; the relay hands back an MCP image block.
-async function screenshotBase64(client) {
-  const res = await client.callTool('fast_screenshot', {});
-  for (const c of res?.content || []) {
-    if (c.type === 'image' && c.data) return c.data;
-    if (c.type !== 'text') continue;
-    let o = null;
-    try { o = JSON.parse(c.text); } catch { continue; }
-    if (typeof o?.dataUrl === 'string') return o.dataUrl.replace(/^data:image\/\w+;base64,/, '');
-    if (typeof o?.path === 'string') { try { return readFileSync(o.path).toString('base64'); } catch { return null; } }
-  }
-  return null;
-}
-
-// The runner process does NOT normally carry a vision key. On the owner's machine
-// GEMINI_API_KEY lives in ~/.claude.json under mcpServers.fastlink.env and is
-// inherited ONLY by the MCP server the runner spawns (fastlink-client.mjs) — which
-// is why the in-run fast_scout / fast_fill_vision calls have a key while this
-// process has none, and why the first version of the note skipped with "no vision"
-// on a page where vision had just worked twice. The note runs vision HERE, so it
-// resolves the key from the SAME source the transport uses — one place that knows
-// where the keys are, not a second copy of the plumbing — and must do so BEFORE
-// importing scout.js, whose config module reads process.env at load time.
-// Returns the name of the key still missing, or null when vision can run.
-const VISION_KEYS = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENROUTER_API_KEY'];
-const hasVisionKey = () => !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
-export function ensureVisionEnv(readEnv = () => claudeMcpEnv('fastlink')) {
-  if (hasVisionKey()) return null;
-  let mcp = {};
-  try { mcp = readEnv() || {}; } catch { mcp = {}; }
-  for (const k of VISION_KEYS) if (!process.env[k] && mcp[k]) process.env[k] = mcp[k];
-  return hasVisionKey() ? null : 'GEMINI_API_KEY';
-}
-
-// WHO looks at the screenshot. Default: a BRAND-NEW grok-4.6 conversation — not
-// the model driving the run, and not a continuation of it. A fresh instance cannot
-// be anchored by the reasoning that produced the mistake, and describing is the
-// only thing it is able to do, which is what keeps this dumb BY CONSTRUCTION
-// rather than by our restraint. It is handed the task text and the image and
-// nothing else: no plan, no history, no claimed results, no tool vocabulary
-// (observationPrompt strips any fast_* token out of the task text).
-// Overridable because same-model checking shares blind spots and we want to A/B
-// it: FASTRUN_NOTE_MODEL=grok-4.3, or "gemini" for the old vision-tier path —
-// the ONLY path that needs a GEMINI_API_KEY, which is why the default one works
-// over the relay transport, where that key lives in the Worker and not here.
-export const NOTE_MODEL = process.env.FASTRUN_NOTE_MODEL || 'grok-4.6';
-
-// The default checker: ONE fresh Anthropic-Messages conversation through the same
-// grokcode proxy the run drives on (no second client, no second key). The proxy
-// passes a grok* id straight through, so `model` really is what answers.
-export async function describeWithGrok({ base64, values, intent, model = NOTE_MODEL }, deps = {}) {
-  const { observationPrompt, plainObservations, safeJson } = await import('../fast-dxt/server/scout.js');
-  const send = deps.create || createMessage;
-  let res;
-  try {
-    res = await send({
-      model, maxTokens: 700,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: String(base64 || '').replace(/^data:image\/\w+;base64,/, '') } },
-          { type: 'text', text: observationPrompt({ values, intent }) },
-        ],
-      }],
-    });
-  } catch (e) {
-    return { observations: [], skipped: `checker failed: ${String(e && e.message || e).slice(0, 200)}` };
-  }
-  const text = (res?.content || []).filter(c => c.type === 'text').map(c => c.text || '').join('\n');
-  return { observations: plainObservations(safeJson(text).observations), checkerMs: res?._timing?.latencyMs };
-}
-
-// The pre-Grok checker, kept behind FASTRUN_NOTE_MODEL=gemini so the capability
-// survives for an A/B. It is the only path that needs a key in this process.
-async function describeWithGemini(a) {
-  const missing = ensureVisionEnv();   // must run BEFORE the import (config.js reads env at load)
-  if (missing) return { observations: [], skipped: `no vision: ${missing} is set neither in this process nor in ~/.claude.json mcpServers.fastlink.env` };
-  return (await import('../fast-dxt/server/scout.js')).describeScreen(a);
-}
-
-// Returns the note to hand the model, or null — and records WHY on the run when
-// there is nothing to ask about, no screenshot, or nothing worth saying.
-// `deps` is injectable so the whole path unit-tests with no browser and no model.
-export async function visualNoteRound(run, deps = {}) {
-  if (run.gate === 'off' || run.visualNote) return null;   // one round per run
-  const unverified = unverifiedWrites(run.toolLog || []);
-  if (!unverified.length) return null;                     // everything read back: no note, no cost
-  const checker = deps.model || NOTE_MODEL;
-  const shot = deps.screenshot || (() => screenshotBase64(run.client));
-  const describe = deps.describe
-    || (checker === 'gemini' ? describeWithGemini : (a) => describeWithGrok({ ...a, model: checker }, deps));
-  let base64 = null;
-  try { base64 = await shot(); } catch { base64 = null; }
-  if (!base64) { run.visualNote = { checker, skipped: 'no screenshot', unverified }; return null; }
-  let out;
-  // The checker gets the goal, never the run: what was asked for, and the values
-  // whose write nothing could read back.
-  try { out = await describe({ base64, values: unverified.map(u => u.target).filter(Boolean), intent: run.task }); }
-  catch (e) { out = { observations: [], skipped: `checker failed: ${e.message}` }; }
-  const observations = (Array.isArray(out?.observations) ? out.observations : []).map(String).filter(Boolean);
-  if (out?.skipped || !observations.length) {
-    run.visualNote = { checker, skipped: out?.skipped || 'nothing observed', unverified };
-    return null;
-  }
-  run.visualNote = { checker, checkerMs: out.checkerMs, observations, unverified, model_response: null, actedAfter: false, afterIdx: (run.toolLog || []).length };
-  return visualNoteText(observations);
-}
-
-// What the model did with the note: what it said back, and whether it changed the
-// page afterwards. Called once, as the run finishes.
-export function closeVisualNote(run, result) {
-  const n = run.visualNote;
-  if (!n || n.skipped || n.model_response != null) return;
-  n.actedAfter = (run.toolLog || []).slice(n.afterIdx || 0).some(e => e.ok && isStateChanging(e));
-  n.model_response = String(lastAssistantText(run) || result || '').slice(0, 2000);
-  delete n.afterIdx;
-}
 
 const NATIVE_TOOLS = [
   {
@@ -809,7 +698,7 @@ function snapshot(run) {
   const base = { status: run.status, run_id: run.id };
   if (run.status === 'question') return { ...base, question: run.question, so_far: soFar(run) };
   if (run.status === 'running') return base;
-  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, ...gateFields(run), visualNote: run.visualNote || undefined, video: run.video };
+  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, ...gateFields(run), visualChecks: run.visualChecks || undefined, video: run.video };
 }
 
 function notify(run) {
@@ -821,7 +710,7 @@ function finish(run, status, fields = {}) {
   if (run.done) return;
   run.done = true;
   Object.assign(run, fields, { status, endedAt: Date.now() });
-  closeVisualNote(run, run.result);   // what the model said to the note, and whether it acted
+  closeVisualChecks(run);   // what the model did with each visual check
   run.client?.close().catch(() => {});
   // Every terminal path (done/budget/error/cancelled/loop crash) comes through here, so this is where
   // the recording is stopped and verified; the row and the caller wait for it, so both carry `video`.
@@ -836,7 +725,7 @@ function writeRow(run, status) {
       toolset: run.toolset.name, status, startedAt: new Date(run.startedAt).toISOString(), wallMs: run.endedAt - run.startedAt,
       toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog, turns: run.turns,
       result: run.result, evidence: run.evidence, error: run.error, usage: run.usage, urlTrail: run.urlTrail,
-      ...gateFields(run), visualNote: run.visualNote || undefined, video: run.video,
+      ...gateFields(run), visualChecks: run.visualChecks || undefined, video: run.video,
     }) + '\n');
   } catch {}
 }
@@ -875,20 +764,25 @@ async function loop(run) {
     const uses = content.filter(c => c.type === 'tool_use');
     if (!uses.length) {
       if (++nudges > MAX_NUDGES) return finish(run, 'error', { error: 'model ended without report_done', result: lastAssistantText(run) });
-      run.messages.push({ role: 'user', content: [{ type: 'text', text: 'You ended your turn without calling report_done or ask_caller. Continue the task, or call report_done now.' }] });
+      const notes = await deliverChecks(run);
+      run.messages.push({ role: 'user', content: [...notes.map(text => ({ type: 'text', text })), { type: 'text', text: 'You ended your turn without calling report_done or ask_caller. Continue the task, or call report_done now.' }] });
       continue;
     }
     nudges = 0;
 
     const results = [];
+    const batchStart = run.toolLog.length;   // checks started from here on go out with the NEXT batch
     for (const u of uses) {
       if (run.cancelled) return;
       const args = u.input || {};
+      await settleShots(run);   // a pending check's screenshot is taken before the page is touched again
       if (u.name === 'report_done') {
         const verdict = await reportDecision(run, args, Date.now() - t0);
         if (verdict.note) {
-          onEvent?.({ type: 'visualNote', text: verdict.note });
-          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: verdict.note }] });
+          onEvent?.({ type: 'visualCheck', text: verdict.note });
+          if (verdict.refuse) onEvent?.({ type: 'gate', problems: verdict.refuse });
+          const text = verdict.refuse ? `${verdict.note}\n\nreport_done refused: ${verdict.refuse.join('; ')}. Fix that, then call report_done again.` : verdict.note;
+          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text }] });
           continue;
         }
         if (verdict.refuse) {
@@ -926,6 +820,7 @@ async function loop(run) {
       // first key of a snapshot.
       const preview = firstText.slice(0, 1200);
       run.toolLog.push({ t: t1 - t0, name: real || u.name, args, ms, ok, preview, ...entryFacts(real || u.name, args, firstText, ok) });
+      startVisualCheck(run, run.toolLog.length - 1);   // no-op unless this call left a write unread
       onEvent?.({ type: 'tool', name: real || u.name, args, ms, ok, preview });
       run.consecutiveErrors = ok ? 0 : run.consecutiveErrors + 1;
       results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResultContent(res), ...(ok ? {} : { is_error: true }) });
@@ -933,6 +828,12 @@ async function loop(run) {
         run.messages.push({ role: 'user', content: results });
         return finish(run, 'error', { error: `${budgets.maxConsecutiveErrors} consecutive tool errors` });
       }
+    }
+    // checks from EARLIER batches have been running while the model thought and
+    // these calls ran; they are normally done by now and ride along with this result
+    for (const text of await deliverChecks(run, { before: batchStart })) {
+      onEvent?.({ type: 'visualCheck', text });
+      results.push({ type: 'text', text });
     }
     run.messages.push({ role: 'user', content: results });
     run.status = 'running';
@@ -964,7 +865,7 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
     id, video, task, transport, browser, toolset, gate, status: 'running',
     messages: [{ role: 'user', content: [{ type: 'text', text: `TASK: ${task}` }] }],
     system: buildSystem(toolset, client.instructions),
-    tools, back, client, toolLog: [], turns: [], corpus: [], urlTrail: [], gateRefusals: [], gateOverridden: null, gateWouldRefuse: null, unresolvedFailures: null, visualNote: null, question: null, waiters: [], pendingAnswer: null,
+    tools, back, client, toolLog: [], turns: [], corpus: [], urlTrail: [], gateRefusals: [], gateOverridden: null, gateWouldRefuse: null, unresolvedFailures: null, visualChecks: [], pendingChecks: [], question: null, waiters: [], pendingAnswer: null,
     budgets: runBudgets, onEvent, startedAt: Date.now(), consecutiveErrors: 0,
     usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, modelMs: 0 }, abort: new AbortController(), cancelled: false, done: false,
   };
