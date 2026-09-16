@@ -2629,13 +2629,11 @@ async function runPageAction(action, args) {
       else if (isOff) offScreen++;
       else visibleInteractive++;
     }
-    const frameLine = frameNotice(opaqueFrames());
     const totalHits = interactiveHits + nonInteractiveHits;
     const more = (examined >= DIAG_MAX_EXAMINE || layoutCandidates.length >= DIAG_LAYOUT_CAP) ? '+' : '';
     if (totalHits === 0) {
       if (stopped) out.push(`Text "${queryText}" not found in the first ${examined} elements (page too large to scan fully). Try more specific/visible text, fast_scroll, or narrow with role/tag.`);
       else out.push(`Text "${queryText}" not found in document, open shadow DOM, or same-origin iframes.`);
-      if (frameLine) out.push(`The element may be inside one of them: ${frameLine}`);
     } else {
       if (visibleInteractive > 0) out.push(`${visibleInteractive}${more} interactive match(es) appear visible but were skipped — the snapshot should already include them; try increasing window size or scroll first.`);
       if (hidden) {
@@ -4166,6 +4164,21 @@ async function runPageAction(action, args) {
  }
 }
 
+// A DOM action that missed (fast_click / fast_fill / fast_select_option: an error,
+// or a {fields}/{selections} call with fields not done) while cross-origin
+// frames are on screen leads its result with the frame notice: its target may be
+// in one of them (live Azure: four fast_click "Create" variants errored against a
+// menu inside the reactblade frame, and the run aborted).
+const NOTICE_ON_MISS = new Set(['fast_click', 'fast_fill', 'fast_select_option']);
+const withActionFrameNotice = (action, r) => {
+  if (!NOTICE_ON_MISS.has(action) || !r || typeof r !== 'object' || r.frameNotice) return r;
+  const missed = r.error || (typeof r.missed === 'number' && r.missed > 0) || (typeof r.failed === 'number' && r.failed > 0);
+  if (!missed) return r;
+  const scan = opaqueFrames();
+  const notice = frameNotice(scan);
+  return notice ? frontload(r, { frameNotice: notice, opaqueFrames: scan.frames.slice(0, FRAME_NOTICE_LIST) }) : r;
+};
+
 // The fast_wait polls still running in this document, each as its cancel function.
 const ACTIVE_WAITS = new Set();
 
@@ -4178,6 +4191,6 @@ const ACTIVE_WAITS = new Set();
 // re-render storms. Cost on tabs you never automate: zero.
 if (typeof window !== 'undefined') {
   window.__fastlink = window.__fastlink || {};
-  window.__fastlink.run = runPageAction;
+  window.__fastlink.run = (action, args) => Promise.resolve(runPageAction(action, args)).then((r) => withActionFrameNotice(action, r));
   window.__fastlink.cancelWaits = () => { const n = ACTIVE_WAITS.size; for (const c of [...ACTIVE_WAITS]) c(); return n; };
 }

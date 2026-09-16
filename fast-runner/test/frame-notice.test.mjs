@@ -95,3 +95,18 @@ test('the scan is bounded on a page with tens of thousands of iframes', () => {
   assert.equal(r.partial, true);
   assert.deepEqual(r.frames, []);
 });
+
+test('fast_click and fast_fill misses lead with the notice when such frames are on screen (live Azure: "Create" lives in the blade)', async () => {
+  const AZ = '<h1>Virtual machines</h1><nav><a href="#">Home</a></nav><iframe src="https://sandbox-1.reactblade.portal.azure.net/blade" data-box="265,176,1175,533"></iframe>';
+  const w = page(AZ, 'https://portal.azure.com/');
+  const c = await run(w, 'fast_click', { text: 'Create' });
+  assert.ok(c.error, 'the click missed');
+  assert.equal(Object.keys(c)[0], 'frameNotice');
+  assert.match(c.frameNotice, /^1 visible cross-origin frame\(s\) not readable by DOM tools: https:\/\/sandbox-1\.reactblade\.portal\.azure\.net at x:265, y:176, 1175x533\./);
+  const f = await run(w, 'fast_fill', { fields: { 'Virtual machine name': 'vm1' }, noSnapshot: true });
+  assert.equal(f.verified, false);
+  assert.equal(Object.keys(f)[0], 'frameNotice');
+  // a hit carries no notice; a page without such frames carries none on a miss
+  const plain = page('<button>Create</button>');
+  assert.equal((await run(plain, 'fast_click', { text: 'Nope' })).frameNotice, undefined);
+});
