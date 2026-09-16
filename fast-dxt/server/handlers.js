@@ -861,7 +861,7 @@ async function verifyVisionFills(filled) {
   const hay = items.map((it) => `${it.text || ''} ${it.label || ''} ${it.ariaLabel || ''} ${it.placeholder || ''} ${it.name || ''}`.toLowerCase());
   for (const f of pending) {
     const needle = String(f.value).trim().toLowerCase();
-    if (hay.some((h) => h.includes(needle))) f.verified = true;
+    if (hay.some((h) => h.includes(needle))) { f.verified = true; delete f.reason; }
   }
 }
 
@@ -933,11 +933,16 @@ async function handleFillVision(args) {
     // click above; bypass fast_type's top-frame editable guard so values reach
     // inputs inside CROSS-ORIGIN iframes (e.g. appleid.apple.com) too, which is
     // the one fill path that works when those forms can't be reached any other way.
-    await callExtension('fast_type', { text: value, force: true });
-    // verified:false — synthetic CDP typing is NOT read back here. For DOM inputs
-    // a re-read is possible, but for cross-origin iframes (the main reason to use
-    // vision) it isn't, so we report honestly: located + typed, not confirmed.
-    filled.push({ field: key, found: true, value, verified: false });
+    const typed = await callExtension('fast_type', { text: value, force: true });
+    // fast_type reads its OWN write back (actions/input.js): a same-origin field
+    // comes back verified:true with the live value; a cross-origin iframe comes
+    // back verified:false with the reason nothing in the page can confirm it.
+    // ONE source of truth — this path does not re-decide it.
+    const t = (typed && typed.result) || {};
+    filled.push({
+      field: key, found: true, value, verified: t.verified === true,
+      ...(t.verified === true ? {} : { reason: t.reason || 'unreadable: typed but not read back' }),
+    });
   }
 
   // DOM-FILL RESCUE: any field vision couldn't locate (below the fold, or low
@@ -1108,8 +1113,15 @@ async function handleDo(args) {
     }
     if (s.action === 'type') {
       await callExtension('fast_click_xy', { x: coord.xCss, y: coord.yCss });
-      await callExtension('fast_type', { text: String(s.value ?? '') });
-      executed.push({ action: 'type', target: s.target, value: String(s.value ?? ''), x: coord.xCss, y: coord.yCss });
+      const typed = await callExtension('fast_type', { text: String(s.value ?? '') });
+      // fast_type's own read-back rides along: a step whose value could not be
+      // re-read says so instead of looking like a clean write.
+      const t = (typed && typed.result) || {};
+      executed.push({
+        action: 'type', target: s.target, value: String(s.value ?? ''), x: coord.xCss, y: coord.yCss,
+        verified: t.verified === true,
+        ...(t.verified === true ? {} : { reason: t.reason || 'unreadable: typed but not read back' }),
+      });
     } else { // click
       await callExtension('fast_click_xy', { x: coord.xCss, y: coord.yCss });
       executed.push({ action: 'click', target: s.target, x: coord.xCss, y: coord.yCss });

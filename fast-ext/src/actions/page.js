@@ -3023,11 +3023,16 @@ async function runPageAction(action, args) {
         await wait(30);
       }
       timing.readbackMs = Math.round(nowMs() - t0);
-      const verified = showsValue(value, res.picked);
+      // A control the page tore down during the pick cannot be read back at all —
+      // report that, not a value comparison against an empty read.
+      const gone = !el || el.isConnected === false;
+      const verified = !gone && showsValue(value, res.picked);
       const head = { verified, picked: res.picked, value, field: describeField(el) };
       if (pre.row) head.row = pre.row;
       if (pre.backing) head.backingValue = shownValueOf(pre.backing);
-      if (!verified) head.reason = `the dropdown now shows ${JSON.stringify(value)}, not "${res.picked}" — the pick did not take (or landed on another control: see field); do not report it as selected`;
+      if (!verified) head.reason = gone
+        ? `unreadable: the dropdown is no longer in the page after the pick (replaced or removed by a re-render), so its value cannot be read back — nothing confirms "${res.picked}" was selected; read the page before reporting it`
+        : `the dropdown now shows ${JSON.stringify(value)}, not "${res.picked}" — the pick did not take (or landed on another control: see field); do not report it as selected`;
       return frontload({ ...res, timing }, head);
     };
 
@@ -3977,12 +3982,17 @@ async function runPageAction(action, args) {
         if (!head.verified) head.reason = `the ${r.kind} is ${head.value} after the click — the page reverted or ignored it; do not report it as ${r.valueSet ? 'ticked' : 'cleared'}`;
         return head;
       }
-      const live = liveValueOf(el);
+      // A write whose field cannot be re-read is NOT a write that held: a node the
+      // page replaced/removed during the write reads nothing, and "reads nothing"
+      // is not the same failure as "reads something else". Say which.
+      const live = (el && el.isConnected === false) ? null : liveValueOf(el);
+      if (live == null) {
+        return { verified: false, value: '', reason: 'unreadable: the field is no longer in the page after the write (replaced or removed by a re-render), so its value cannot be read back — nothing confirms the value landed; read the page (fast_snapshot/fast_text) before reporting it as set' };
+      }
       const expected = r.kind === 'native-select' ? String(r.valueSet) : String(sp.value);
-      const holds = live == null ? false
-        : r.kind === 'native-select' ? live.toLowerCase() === expected.toLowerCase()
+      const holds = r.kind === 'native-select' ? live.toLowerCase() === expected.toLowerCase()
         : sp.append ? live.endsWith(expected) : live === expected;
-      const head = { verified: holds, value: maskIfPassword(el, live == null ? '' : String(live).slice(0, 300)) };
+      const head = { verified: holds, value: maskIfPassword(el, String(live).slice(0, 300)) };
       if (!holds) head.reason = `the field now reads ${JSON.stringify(head.value)} instead of the value written — the page reformatted, rejected or reverted it; do not report the written value as set`;
       return head;
     };
