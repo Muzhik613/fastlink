@@ -177,9 +177,9 @@ themselves current.
 3. Click **Load unpacked** → select the extension folder.
    - **macOS / Linux / Windows-native:** point at the repo's **`fast-ext/`** folder directly. A
      `git pull` then updates the extension in place.
-   - **Windows + WSL:** Chrome cannot reliably load from a `\\wsl$\…` path. Use the auto-updater
-     (5b) to populate a **Windows** folder (default `C:\Users\<you>\FastLink\extension`) and load
-     **that** copy.
+   - **Windows + WSL:** Chrome cannot reliably load from a `\\wsl$\…` path. Copy `fast-ext/`
+     to a **Windows** folder (default `C:\Users\<you>\FastLink\extension`) and load **that**
+     copy; `scripts/ship-ext.sh` does that copy + reload in one command (see 5b).
 4. The toolbar icon appears: **red** until an MCP client connects, **yellow** at 1 client,
    **green** at 2+.
 
@@ -190,47 +190,20 @@ refresh.
 > **Managed / corporate machines** may block unpacked extensions by policy
 > (`BlockExternalExtensions`, no Developer mode). On those, Load-unpacked will fail — the path
 > forward is the Chrome Web Store listing (TBD) or an enterprise force-install policy
-> (`ExtensionInstallForcelist` with a signed `.crx`). See `docs/AUTO-UPDATE.md` "Fallback B
-> (enterprise / Web Store)".
+> (`ExtensionInstallForcelist` with a signed `.crx`). Neither exists today — FastLink is not
+> published and there is no hosted `.crx` channel.
 
 ### 5b. Keep the folder current
 
-**Recommended (any OS): git.** If you cloned the repo in Step 2 and loaded
-unpacked from its `fast-ext/` folder (5a), keep it current with a plain `git pull`
-(or the pure-git wrapper `scripts/update-extension-git.ps1` / `.sh`). The pull
-updates the extension in place — no download, no file-swap, no scheduled task — so
-it's AV-safe (doesn't trip Bitdefender/Defender/EDR) and the extension self-reloads
-on the next release version bump. This is the canonical path: see
-**`docs/UPDATING.md`**. Requirement: git installed (one-time).
+`git pull` in the clone updates the extension in place; click the reload arrow on
+the FastLink card at `chrome://extensions` to apply it. There is no background
+auto-updater and no download-swap installer — the extension does not check for
+new versions.
 
-**Fallback (no git): download-swap auto-updater.** Run the installer for the
-detected OS. It downloads the current extension into the target folder and
-schedules a background pull so it stays current; the extension then notices the
-new version and reloads itself. (Details: `docs/TESTER-INSTALL.md`,
-`docs/AUTO-UPDATE.md`.) Note this download + modify-extension + scheduled-task
-pattern can trip AV/EDR on managed machines — prefer the git path there.
-
-- **Windows (native or for the WSL Windows-side copy):**
-
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File scripts\install-tester.ps1
-  ```
-
-  Default install folder `C:\Users\<you>\FastLink\extension` (override with `-ExtDir`). Uninstall
-  with `... install-tester.ps1 -Uninstall -RemoveFiles`.
-
-- **macOS / Linux:**
-
-  ```bash
-  bash scripts/install-tester.sh
-  ```
-
-  > `scripts/install-tester.sh` is the macOS/Linux counterpart of the PowerShell installer (being
-  > added alongside `scripts/install-tester.ps1`). If it is not yet present, skip this sub-step and
-  > update by `git pull` in the repo, then reload at `chrome://extensions`.
-
-After 5b, load-unpacked (5a) the folder the installer populated. From then on updates land in the
-background and the extension reloads itself — no further `chrome://extensions` visits.
+On the owner's WSL box, where Chrome loads a **Windows** copy of `fast-ext/`,
+`bash scripts/ship-ext.sh` is the one command that syncs the committed tree,
+reloads the pinned profile through the broker and verifies the build landed.
+See **`docs/UPDATING.md`**.
 
 ---
 
@@ -305,9 +278,8 @@ config.
 
 - `restart-wsl.bat` — **WSL-only** recovery helper (WSL shutdown + restart). Ignore on
   macOS / Windows-native.
-- `scripts/update-fastlink.ps1` (WSL dev box), `scripts/update-fastlink-windows.ps1` (pure
-  Windows), `scripts/pull-extension.ps1` (downloads the extension, used by the installer) — see
-  `docs/AUTO-UPDATE.md`.
+- `scripts/ship-ext.sh` — the one source-to-Chrome path (WSL dev box): syncs committed
+  `fast-ext/` to the Windows copy, reloads the pinned profile, verifies the build.
 - `fastlink-cloud-mcp/`, `fast-ext-dad/`, `fastlink-proxy/` — **legacy**, not part of a fresh
   install (see the README component map).
 </content>

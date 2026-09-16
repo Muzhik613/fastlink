@@ -424,108 +424,6 @@ $('notify-toggle').addEventListener('change', (e) => {
 });
 
 // ---------------------------------------------------------------------------
-// Update-available banner. background.js (src/updateCheck.js) writes
-// chrome.storage.local['fastlinkUpdate'] = { available, current, latest, url, checkedAt }
-// after checking the PUBLIC GitHub repo. When a newer version is published we show
-// a compact, dismissible banner above the status card linking to the release.
-// This is NOTIFY-only — the unpacked model has no silent self-install, so the
-// one-liner tells the user to pull + reload (or download the release). Dismissal
-// is remembered per-version, so a banner re-appears only for a genuinely newer one.
-// ---------------------------------------------------------------------------
-const UPDATE_KEY = 'fastlinkUpdate';
-const UPDATE_DISMISSED_KEY = 'fastlinkUpdateDismissed';
-const DEFAULT_RELEASES_URL = 'https://github.com/Turetsky/fastlink/releases';
-
-// Inject the banner styles once (themed with the popup's --fl-* brand vars).
-function ensureUpdateStyles() {
-  if (document.getElementById('fl-update-style')) return;
-  const s = document.createElement('style');
-  s.id = 'fl-update-style';
-  s.textContent = `
-    .update-banner {
-      border: 1px solid color-mix(in srgb, var(--fl-primary) 45%, transparent);
-      background: color-mix(in srgb, var(--fl-primary) 12%, var(--fl-surface));
-      border-radius: var(--fl-r); padding: 8px 10px; margin-bottom: 10px;
-    }
-    .update-banner .ub-head { display: flex; align-items: center; gap: 8px; }
-    .update-banner .ub-title { font-weight: 700; font-size: 12px; color: var(--fl-primary); }
-    .update-banner .ub-x {
-      margin-left: auto; width: auto; background: none; border: 0; padding: 0 2px;
-      color: var(--fl-text-faint); font-size: 12px; line-height: 1; cursor: pointer;
-    }
-    .update-banner .ub-x:hover { color: var(--fl-text); }
-    .update-banner .ub-how { color: var(--fl-text-dim); font-size: 11px; margin-top: 3px; }
-    .update-banner .ub-link {
-      display: inline-block; margin-top: 6px; font-size: 12px; font-weight: 600;
-      color: var(--fl-primary); text-decoration: none;
-    }
-    .update-banner .ub-link:hover { text-decoration: underline; }
-  `;
-  (document.head || document.documentElement).appendChild(s);
-}
-
-async function renderUpdate() {
-  let info = null;
-  let dismissed = null;
-  try {
-    const o = await chrome.storage.local.get([UPDATE_KEY, UPDATE_DISMISSED_KEY]);
-    info = o?.[UPDATE_KEY];
-    dismissed = o?.[UPDATE_DISMISSED_KEY];
-  } catch {}
-
-  let el = $('update-banner');
-  const show = !!(info?.available && info.latest && info.latest !== dismissed);
-  if (!show) { if (el) el.remove(); return; }   // not available / dismissed → render nothing
-
-  ensureUpdateStyles();
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'update-banner';
-    el.className = 'update-banner';
-    // Place it above the status card, near the top of the popup.
-    const card = document.querySelector('.card');
-    if (card && card.parentNode) card.parentNode.insertBefore(el, card);
-    else document.body.insertBefore(el, document.body.firstChild);
-  }
-  el.replaceChildren();
-
-  const head = document.createElement('div');
-  head.className = 'ub-head';
-  const title = document.createElement('span');
-  title.className = 'ub-title';
-  title.textContent = `Update available — v${info.latest}`;
-  const x = document.createElement('button');
-  x.className = 'ub-x';
-  x.title = 'Dismiss';
-  x.textContent = '✕';
-  x.addEventListener('click', () => {
-    chrome.storage.local.set({ [UPDATE_DISMISSED_KEY]: info.latest }).catch(() => {});
-    el.remove();
-  });
-  head.append(title, x);
-
-  const how = document.createElement('div');
-  how.className = 'ub-how';
-  how.textContent = info.current
-    ? `You're on v${info.current}. Update: run scripts/update-fastlink.ps1 from Windows PowerShell, then reload at chrome://extensions.`
-    : 'Update: run scripts/update-fastlink.ps1 from Windows PowerShell, then reload at chrome://extensions.';
-
-  const link = document.createElement('a');
-  link.className = 'ub-link';
-  link.href = info.url || DEFAULT_RELEASES_URL;
-  link.target = '_blank';
-  link.rel = 'noopener';
-  link.textContent = 'View release →';
-  link.addEventListener('click', (e) => {
-    e.preventDefault();
-    try { chrome.tabs.create({ url: link.href }); } catch {}
-    window.close();
-  });
-
-  el.append(head, how, link);
-}
-
-// ---------------------------------------------------------------------------
 // Read-aloud toggle. The widget (src/readAloud.js) is hidden by default; this
 // button shows/hides it on the active tab via a content-script message. Hidden
 // when the tab has no content script (chrome:// pages, tabs opened before the
@@ -585,7 +483,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (changes.fastlinkConn || changes.relayAuthError) render();
     if (changes.fastlinkConn || changes.fastlinkPendingConsent || changes.deviceToken || changes[DECISIONS_KEY]) renderConsent();
     if (changes.deviceToken || changes.relayEnabled || changes.fastlinkMode) renderControls();
-    if (changes[UPDATE_KEY] || changes[UPDATE_DISMISSED_KEY]) renderUpdate();
   }
   if (area === 'session' && (changes[TARGET_PIN_KEY] || changes[PAUSE_KEY])) {
     renderDriving();
@@ -608,7 +505,6 @@ renderDriving();
 renderControls();
 renderActivity();
 renderNotifyToggle();
-renderUpdate();
 
 // Keep elapsed / "… ago" labels live while the popup is open (cheap, local-only).
 activityTimer = setInterval(renderActivity, 1000);

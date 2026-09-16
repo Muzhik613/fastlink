@@ -1,8 +1,8 @@
 # FastLink
 
 FastLink bridges **Claude** (Claude Code, Claude Desktop, or claude.ai web) to a real **Chrome
-tab**, so Claude can read page snapshots, click, fill forms, run JS, capture console/network, and
-batch-automate the browser the user is actually looking at.
+tab**, so Claude can read page snapshots, click, fill forms, run JS, and batch-automate the
+browser the user is actually looking at.
 
 ```
 Claude  ⇄  MCP server  ⇄  broker (WebSocket)  ⇄  Chrome extension  ⇄  page
@@ -50,9 +50,7 @@ extension, then verify with `fast_status`.
 | Doc | Purpose |
 |---|---|
 | [`docs/INSTALL.md`](docs/INSTALL.md) | Cross-platform, Claude-executable install guide (start here). |
-| [`docs/UPDATING.md`](docs/UPDATING.md) | Canonical update guide — git pull on a clone Chrome loads directly (recommended, AV-safe). |
-| [`docs/TESTER-INSTALL.md`](docs/TESTER-INSTALL.md) | ~2-minute no-dev-tools tester install (download-swap fallback) that then self-updates. |
-| [`docs/AUTO-UPDATE.md`](docs/AUTO-UPDATE.md) | How the update banner + release/pull process keeps the unpacked extension current. |
+| [`docs/UPDATING.md`](docs/UPDATING.md) | The one path from source to a loaded extension (`scripts/ship-ext.sh`), plus server/relay updates. |
 | [`docs/TOKEN-SECURITY.md`](docs/TOKEN-SECURITY.md) | Cloud-relay device-token auth model and recommended hardening. |
 
 `docs/` also holds design/status notes (scout, speed tiers, vision Set-of-Mark, issue logs).
@@ -65,9 +63,8 @@ extension, then verify with `fast_status`.
   `server/tools.js`.
 - `fast-ext/` — MV3 Chrome extension; action handlers in `src/actions/`.
 - `fastlink-relay/` — multi-tenant Cloudflare relay (deploy with `wrangler deploy`).
-- `scripts/` — install/update helpers (`update-extension-git.ps1`/`.sh` (recommended
-  git updater), `install-tester.ps1`/`.sh` + `pull-extension.ps1`/`.sh` (no-git
-  download-swap fallback), `update-fastlink*.ps1`, `release.sh`, `watch-sync.sh`).
+- `scripts/ship-ext.sh` — the ONE source-to-Chrome path: ships committed `fast-ext/` to the
+  Windows copy, reloads the pinned profile via the broker, verifies the build sha.
 - `docs/` — install + design/status docs. `bench/` — benchmark harnesses.
 
 ---
@@ -76,8 +73,8 @@ extension, then verify with `fast_status`.
 
 - **Ports:** extension slots `9876` (primary) / `9877` (secondary 2nd profile); internal
   MCP↔broker `9870`; optional HTTP transport `9879`.
-- **Web Store:** not yet published — use Load-unpacked (Developer mode). Managed/corporate
-  machines may block unpacked extensions; see `docs/AUTO-UPDATE.md` for the enterprise route.
+- **Web Store:** not published, and there is no self-hosted `.crx` channel — use Load-unpacked
+  (Developer mode). `fast-ext/scripts/package.sh` builds the uploadable zip if one is ever cut.
 - **Optional Gemini key** enables the vision/scout tier (`fast_scout`, `fast_point`,
   `fast_fill_vision`, `fast_do`); everything else works without it.
 </content>
