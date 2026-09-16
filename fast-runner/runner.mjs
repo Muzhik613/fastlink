@@ -6,6 +6,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMessage, ensureProxy, MODEL } from './xai.mjs';
 import { connect, claudeMcpEnv } from './fastlink-client.mjs';
+import { startRecording, stopRecording } from './recorder.mjs';
 
 const STATE_DIR = join(homedir(), '.local', 'state', 'fastrun');
 const RUNS_FILE = join(STATE_DIR, 'runs.jsonl');
@@ -808,7 +809,7 @@ function snapshot(run) {
   const base = { status: run.status, run_id: run.id };
   if (run.status === 'question') return { ...base, question: run.question, so_far: soFar(run) };
   if (run.status === 'running') return base;
-  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, ...gateFields(run), visualNote: run.visualNote || undefined };
+  return { ...base, result: run.result, evidence: run.evidence, error: run.error, so_far: soFar(run), histogram: histogram(run), model: MODEL, toolset: run.toolset.name, urlTrail: run.urlTrail, ...gateFields(run), visualNote: run.visualNote || undefined, video: run.video };
 }
 
 function notify(run) {
@@ -821,6 +822,13 @@ function finish(run, status, fields = {}) {
   run.done = true;
   Object.assign(run, fields, { status, endedAt: Date.now() });
   closeVisualNote(run, run.result);   // what the model said to the note, and whether it acted
+  run.client?.close().catch(() => {});
+  // Every terminal path (done/budget/error/cancelled/loop crash) comes through here, so this is where
+  // the recording is stopped and verified; the row and the caller wait for it, so both carry `video`.
+  return (run.finished = stopRecording(run.id, run.video).then(video => { run.video = video; writeRow(run, status); notify(run); }));
+}
+
+function writeRow(run, status) {
   try {
     mkdirSync(STATE_DIR, { recursive: true });
     appendFileSync(RUNS_FILE, JSON.stringify({
@@ -828,11 +836,9 @@ function finish(run, status, fields = {}) {
       toolset: run.toolset.name, status, startedAt: new Date(run.startedAt).toISOString(), wallMs: run.endedAt - run.startedAt,
       toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog, turns: run.turns,
       result: run.result, evidence: run.evidence, error: run.error, usage: run.usage, urlTrail: run.urlTrail,
-      ...gateFields(run), visualNote: run.visualNote || undefined,
+      ...gateFields(run), visualNote: run.visualNote || undefined, video: run.video,
     }) + '\n');
   } catch {}
-  run.client?.close().catch(() => {});
-  notify(run);
 }
 
 // Resolves with the run's next notable state, or {status:'running'} after holdMs.
@@ -937,15 +943,29 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
   if (!task) throw new Error('task required');
   const toolset = loadToolset(toolsetSpec); // throws before any connect on a bad name/path
   const gate = gateMode(gateSpec);
-  await ensureProxy();
-  const client = await connect({ transport, browser });
-  const { tools, back } = buildTools(await client.listTools(), toolset);
+  const runBudgets = { ...DEFAULT_BUDGETS, ...budgets };
+  const id = randomBytes(4).toString('hex');
+  // Every run is screen-recorded as <run_id>.mkv (scripts/record.sh). Started alongside the connect so
+  // it costs no extra wall time; it never throws — a run that could not be recorded says so and runs.
+  const recording = startRecording(id, { maxSec: runBudgets.maxWallMs / 1000 + 300 });
+  let client, tools, back;
+  try {
+    await ensureProxy();
+    client = await connect({ transport, browser });
+    ({ tools, back } = buildTools(await client.listTools(), toolset));
+  } catch (e) {
+    client?.close().catch(() => {});
+    await stopRecording(id, await recording);
+    throw e;
+  }
+  const video = await recording;
+  onEvent?.({ type: 'recording', video });
   const run = {
-    id: randomBytes(4).toString('hex'), task, transport, browser, toolset, gate, status: 'running',
+    id, video, task, transport, browser, toolset, gate, status: 'running',
     messages: [{ role: 'user', content: [{ type: 'text', text: `TASK: ${task}` }] }],
     system: buildSystem(toolset, client.instructions),
     tools, back, client, toolLog: [], turns: [], corpus: [], urlTrail: [], gateRefusals: [], gateOverridden: null, gateWouldRefuse: null, unresolvedFailures: null, visualNote: null, question: null, waiters: [], pendingAnswer: null,
-    budgets: { ...DEFAULT_BUDGETS, ...budgets }, onEvent, startedAt: Date.now(), consecutiveErrors: 0,
+    budgets: runBudgets, onEvent, startedAt: Date.now(), consecutiveErrors: 0,
     usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, modelMs: 0 }, abort: new AbortController(), cancelled: false, done: false,
   };
   runs.set(run.id, run);
@@ -969,13 +989,20 @@ export function status(runId) {
   return { ...snapshot(run), so_far: soFar(run) };
 }
 
-export function cancel(runId) {
+export function cancel(runId, reason = 'cancelled by caller') {
   const run = runs.get(runId);
   if (!run) return { status: 'error', run_id: runId, error: 'unknown run_id' };
   if (run.done) return snapshot(run);
   run.cancelled = true;
   run.abort.abort();
   run.pendingAnswer?.('');
-  finish(run, 'cancelled', { error: 'cancelled by caller' });
+  finish(run, 'cancelled', { error: reason });
   return snapshot(run);
+}
+
+// A process being killed (bench ceiling / STUCK sends SIGTERM) still ends its runs through finish():
+// recording stopped + verified, row written. Resolves when every row is on disk.
+export async function cancelAll(reason) {
+  for (const run of runs.values()) if (!run.done) cancel(run.id, reason);
+  await Promise.all([...runs.values()].map(r => r.finished));
 }

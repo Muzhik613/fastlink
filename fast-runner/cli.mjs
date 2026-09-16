@@ -5,7 +5,7 @@
 //   prints the exact tool list Grok would receive for that toolset (read from fast-dxt/server/tools.js —
 //   no server, broker or browser is touched), then exits.
 import { createInterface } from 'node:readline';
-import { runTask, answer, loadToolset, buildTools, buildSystem } from './runner.mjs';
+import { runTask, answer, cancelAll, loadToolset, buildTools, buildSystem } from './runner.mjs';
 
 const argv = process.argv.slice(2);
 let transport = 'relay', browser, toolset, gate, dumpTools = false;
@@ -50,7 +50,11 @@ const short = (o) => { const s = JSON.stringify(o); return s.length > 120 ? s.sl
 const onEvent = (e) => {
   if (e.type === 'tool') console.error(`  [${(e.ms / 1000).toFixed(1)}s] ${e.ok ? 'ok ' : 'ERR'} ${e.name} ${short(e.args)}`);
   else if (e.type === 'text') console.error(`  grok: ${e.text.replace(/\s+/g, ' ').slice(0, 200)}`);
+  else if (e.type === 'recording') console.error(e.video.recorded === false ? `  UNRECORDED: ${e.video.error}` : `  recording → ${e.video.path}${e.video.warning ? `\n  WARNING: ${e.video.warning}` : ''}`);
 };
+
+// Killed mid-run (bench ceiling / STUCK): cancel so the run's recording is finalized and its row written.
+for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, () => cancelAll(`runner killed by ${sig}`).finally(() => process.exit(1)));
 
 const t0 = Date.now();
 let r = await runTask({ task, transport, browser, toolset, gate, holdMs: 3_600_000, onEvent }).catch(fail);
