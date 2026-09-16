@@ -456,8 +456,8 @@ test('check 4: an honest claim about the page the run DID load is not refused fo
   const AZ = 'https://portal.azure.com/#create/Microsoft.VirtualMachine';
   const run = runOf([
     ['fast_tab', { url: AZ }, `{"id":1,"url":"${AZ}"}`],
-    ['fast_fill_vision', { fields: { 'Virtual machine name input': 'fastlink-bench-vm' } },
-      JSON.stringify({ filled: [{ field: 'Virtual machine name input', found: true, value: 'fastlink-bench-vm', verified: false, reason: 'unreadable: typed but not read back' }], missed: [], submitted: false })],
+    ['fast_fill', { fields: { 'Virtual machine name': 'fastlink-bench-vm' } },
+      JSON.stringify({ verified: false, fields: { 'Virtual machine name': { verified: false, value: 'fastlink-bench-vm', reason: 'unreadable: typed but not read back' } } })],
     ['fast_snapshot', { full: true }, snap(AZ, 'Create a virtual machine', 'Basics')],
   ]);
   for (const result of [

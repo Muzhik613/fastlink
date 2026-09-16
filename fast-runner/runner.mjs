@@ -49,7 +49,7 @@ Rules:
 const STATE_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_select_option', 'fast_key_press',
   'fast_type', 'fast_nav', 'fast_tab', 'fast_scroll',
-  'fast_switch', 'fast_close', 'fast_batch', 'fast_fill_vision',
+  'fast_switch', 'fast_close', 'fast_batch',
 ]);
 const READ_TOOLS = new Set(['fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_evaluate', 'fast_list']);
 const isStateChanging = (e) => STATE_TOOLS.has(e.name);
@@ -313,7 +313,7 @@ export function resultSections(text) {
 // SECTION each written field sat in (args `section`/`near`, top-level or per field,
 // and the result's own report): a "section with no input yet" miss is resolved by
 // filling the created field with section:<that label>, exactly as its hint says.
-const FILL_SELECT = new Set(['fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_type', 'fast_fill_vision', 'fast_batch']);
+const FILL_SELECT = new Set(['fast_fill', 'fast_fill_form', 'fast_select_option', 'fast_type', 'fast_batch']);
 const sectionsOf = (args, missed) => {
   const top = args?.section ?? args?.near;
   const out = [];
@@ -390,7 +390,7 @@ const CLAIMS = [
   { re: /\b(opened|navigated|drilled|went to)\b/gi, family: 'fast_click / fast_nav / fast_tab (beyond the first page load)', nav: true },
   { re: /\b(clicked|added|checked)\b/gi, family: 'fast_click', tools: CLICKS },
   { re: /\b(selected|picked)\b/gi, family: 'fast_select_option / fast_click / fast_fill', tools: ['fast_select_option', 'fast_fill', 'fast_fill_form', ...CLICKS], enter: true },
-  { re: /\b(filled|entered|typed)\b/gi, family: 'fast_fill', tools: ['fast_fill', 'fast_fill_form', 'fast_type', 'fast_fill_vision'] },
+  { re: /\b(filled|entered|typed)\b/gi, family: 'fast_fill', tools: ['fast_fill', 'fast_fill_form', 'fast_type'] },
   { re: /\b(submitted)\b/gi, family: 'fast_click / fast_key_press Enter', tools: CLICKS, enter: true },
 ];
 const VERB_BASE = { opened: 'open', navigated: 'navigate', drilled: 'drill in', 'went to': 'go to', clicked: 'click', added: 'add', checked: 'check', selected: 'select', picked: 'pick', filled: 'fill', entered: 'enter', typed: 'type', submitted: 'submit' };

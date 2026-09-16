@@ -49,7 +49,6 @@ test('a forced write nothing read back is an unverified write, with its reason',
   assert.deepEqual(unverifiedWrites(fill.toolLog), [{ name: 'fast_fill', target: 'Name', t: 0, unverified: true, reason: 'unreadable: the field is no longer in the page after the write' }]);
 });
 
-const FAST_DO = { executed: [{ action: 'type', target: 'Virtual machine name text input', value: 'fastlink-bench-vm', verified: false, reason: 'unreadable: typed but not read back' }] };
 const NESTED_BATCH = {
   args: { actions: [{ name: 'fast_click', args: { match: 'Virtual machine name' } }, { name: 'fast_type', args: { text: 'fastlink-bench-vm' } }] },
   result: { summary: '2/2 steps ok', results: [
@@ -60,7 +59,6 @@ const NESTED_BATCH = {
 test('ANY verified:false anywhere in a result starts a check, whatever shape it arrives in', () => {
   const shapes = {
     'top-level fast_type': ['fast_type', { text: 'fastlink-bench-vm', force: true }, CROSS],
-    'fast_do executed[]': ['fast_do', { intent: 'type the VM name' }, FAST_DO],
     'nested fast_batch step': ['fast_batch', NESTED_BATCH.args, NESTED_BATCH.result],
     'fast_fill {fields}': ['fast_fill', { fields: { Region: 'East US' } }, { verified: false, fields: { Region: { verified: false, reason: 'unreadable: gone' } } }],
     'fast_select_option results{}': ['fast_select_option', { field: 'Region', value: 'East US' }, { verified: true, results: { Region: { verified: false, picked: 'East US', reason: 'the pick did not take' } } }],

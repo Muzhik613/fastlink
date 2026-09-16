@@ -64,9 +64,9 @@ test('an emptyContainer probe counts as not found; gate refusals are misses; nav
     fast_wait: () => ({ result: { found: { text: 'x' }, emptyContainer: true } }),
     fast_click: () => ({ result: { clicked: 1, willNavigate: true } }),
   });
-  const gate = (s) => (s.name === 'fast_scout' ? { error: 'diagnostic-only' } : null);
+  const gate = (s) => (s.name === 'fast_status' ? { error: 'diagnostic-only' } : null);
   const r = await runBatch({ actions: [
-    { ifFound: 'x', then: [{ name: 'fast_scout' }], else: [{ name: 'fast_scout' }] },
+    { ifFound: 'x', then: [{ name: 'fast_status' }], else: [{ name: 'fast_status' }] },
     { name: 'fast_click', args: { text: 'Go' } },
     { name: 'fast_snapshot' },
   ] }, { ...io, gate });
