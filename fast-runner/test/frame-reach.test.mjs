@@ -160,3 +160,18 @@ test('no cross-origin frame on screen: the top call runs as before, nothing is i
   assert.equal(r.inFrame, undefined);
   assert.ok(calls.every((c) => c.ids[0] === 0));
 });
+
+test('a miss names only the frames that could NOT be read; a miss with every frame read carries no notice', async () => {
+  setup();
+  const r = await call('fast_click', { text: 'Nowhere at all', noSnapshot: true });
+  assert.ok(r.error);
+  assert.equal(r.frameNotice, undefined, 'the payment frame was read and searched');
+  // the frame is on screen but the extension has no frame for it (another extension's page, a torn-down frame)
+  setup();
+  frames.delete(7);
+  const r2 = await call('fast_click', { text: 'Nowhere at all', noSnapshot: true });
+  assert.match(r2.frameNotice, /^1 visible cross-origin frame\(s\) DOM tools could not read: https:\/\/pay\.provider\.example at x:200, y:300, 400x200\. Their content is visible in fast_screenshot, but DOM tools cannot target it\.$/);
+  const snap = await call('fast_snapshot', {});
+  assert.match(snap.frameNotice, /could not read/);
+  assert.equal(snap.frames, undefined);
+});

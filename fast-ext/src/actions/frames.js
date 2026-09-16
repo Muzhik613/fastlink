@@ -357,7 +357,7 @@ export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_
   return {
     ...r,
     frames: { searched: [...answered], unsearched },
-    ...(unsearched.length ? { framesHint: `not found in the top document or any searched frame; frames from ${unsearched.join(', ')} could not be searched, so the text may be there` } : {}),
+    ...(unsearched.length ? { framesHint: `not found in the top document or any searched frame; frames from ${unsearched.join(', ')} could not be searched, so the text may be there — their content is visible in fast_screenshot, but DOM tools cannot target it` } : {}),
   };
 }
 
@@ -510,7 +510,18 @@ export async function actWithFrames(ctx, action, args = {}) {
   const topScan = await withTimeout(ctx.run(0, 'fast_frames', {}), REACH.dryMs);
   if (!topScan || !Array.isArray(topScan.frames) || !topScan.frames.length) return ctx.run(0, action, args);
   const { targets } = await frameTargets(ctx, { topScan });
-  if (!targets.length) return ctx.run(0, action, args);
+  // a miss in the top document names the visible frames that could NOT be read
+  // (the ones read were searched and did not hold the target either)
+  const topCall = async (readSrcs) => {
+    const r = await ctx.run(0, action, args);
+    const missed = r && typeof r === 'object' && (r.error || (typeof r.missed === 'number' && r.missed > 0) || (typeof r.failed === 'number' && r.failed > 0));
+    if (!missed || r.frameNotice) return r;
+    const unread = topScan.frames.map((f) => f.src).filter((src) => !readSrcs.has(src));
+    if (!unread.length) return r;
+    const n = await withTimeout(ctx.run(0, 'fast_frames', { unread }), REACH.dryMs);
+    return n && n.frameNotice ? { frameNotice: n.frameNotice, opaqueFrames: n.opaqueFrames, ...r } : r;
+  };
+  if (!targets.length) return topCall(new Set());
 
   const multiKey = MULTI[action];
   let entries = null;   // [[key, spec]] for the per-field forms
@@ -521,6 +532,7 @@ export async function actWithFrames(ctx, action, args = {}) {
   }
   const keyOf = () => (action === 'fast_click' ? null : String(action === 'fast_fill' ? args.match : args.field));
   const dry = await Promise.all([0, ...targets.map((t) => t.frameId)].map((id) => withTimeout(ctx.run(id, action, { ...args, dryRun: true, noFrameNotice: true }), REACH.dryMs)));
+  const readSrcs = new Set(targets.filter((t, k) => t.parent === 0 && dry[k + 1] && !dry[k + 1].error).map((t) => t.src));
   const statusIn = (d, key) => {
     if (!d || d.error) return 'missing';
     if (action === 'fast_click') return d.found ? 'found' : 'missing';
@@ -547,7 +559,7 @@ export async function actWithFrames(ctx, action, args = {}) {
   if (!entries) {
     const w = where(keyOf());
     if (w.refuse) return w.refuse;
-    if (w.in === 'top') return ctx.run(0, action, args);
+    if (w.in === 'top') return topCall(readSrcs);
     return inFrame(w.in, await ctx.run(w.in.frameId, action, { ...args, noFrameNotice: true }));
   }
 
@@ -561,7 +573,7 @@ export async function actWithFrames(ctx, action, args = {}) {
     if (!groups.has(gk)) groups.set(gk, { t: w.in === 'top' ? null : w.in, keys: [] });
     groups.get(gk).keys.push(key);
   }
-  if (!refused.size && groups.size === 1 && groups.has('top')) return ctx.run(0, action, args);
+  if (!refused.size && groups.size === 1 && groups.has('top')) return topCall(readSrcs);
   const specOf = new Map(entries);
   const parts = [];
   for (const [gk, g] of groups) {

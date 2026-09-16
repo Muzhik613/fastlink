@@ -1514,17 +1514,24 @@ const opaqueFrames = (doc = document, win = window) => {
   out.sort((a, b) => b.w * b.h - a.w * a.h);
   return { frames: out, partial };
 };
-// The one sentence every page read leads with when such frames are on screen. Pure.
-const frameNotice = ({ frames }) => {
-  if (!frames || !frames.length) return '';
+// "<origin> at x, y, WxH; …" for up to FRAME_NOTICE_LIST frames. Pure.
+const frameList = (frames) => {
   const shown = frames.slice(0, FRAME_NOTICE_LIST).map((f) => `${f.origin} at x:${f.x}, y:${f.y}, ${f.w}x${f.h}`);
   const more = frames.length > shown.length ? ` and ${frames.length - shown.length} more` : '';
-  return `${frames.length} visible cross-origin frame(s) not readable by DOM tools: ${shown.join('; ')}${more}. Their content is visible in fast_screenshot; act there with fast_click_xy + fast_type.`;
+  return `${shown.join('; ')}${more}`;
+};
+// The sentence a snapshot leads with for frames DOM tools could NOT read. The
+// background reads every frame it can (frames.js) and keeps this only for the
+// rest, so it does not steer toward coordinates: models cannot point reliably
+// (live: three Grok models missed a 450x23 box on the same screenshot). Pure.
+const frameNotice = ({ frames }) => {
+  if (!frames || !frames.length) return '';
+  return `${frames.length} visible cross-origin frame(s) DOM tools could not read: ${frameList(frames)}. Their content is visible in fast_screenshot, but DOM tools cannot target it.`;
 };
 // Lead a snapshot result with the notice (a fresh scan). Returns `out` unchanged when none.
 const noticeBoxes = (frames) => frames.slice(0, FRAME_NOTICE_LIST).map(({ origin, x, y, w, h }) => ({ origin, x, y, w, h }));
 const withFrameNotice = (out) => {
-  if (!out || typeof out !== 'object') return out;
+  if (!out || typeof out !== 'object' || NO_FRAME_NOTICE.on) return out;
   const scan = opaqueFrames();
   const notice = frameNotice(scan);
   if (!notice) return out;
@@ -2786,10 +2793,7 @@ async function runPageAction(action, args) {
       const resolveEmpty = () => {
         const el = emptyHit.el;
         const found = { text: emptyHit.text, tag: el.tagName ? el.tagName.toLowerCase() : undefined, contentMatch: true };
-        const frameLine = frameNotice(opaqueFrames());
-        return resolve(withSnap({ found, emptyContainer: true, waitedMs: (args.timeoutMs || 5000), hint: frameLine
-          ? `"${args.text || selector}" matched only an element with no visible box/content in the top document — ${frameLine}`
-          : `"${args.text || selector}" matched only an element with no visible box/content (stale or hidden container) — the view has not rendered; wait for text that only the finished view shows, or read again` }));
+        return resolve(withSnap({ found, emptyContainer: true, waitedMs: (args.timeoutMs || 5000), hint: `"${args.text || selector}" matched only an element with no visible box/content (stale or hidden container) — the view has not rendered; wait for text that only the finished view shows, or read again` }));
       };
       // A content/body match: resolve found.contentMatch without requiring an
       // interactive element. Attach coords when we can locate a containing
@@ -2850,8 +2854,9 @@ async function runPageAction(action, args) {
           if (pollSelector() !== null) return;
           if (Date.now() > deadline) {
             if (emptyHit) return resolveEmpty();
-            const frameLine = frameNotice(opaqueFrames());
-            return resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}${frameLine ? ` in the top document — ${frameLine}` : ''}`, ...pageActivity(), ...(acWaitHint() || {}) });
+            // a selector is matched in this document only; name the frames it could be in
+            const fr = opaqueFrames().frames;
+            return resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}${fr.length ? ` in this document — it may be inside a visible cross-origin frame (${frameList(fr)}); pass frame:"<part of the frame URL>" to wait there` : ''}`, ...pageActivity(), ...(acWaitHint() || {}) });
           }
           return setTimeout(poll, 150);
         }
@@ -2937,8 +2942,7 @@ async function runPageAction(action, args) {
               if (txt) headings.push(txt);
             }
           } catch {}
-          const frameLine = frameNotice(opaqueFrames());
-          return resolve({ error: `Timed out waiting for "${args.text}"${frameLine ? ` in the top document — ${frameLine}` : ''}`, ...pageActivity(), headings, ...(acWaitHint() || {}) });
+          return resolve({ error: `Timed out waiting for "${args.text}"`, ...pageActivity(), headings, ...(acWaitHint() || {}) });
         }
         setTimeout(poll, 150);
       };
@@ -4227,21 +4231,12 @@ async function runPageAction(action, args) {
  }
 }
 
-// A DOM action that missed (fast_click / fast_fill / fast_select_option: an error,
-// or a {fields}/{selections} call with fields not done) while cross-origin
-// frames are on screen leads its result with the frame notice: its target may be
-// in one of them (live Azure: four fast_click "Create" variants errored against a
-// menu inside the reactblade frame, and the run aborted).
-const NOTICE_ON_MISS = new Set(['fast_click', 'fast_fill', 'fast_select_option']);
-const withActionFrameNotice = (action, r, args) => {
-  if (r && typeof r === 'object' && args && args.__idStale && !r.idStale) r = frontload(r, { idStale: true });
-  if (!NOTICE_ON_MISS.has(action) || !r || typeof r !== 'object' || r.frameNotice || r.dryRun || (args && args.noFrameNotice)) return r;
-  const missed = r.error || (typeof r.missed === 'number' && r.missed > 0) || (typeof r.failed === 'number' && r.failed > 0);
-  if (!missed) return r;
-  const scan = opaqueFrames();
-  const notice = frameNotice(scan);
-  return notice ? frontload(r, { frameNotice: notice, opaqueFrames: noticeBoxes(scan.frames) }) : r;
-};
+// A click whose id had gone stale and fell back to text says so.
+const withIdStale = (r, args) => (r && typeof r === 'object' && args && args.__idStale && !r.idStale ? frontload(r, { idStale: true }) : r);
+
+// Set for the duration of a call made with noFrameNotice (a frame document the
+// background reads itself).
+const NO_FRAME_NOTICE = { on: false };
 
 // The fast_wait polls still running in this document, each as its cancel function.
 const ACTIVE_WAITS = new Set();
@@ -4255,6 +4250,9 @@ const ACTIVE_WAITS = new Set();
 // re-render storms. Cost on tabs you never automate: zero.
 if (typeof window !== 'undefined') {
   window.__fastlink = window.__fastlink || {};
-  window.__fastlink.run = (action, args) => Promise.resolve(runPageAction(action, args)).then((r) => withActionFrameNotice(action, r, args));
+  window.__fastlink.run = async (action, args) => {
+    NO_FRAME_NOTICE.on = !!(args && args.noFrameNotice);
+    try { return withIdStale(await runPageAction(action, args), args); } finally { NO_FRAME_NOTICE.on = false; }
+  };
   window.__fastlink.cancelWaits = () => { const n = ACTIVE_WAITS.size; for (const c of [...ACTIVE_WAITS]) c(); return n; };
 }

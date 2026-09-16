@@ -32,7 +32,7 @@ test('an embedded cross-origin form: fast_snapshot LEADS with the notice, origin
     <iframe src="https://js.stripe.com/v3/elements-inner-card.html" data-box="40,300,400,220"></iframe>`);
   const r = await run(w, 'fast_snapshot', {});
   assert.equal(Object.keys(r)[0], 'frameNotice', 'first thing the model reads');
-  assert.equal(r.frameNotice, '1 visible cross-origin frame(s) not readable by DOM tools: https://js.stripe.com at x:40, y:300, 400x220. Their content is visible in fast_screenshot; act there with fast_click_xy + fast_type.');
+  assert.equal(r.frameNotice, '1 visible cross-origin frame(s) DOM tools could not read: https://js.stripe.com at x:40, y:300, 400x220. Their content is visible in fast_screenshot, but DOM tools cannot target it.');
   assert.deepEqual(JSON.parse(JSON.stringify(r.opaqueFrames)), [{ origin: 'https://js.stripe.com', x: 40, y: 300, w: 400, h: 220 }]);
 });
 
@@ -46,7 +46,7 @@ test('a page full of ad iframes: trackers, hidden, below-the-fold and same-origi
   ];
   const w = page(`<h1>News</h1><p>story</p>${ads.join('')}`, 'https://news.example/');
   const r = await run(w, 'fast_snapshot', {});
-  assert.match(r.frameNotice, /^6 visible cross-origin frame\(s\) not readable by DOM tools: https:\/\/ad0\.example at x:0, y:100, 300x250; .* and 2 more\. Their content/);
+  assert.match(r.frameNotice, /^6 visible cross-origin frame\(s\) DOM tools could not read: https:\/\/ad0\.example at x:0, y:100, 300x250; .* and 2 more\. Their content/);
   assert.equal(r.opaqueFrames.length, 4);
   assert.ok(!/px\.ads|hidden\.ads|below\.ads|news\.example/.test(r.frameNotice));
 });
@@ -57,17 +57,23 @@ test('a page with no such frame carries no notice', async () => {
   assert.equal(r.frameNotice, undefined);
 });
 
-test('fast_wait timeoutMs 3000 on text that never appears returns within 3.5s, naming the frames', async () => {
+test('fast_wait timeoutMs 3000 on text that never appears returns within 3.5s (the frames it searched are frames.js\'s to report)', async () => {
   const w = page('<h1>Create a virtual machine</h1><iframe src="https://sandbox-1.reactblade.portal.azure.net/blade" data-box="0,120,1200,700"></iframe>', 'https://portal.azure.com/');
   const t0 = Date.now();
   const r = await run(w, 'fast_wait', { text: 'Virtual machine name', timeoutMs: 3000, noSnapshot: true });
   const ms = Date.now() - t0;
   assert.ok(ms >= 2900 && ms <= 3500, `returned in ${ms}ms`);
-  assert.match(r.error, /^Timed out waiting for "Virtual machine name" in the top document — 1 visible cross-origin frame\(s\) not readable by DOM tools: https:\/\/sandbox-1\.reactblade\.portal\.azure\.net at x:0, y:120, 1200x700\./);
+  assert.equal(r.error, 'Timed out waiting for "Virtual machine name"');
+});
+
+test('a selector wait (this document only) that times out names the visible frames and the frame arg', async () => {
+  const w = page('<h1>Create a virtual machine</h1><iframe src="https://sandbox-1.reactblade.portal.azure.net/blade" data-box="0,120,1200,700"></iframe>', 'https://portal.azure.com/');
+  const r = await run(w, 'fast_wait', { selector: '#vmName', timeoutMs: 500, noSnapshot: true });
+  assert.match(r.error, /^Timed out waiting for selector "#vmName" in this document — it may be inside a visible cross-origin frame \(https:\/\/sandbox-1\.reactblade\.portal\.azure\.net at x:0, y:120, 1200x700\); pass frame:/);
 });
 
 test('REGRESSION ba72fd8: a wait whose text matches only a hidden element answers at its deadline (it used to throw and hang to the 20s bridge)', async () => {
-  const w = page('<h1>Create a virtual machine</h1><div hidden>Virtual machine name</div><iframe src="https://sandbox-1.reactblade.portal.azure.net/blade" data-box="0,120,1200,700"></iframe>', 'https://portal.azure.com/');
+  const w = page('<h1>Create a virtual machine</h1><div hidden>Virtual machine name</div>', 'https://portal.azure.com/');
   const t0 = Date.now();
   const r = await Promise.race([
     run(w, 'fast_wait', { text: 'Virtual machine name', timeoutMs: 1000, noSnapshot: true }),
@@ -76,7 +82,12 @@ test('REGRESSION ba72fd8: a wait whose text matches only a hidden element answer
   assert.equal(r.hung, undefined, 'the wait never answered');
   assert.ok(Date.now() - t0 <= 1500);
   assert.equal(r.emptyContainer, true);
-  assert.match(r.hint, /in the top document — 1 visible cross-origin frame/);
+});
+
+test('a frame document read by the background (noFrameNotice) carries no notice of its own', async () => {
+  const w = page('<h1>Blade</h1><iframe src="https://nested.example/" data-box="0,0,400,300"></iframe>', 'https://sandbox-1.reactblade.portal.azure.net/blade');
+  assert.equal((await run(w, 'fast_snapshot', { noFrameNotice: true })).frameNotice, undefined);
+  assert.match((await run(w, 'fast_snapshot', {})).frameNotice, /could not read/);
 });
 
 test('the scan is bounded on a page with tens of thousands of iframes', () => {
@@ -94,19 +105,4 @@ test('the scan is bounded on a page with tens of thousands of iframes', () => {
   assert.ok(rectReads <= 3000, `read ${rectReads} boxes`);
   assert.equal(r.partial, true);
   assert.deepEqual(r.frames, []);
-});
-
-test('fast_click and fast_fill misses lead with the notice when such frames are on screen (live Azure: "Create" lives in the blade)', async () => {
-  const AZ = '<h1>Virtual machines</h1><nav><a href="#">Home</a></nav><iframe src="https://sandbox-1.reactblade.portal.azure.net/blade" data-box="265,176,1175,533"></iframe>';
-  const w = page(AZ, 'https://portal.azure.com/');
-  const c = await run(w, 'fast_click', { text: 'Create' });
-  assert.ok(c.error, 'the click missed');
-  assert.equal(Object.keys(c)[0], 'frameNotice');
-  assert.match(c.frameNotice, /^1 visible cross-origin frame\(s\) not readable by DOM tools: https:\/\/sandbox-1\.reactblade\.portal\.azure\.net at x:265, y:176, 1175x533\./);
-  const f = await run(w, 'fast_fill', { fields: { 'Virtual machine name': 'vm1' }, noSnapshot: true });
-  assert.equal(f.verified, false);
-  assert.equal(Object.keys(f)[0], 'frameNotice');
-  // a hit carries no notice; a page without such frames carries none on a miss
-  const plain = page('<button>Create</button>');
-  assert.equal((await run(plain, 'fast_click', { text: 'Nope' })).frameNotice, undefined);
 });
