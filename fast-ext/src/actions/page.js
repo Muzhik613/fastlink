@@ -106,17 +106,29 @@ const checkedOf = (el) => {
 // field's box is the nearest ancestor with a real box that holds no OTHER form
 // control — the widget itself, never the surrounding form. null when none.
 const WIDGET_INPUT_SEL = 'input[role="combobox"],input[id^="react-select-"]';
+// The box returned is the INNERMOST ancestor that actually SHOWS something:
+// Element Plus and Ant Design wrap the combobox input in a text-less ~10px
+// sleeve and draw the chosen label in a SIBLING span, so the first sized
+// ancestor read back as "" and a committed pick reported verified:false. The
+// climb still stops the moment an ancestor holds ANOTHER form control (that is
+// the surrounding form, not the widget); with no text anywhere in the widget
+// (an empty dropdown) the innermost box is still the answer.
 const hiddenInputBox = (el) => {
   if (!(el && el.matches && el.matches(WIDGET_INPUT_SEL))) return null;
+  let innermost = null;
   let p = el.parentElement;
   for (let hops = 0; p && hops < 6; hops++, p = p.parentElement) {
-    let r; try { r = p.getBoundingClientRect(); } catch { return null; }
+    let r; try { r = p.getBoundingClientRect(); } catch { break; }
     if (r.width < 2 || r.height < 2) continue;
     let others = 0;
     try { for (const c of p.querySelectorAll('input:not([type="hidden"]),select,textarea')) if (c !== el) others++; } catch {}
-    return !others && visible(p, r) ? p : null;
+    if (others || !visible(p, r)) break;
+    if (!innermost) innermost = p;
+    let shows = '';
+    try { shows = cleanLabel(p.innerText || p.textContent || ''); } catch {}
+    if (shows) return p;
   }
-  return null;
+  return innermost;
 };
 
 // What a control SHOWS: native select → the selected option's text; a visible
@@ -145,8 +157,17 @@ const shownValueOf = (el) => {
         if (c.nodeType === 3) { if (c.data.trim()) parts.push(c.data); continue; }
         if (c.nodeType !== 1) continue;
         const tag = c.tagName;
-        if (/^(SELECT|OPTION|SCRIPT|STYLE|TEMPLATE|BUTTON|SVG)$/i.test(tag) || c.getAttribute('role') === 'button') continue;
-        if (c.getAttribute('aria-hidden') === 'true' || c.hasAttribute('aria-expanded')) continue;
+        // A <label> inside the widget is the field's NAME, never its value (EJ2's
+        // float label sits in the same wrapper as the readonly input that shows
+        // the pick — the read-back returned "From" for a committed "Chicago").
+        if (/^(SELECT|OPTION|SCRIPT|STYLE|TEMPLATE|BUTTON|SVG|LABEL)$/i.test(tag) || c.getAttribute('role') === 'button') continue;
+        // Skip an OPEN popup inside the widget — its option list is not the value.
+        // Only aria-expanded="TRUE": every modern listbox keeps aria-expanded="false"
+        // on the very element that DISPLAYS the pick (EJ2's readonly input, Element
+        // Plus / Ant Design's role=combobox input), so skipping any element that
+        // merely CARRIES the attribute read a committed widget as empty — that was
+        // the false verified:false on four custom dropdowns.
+        if (c.getAttribute('aria-hidden') === 'true' || c.getAttribute('aria-expanded') === 'true') continue;
         if (typeof c.checkVisibility === 'function' && !c.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
         if (tag === 'INPUT') { if (c.value && !/^(hidden|checkbox|radio)$/i.test(c.type || '')) parts.push(c.value); continue; }
         walk(c);

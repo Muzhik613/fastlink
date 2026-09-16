@@ -33,6 +33,25 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-16 — a committed pick on a custom listbox reads back as committed (no more false `verified:false`)
+- **What:** two rules in the shown-value read-back (`fast-ext/src/actions/page.js`). (1) `shownValueOf`'s
+  walk skips a descendant only when it is an OPEN popup (`aria-expanded="true"`), not merely because it
+  CARRIES the attribute, and never counts a `<label>` inside the widget as the value. (2) `hiddenInputBox`
+  returns the innermost ancestor that actually SHOWS something instead of the first sized one, still
+  stopping at the first ancestor that holds another form control.
+- **Why:** holdout-2 by-hand pass: `fast_select_option` committed the choice on four custom listboxes and
+  returned `verified:false` every time. Live on the rig: Syncfusion EJ2 read back `"From"` (its float LABEL
+  sits in the same wrapper as the readonly input that shows `"Chicago"`, which was skipped for carrying
+  `aria-expanded="false"`), and Element Plus read back `""` (its combobox input sits in a text-less ~10px
+  sleeve; the chosen label is a sibling span one level up). A model that obeys `verified:false` retries a
+  correct pick, or learns to ignore the flag.
+- **Files:** `fast-ext/src/actions/page.js`.
+- **Watch out:** `shownValueOf` is also the read-back for the click-ambiguity `candidates` list, so a widget
+  that renders its VALUE inside a `<label>` would now read empty — none seen; every widget checked draws the
+  value in a span/input and the `<label>` is the field name. Keep the popup skip keyed on `"true"`: going
+  back to `hasAttribute` re-breaks all four.
+- **Status:** committed; proven live on Syncfusion EJ2 + Element Plus (holdout-2) and on sites outside it.
+
 ## 2026-09-16 — `fast_click_xy` says where focus landed
 - **What:** every `fast_click_xy` return now carries `focused` {tag, type, label, editable} — the field's
   live `value` too when it is editable — read with the SAME probe `fast_type`'s guard uses, plus a `hint`
