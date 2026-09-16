@@ -2348,13 +2348,6 @@ async function runPageAction(action, args) {
       const t = String(text || '').toLowerCase().trim();
       const el = document.activeElement;
       if (!t || !el) return null;
-      const outer = panelOptions(el);
-      const target = pickByText(outer, (o) => optionText(o).toLowerCase(), t);
-      if (target) return { el: target, input: el, index: outer.indexOf(target) };
-    } catch {}
-    return null;
-  };
-  // Commit a suggestion the way a person does: ArrowDown to it, Enter — the
       // ONLY a typeahead's own popup is a suggestion list. Without this gate any
       // focused element that names a panel — a [role=tab] naming its tab panel,
       // a disclosure button naming its section — turned every [role=row] /
@@ -2363,6 +2356,13 @@ async function runPageAction(action, args) {
       // accept" instead of being clicked (Syncfusion EJ2 wizard: focus sat on
       // the "Train List" tab, whose aria-controls panel holds the train grid).
       if (!isAutocomplete(el)) return null;
+      const outer = panelOptions(el);
+      const target = pickByText(outer, (o) => optionText(o).toLowerCase(), t);
+      if (target) return { el: target, input: el, index: outer.indexOf(target) };
+    } catch {}
+    return null;
+  };
+  // Commit a suggestion the way a person does: ArrowDown to it, Enter — the
   // control's own keyboard handler applies it (Maps ignores synthetic mouse
   // events on its rows). Falls back to pointer/mouse events on the entry when
   // the list is still open afterwards. Returns what changed.
