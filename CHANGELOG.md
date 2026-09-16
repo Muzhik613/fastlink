@@ -92,14 +92,16 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 - **What:** two rules in the shown-value read-back (`fast-ext/src/actions/page.js`). (1) `shownValueOf`'s
   walk skips a descendant only when it is an OPEN popup (`aria-expanded="true"`), not merely because it
   CARRIES the attribute, and never counts a `<label>` inside the widget as the value. (2) `hiddenInputBox`
-  returns the innermost ancestor that actually SHOWS something instead of the first sized one, still
-  stopping at the first ancestor that holds another form control.
+  returns the innermost VISIBLE ancestor that actually SHOWS something instead of the first sized one — an
+  INVISIBLE sleeve is skipped and the climb continues (a widget hides its typing input once it displays a
+  value), and the climb stops only at an ancestor holding another form control.
 - **Why:** holdout-2 by-hand pass: `fast_select_option` committed the choice on four custom listboxes and
   returned `verified:false` every time. Live on the rig: Syncfusion EJ2 read back `"From"` (its float LABEL
   sits in the same wrapper as the readonly input that shows `"Chicago"`, which was skipped for carrying
-  `aria-expanded="false"`), and Element Plus read back `""` (its combobox input sits in a text-less ~10px
-  sleeve; the chosen label is a sibling span one level up). A model that obeys `verified:false` retries a
-  correct pick, or learns to ignore the flag.
+  `aria-expanded="false"`), and Element Plus read back `""` (its combobox input sits in a sleeve the widget
+  makes invisible once a value is shown, with the chosen label in a sibling span one level up — the climb
+  treated "invisible" as the end of the widget). A model that obeys `verified:false` retries a correct
+  pick, or learns to ignore the flag.
 - **Files:** `fast-ext/src/actions/page.js`.
 - **Watch out:** `shownValueOf` is also the read-back for the click-ambiguity `candidates` list, so a widget
   that renders its VALUE inside a `<label>` would now read empty — none seen; every widget checked draws the

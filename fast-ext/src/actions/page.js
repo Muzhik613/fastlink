@@ -122,7 +122,12 @@ const hiddenInputBox = (el) => {
     if (r.width < 2 || r.height < 2) continue;
     let others = 0;
     try { for (const c of p.querySelectorAll('input:not([type="hidden"]),select,textarea')) if (c !== el) others++; } catch {}
-    if (others || !visible(p, r)) break;
+    if (others) break;                  // past the widget: this is another field's box
+    // A widget HIDES its typing sleeve once it displays a value (Element Plus makes
+    // the input wrapper invisible and draws the chosen label in a sibling span) —
+    // that is part of the widget, not the end of it. Skip it and keep climbing to
+    // the box that actually shows; stopping here read the pick back as "".
+    if (!visible(p, r)) continue;
     if (!innermost) innermost = p;
     let shows = '';
     try { shows = cleanLabel(p.innerText || p.textContent || ''); } catch {}
