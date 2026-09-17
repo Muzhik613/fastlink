@@ -55,12 +55,16 @@ const CONTROL_ROLES = new Set([
   'menuitemradio', 'tab', 'switch', 'link',
 ]);
 const CONTROL_BONUS = 1.25; // additive, crosses at most ~one scoring tier — never a hard override
-// A field that IS the asked text beats the same text buried in a longer one, and what the
-// user can see beats what is below the fold (live stopwatch.net 8b93bb0: fast_click "Stop"
-// hit the FAQ button "Is Stopwatch.net free to use?" 2,700px down and scrolled to it, while
-// the primary control relabelled exactly "Stop" sat on screen). EXACT outranks every other
-// term; ONSCREEN crosses a field tier; FIT (how much of the field the text fills) only breaks ties.
-const EXACT_BONUS = 8, ONSCREEN_BONUS = 2, FIT_WEIGHT = 0.5;
+// MATCH QUALITY decides first, position never does (live stopwatch.net 8b93bb0: fast_click
+// "Stop" hit the FAQ button "Is Stopwatch.net free to use?" 2,700px down while the primary
+// control relabelled exactly "Stop" sat on screen — but a control 3,000px down is often
+// exactly the one wanted). A field that IS the text beats one that STARTS with it at a word
+// boundary, which beats the text buried inside a longer one — and the longer the host text,
+// the weaker that last one (a 4-character query inside an FAQ sentence scores near zero).
+// Everything else — which field carried it, control-over-link, on-screen — only breaks ties
+// between matches of the SAME quality: their sum is smaller than the gap between qualities.
+const Q_EXACT = 12, Q_PREFIX = 6, Q_INSIDE = 3;   // Q_INSIDE is scaled by how much of the host the text fills
+const FIELD_WEIGHT = 0.25, ONSCREEN_BONUS = 0.3;  // tiebreaks only (with CONTROL_BONUS, scaled below)
 const isControlItem = (it) => {
   if (!it) return false;
   if (CONTROL_TAGS.has(it.tag)) return true;
@@ -1836,52 +1840,74 @@ async function runPageAction(action, args) {
   armObserver();
 
   // Match-ranking & helpers used by multiple actions.
+  // How well one field carries the text: 'exact' | 'prefix' (starts with it, at a word
+  // boundary) | 'inside' (buried in a longer text, scaled by how much of it the text fills).
+  const fieldQuality = (v, t) => {
+    const n = normMatch(v);
+    if (!n || !n.includes(t)) return null;
+    if (n === t) return { q: 'exact', s: Q_EXACT };
+    const at = n.indexOf(t);
+    const boundary = (at === 0 || /\s|[-—–/:(\[]/.test(n[at - 1])) && (at + t.length === n.length || /\s|[-—–/:)\].,!?]/.test(n[at + t.length]));
+    if (at === 0 && boundary) return { q: 'prefix', s: Q_PREFIX };
+    return { q: 'inside', s: Q_INSIDE * (t.length / n.length) * (boundary ? 1 : 0.5), host: n.length };
+  };
   const matchScore = (it, t) => {
-    let score = 0, exact = false, fit = 0;
-    // one field: does it carry the text, is it exactly the text, how much of it does the text fill
-    const take = (v, s) => {
-      const n = normMatch(v);
-      if (!n || !n.includes(t)) return false;
-      score = Math.max(score, s);
-      if (n === t) exact = true;
-      fit = Math.max(fit, t.length / n.length);
+    let best = null, tier = 0;
+    const take = (v, w) => {
+      const f = fieldQuality(v, t);
+      if (!f) return false;
+      if (!best || f.s > best.s) best = f;
+      tier = Math.max(tier, w);
       return true;
     };
+    // which field carried it is only a tiebreak: innerText > label/placeholder > name > aria-label > title
     take(it.innerText, 4);
     take(it.label, 3);
     take(it.placeholder, 3);
     take(it.name, 2);
     take(it.ariaLabel, 1);
     take(it.title, 0.5);
-    if (score === 0 && take(it.text, 0.25)) score = 0.25;
-    // Type preference: nudge real interactive CONTROLS above generic links/text
-    // when scores are close. Without this a plain <a>"External" (innerText=4)
-    // outranks the radio whose name "External" comes from a <label> (label=3).
-    // Additive (CONTROL_BONUS crosses ~one tier), never a hard override.
-    if (score > 0 && isControlItem(it)) score += CONTROL_BONUS;
-    // A script-only target (no-href <a>, cursor:pointer text) always ranks BELOW
-    // every real control/link match (min real score 0.25 > max weak 0.04), but is
-    // still a candidate — never "nothing to click" when it carries the text.
-    // exact-text and on-screen preference (see EXACT_BONUS): a weak (script-only) target stays
-    // below every real control either way — its highest total still scores under 0.25 after ×0.01.
-    if (score > 0) {
-      if (exact) score += EXACT_BONUS;
-      if (!it.offscreen) score += ONSCREEN_BONUS;
-      score += fit * FIT_WEIGHT;
-    }
+    if (!best) take(it.text, 0.25);
+    if (!best) return { s: 0, q: null };
+    // Tiebreaks, all together smaller than the gap between two qualities:
+    // the field that carried it, real CONTROL over generic link/text (without this a plain
+    // <a>"External" outranks the radio whose name comes from its <label>), and on screen
+    // over below the fold — position never beats a better match.
+    let score = best.s + tier * FIELD_WEIGHT + (isControlItem(it) ? CONTROL_BONUS * 0.5 : 0) + (it.offscreen ? 0 : ONSCREEN_BONUS);
+    // A script-only target (no-href <a>, cursor:pointer text) ranks BELOW every real
+    // control/link match, but is still a candidate — never "nothing to click" when it
+    // carries the text.
     if (it.clickable) score *= 0.01;
-    return score;
+    return { s: score, q: best.q };
   };
+  // The last ranking's scores, for the runner-up note (recovery over prevention).
+  let lastScored = [];
   const matchItems = (items, text) => {
     const t = normMatch(text);
-    if (!t) return [];
+    if (!t) return (lastScored = []);
     const scored = [];
     for (const it of items) {
-      const s = matchScore(it, t);
-      if (s > 0) scored.push({ it, s });
+      const { s, q } = matchScore(it, t);
+      if (s > 0) scored.push({ it, s, q });
     }
     scored.sort((a, b) => b.s - a.s);
+    lastScored = scored;
     return scored.map(x => x.it);
+  };
+  // What the click did NOT take, when the winner is a weak match or the runner-up is close:
+  // the model can correct in one turn instead of reading the page again.
+  const runnerUpNote = (chosen) => {
+    const win = lastScored.find((x) => x.it === chosen);
+    if (!win) return null;
+    const rest = lastScored.filter((x) => x.it !== chosen);
+    if (!rest.length) return null;
+    const close = rest[0].s >= win.s * 0.8;
+    if (win.q !== 'inside' && !close) return null;
+    return rest.slice(0, 2).map((r) => ({
+      ...matchBrief(r.it),
+      lost: r.q !== win.q ? `${r.q === 'inside' ? 'the text sits inside a longer one' : `${r.q} match`}, the click took the ${win.q === 'inside' ? 'closer' : win.q} one`
+        : (r.it.offscreen && !chosen.offscreen ? 'same match, below the fold' : 'same match, ranked lower'),
+    }));
   };
   const elAt = (it) => elById(it.i) || document.elementFromPoint(it.x + it.w / 2, it.y + it.h / 2);
   const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -4259,6 +4285,8 @@ async function runPageAction(action, args) {
     // What the click DID leads the result: where the page is now, whether the URL
     // moved, whether a dialog opened/closed, and what holds focus.
     const head = { clicked: item, url: location.href, urlChanged: location.href !== urlBefore };
+    // what else carried the text, when the winner is a weak match or the runner-up is close
+    try { const alt = runnerUpNote(item); if (alt && alt.length) head.alsoMatched = alt; } catch {}
     const labelNow = labelRead();
     if (labelNow && labelBefore != null && labelNow !== labelBefore) {
       head.labelNow = labelNow;
