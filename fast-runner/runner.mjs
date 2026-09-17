@@ -926,6 +926,10 @@ function recordTurn(run, resp, content) {
   const row = {
     turn: run.turns.length + 1, t: Date.now() - run.startedAt - (tm.latencyMs || 0),
     latencyMs: tm.latencyMs ?? null, attempts: tm.attempts ?? null, requestChars: tm.requestChars ?? null,
+    // xAI's own timing for the answering request (xai.mjs upstreamTiming); visible thinking size alongside
+    ...(tm.xaiTtftMs != null ? { xaiTtftMs: tm.xaiTtftMs } : {}), ...(tm.xaiE2eMs != null ? { xaiE2eMs: tm.xaiE2eMs } : {}),
+    ...(tm.xaiItlMs != null ? { xaiItlMs: tm.xaiItlMs } : {}), ...(tm.xaiRequestId ? { xaiRequestId: tm.xaiRequestId } : {}),
+    thinkingChars: (resp.content || []).reduce((n, c) => n + (c.type === 'thinking' ? String(c.thinking || '').length : 0), 0),
     inputTokens: u.input_tokens ?? null, cacheRead: u.cache_read_input_tokens ?? null,
     cacheCreate: u.cache_creation_input_tokens ?? null, outputTokens: u.output_tokens ?? null,
     toolResultChars: toolResultChars(run.messages), stop_reason: resp.stop_reason ?? null,

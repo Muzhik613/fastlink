@@ -57,3 +57,10 @@ test('hedgeDelay: floor, 2.5 × median, skipped for a big new result; 871dd136 t
   const turns = [2062, 1064, 3351, 1844, 2200, 1900, 2400, 1700, 2600, 3351, 1844].map((latencyMs) => ({ latencyMs }));
   assert.equal(hedgeDelay(turns, 3676), HEDGE_FLOOR_MS);
 });
+
+test('xAI timing headers are read into the turn timing (ttft, e2e, inter-token, request id); absent headers add nothing', async () => {
+  const { upstreamTiming } = await import('../xai.mjs');
+  const h = new Headers({ 'x-metrics-ttft-ms': '295.3', 'x-metrics-e2e-ms': '2570.6', 'x-metrics-mean-itl-ms': '12.7', 'x-request-id': 'cd6edcc5' });
+  assert.deepEqual(upstreamTiming(h), { xaiTtftMs: 295, xaiE2eMs: 2571, xaiItlMs: 13, xaiRequestId: 'cd6edcc5' });
+  assert.deepEqual(upstreamTiming(new Headers({})), {});
+});

@@ -33,6 +33,16 @@ export async function ensureProxy() {
   throw new Error(`grokcode proxy did not come up on ${BASE}; see ${PROXY_DIR}/proxy.log`);
 }
 
+// xAI reports its own timing on every response (passed through by the grokcode proxy): time to first
+// token, end-to-end generation time, mean inter-token latency, and a request id. latencyMs minus e2e is
+// time spent before xAI started generating (queue, proxy, network); a long TTFT with few output tokens
+// is a queue stall, not reasoning (output_tokens already counts hidden reasoning tokens).
+export function upstreamTiming(headers) {
+  const num = (k) => { const v = Number(headers?.get?.(k)); return Number.isFinite(v) && headers.get(k) !== null ? Math.round(v) : null; };
+  const u = { xaiTtftMs: num('x-metrics-ttft-ms'), xaiE2eMs: num('x-metrics-e2e-ms'), xaiItlMs: num('x-metrics-mean-itl-ms'), xaiRequestId: headers?.get?.('x-request-id') || null };
+  return Object.fromEntries(Object.entries(u).filter(([, v]) => v !== null));
+}
+
 // One non-streaming turn. Returns the Messages response body ({content, stop_reason, usage})
 // plus `_timing` = {latencyMs (whole call incl. retries), attempts, requestChars} for the run log.
 // `model` overrides the run's driver model for ONE call — the visual note's checker
@@ -64,7 +74,7 @@ export async function createMessage({ system, messages, tools, maxTokens = 4096,
     const text = await res.text();
     if (res.ok) {
       const out = JSON.parse(text);
-      out._timing = { latencyMs: Date.now() - t0, attempts: attempt + 1, requestChars: payload.length };
+      out._timing = { latencyMs: Date.now() - t0, attempts: attempt + 1, requestChars: payload.length, ...upstreamTiming(res.headers) };
       return out;
     }
     lastErr = new Error(`xai ${res.status}: ${text.slice(0, 500)}`);
