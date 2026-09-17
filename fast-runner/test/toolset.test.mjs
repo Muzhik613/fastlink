@@ -34,7 +34,7 @@ test('the must-knows survive the cut (Azure-shaped flows depend on each)', () =>
   assert.match(param('fast_click', 'id'), /f7:42/);
   assert.match(tool('fast_fill').description, /fast_select_option/, 'fill points dropdowns to select');
   assert.match(tool('fast_select_option').description, /dropdown/);
-  assert.match(tool('fast_batch').description, /steps you already know in one call/);
+  assert.match(tool('fast_batch').description, /Chain steps you already know in one call/);
   assert.match(tool('fast_batch').description, /ifFound/);
   assert.match(tool('fast_screenshot').description, /Last resort/);
   for (const n of ['fast_tab', 'fast_nav']) assert.match(tool(n).description, /wait for it to load.*preview/, `${n}: waits and returns a preview`);

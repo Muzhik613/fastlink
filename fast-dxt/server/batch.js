@@ -110,7 +110,7 @@ export const notVerified = (res) => {
 };
 const stepLabel = (step) => {
   const a = step.args || {};
-  const key = a.match ?? a.text ?? a.field ?? a.url ?? a.key ?? (a.fields && Object.keys(a.fields).join(',')) ?? (a.selections && Object.keys(a.selections).join(',')) ?? '';
+  const key = a.match ?? a.text ?? a.id ?? a.field ?? a.url ?? a.key ?? (a.fields && Object.keys(a.fields).join(',')) ?? (a.selections && Object.keys(a.selections).join(',')) ?? '';
   return key ? `${step.name} ${JSON.stringify(String(key).slice(0, 40))}` : step.name;
 };
 
@@ -124,6 +124,7 @@ export async function runBatch(args, io) {
   const counts = { ok: 0, missed: 0, steps: 0 };
   const misses = [];   // { label, error }
   const quiet = [];    // labels of write steps whose result says the form did not change
+  const changes = [];  // "<label> changed: a; b" per ok step that reports changes, so the summary line shows each step's effect
 
   const runStep = async (step, index, hasFollower) => {
     const name = STEP_RENAMES[step.name] || step.name;
@@ -155,6 +156,7 @@ export async function runBatch(args, io) {
     }
     counts.ok++;
     if (result && result.changed === 'none') quiet.push(label);
+    else if (result && Array.isArray(result.changed) && result.changed.length) changes.push(`${label} changed: ${clip(result.changed.join('; '))}`);
     return { step: index, name, ok: true, result };
   };
 
@@ -197,6 +199,7 @@ export async function runBatch(args, io) {
   const head = `${counts.ok}/${counts.steps} steps ok`;
   const parts = [
     ...misses.map((m) => `${m.label} ${m.unverified ? 'not verified' : 'missed'}: ${m.error}`),
+    ...changes,
     ...quiet.map((l) => `${l} changed nothing on the form`),
   ];
   const summary = parts.length ? `${head}; ${parts.join(' | ')}` : head;

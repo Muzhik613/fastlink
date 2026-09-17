@@ -102,3 +102,16 @@ test('a step is ok only when its own result is clean: verified:false / missed / 
 test('relay mirror of batch.js is byte-identical', () => {
   assert.equal(readFileSync(new URL('../../fast-dxt/server/batch.js', import.meta.url), 'utf8'), readFileSync(new URL('../../fastlink-relay/src/batch.js', import.meta.url), 'utf8'));
 });
+
+test('the summary shows what each step changed, compactly (ids included in the label); a quiet step still says it changed nothing', async () => {
+  const io = fake({
+    fast_click: (a) => ({ result: a.id === 'f1:133' ? { clicked: 'Next', changed: ['now showing "Security"'] } : { clicked: 'x', changed: 'none' } }),
+    fast_select_option: () => ({ result: { verified: true, picked: 'Ampere', changed: ['AMD: "checked" → "unchecked"', 'Ampere: "unchecked" → "checked"'] } }),
+  });
+  const r = await runBatch({ actions: [
+    { name: 'fast_click', args: { id: 'f1:133' } },
+    { name: 'fast_select_option', args: { field: 'Shape series', option: 'Ampere' } },
+    { name: 'fast_click', args: { id: 'f1:9' } },
+  ] }, io);
+  assert.equal(r.summary, '3/3 steps ok; step 0 (fast_click "f1:133") changed: now showing "Security" | step 1 (fast_select_option "Shape series") changed: AMD: "checked" → "unchecked"; Ampere: "unchecked" → "checked" | step 2 (fast_click "f1:9") changed nothing on the form');
+});

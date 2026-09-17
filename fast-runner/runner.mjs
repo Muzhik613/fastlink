@@ -26,7 +26,7 @@ const todayLine = () => {
   return `Today is ${dow} ${date} (${TZ}). Compute relative dates from this; never guess the year.`;
 };
 const SYSTEM = `You operate a real Chrome browser through the tools below. Work until the task is done.
-- When the next steps are known, do them in one call: fast_batch, or one fast_fill {fields}.
+- Chain steps you already know in one fast_batch (each step reports what it changed); fill a form with one fast_fill {fields}.
 - An action's result ends with a page preview; act on it. A preview's omitted counts are normal. truncated:true means an explicit read was cut: read again with full:true before relying on it.
 - When a step fails, read the error, fix the call, and continue.
 - Only claim what a tool result shows (a write's read-back value or a preview counts).
@@ -874,6 +874,53 @@ function toolResultChars(messages) {
 
 // One row per model call -> run.turns (written to runs.jsonl). latencyMs is the whole
 // createMessage (proxy + retries); `t` is the call's start offset, like toolLog.t.
+// ── Hedged model turns ────────────────────────────────────────────────────────
+// A turn that gets no answer long after this run's normal turn time is stuck upstream or in the
+// proxy, not thinking (live 871dd136 turn 12: 54,023 ms for 1,497 input / 43 output tokens, every
+// other turn 1.3-3.4 s). After HEDGE_FACTOR × the run's median turn latency (at least HEDGE_FLOOR_MS)
+// the same request is sent once more; whichever answers first wins and the other is aborted.
+// Not for a turn that takes in a big new result: that is real work (dd2cf71c spent 43.6 s on an 80k-char
+// read) and a duplicate would only double it. This is the only stall handling; createMessage's own
+// retry covers failed requests (network error, 429, 5xx), not slow ones.
+export const HEDGE_FLOOR_MS = 8000;
+export const HEDGE_FACTOR = 2.5;
+export const HEDGE_SKIP_NEW_CHARS = 30000;
+export function hedgeDelay(turns, newChars = 0) {
+  if (newChars > HEDGE_SKIP_NEW_CHARS) return null;
+  const lat = (turns || []).map((t) => t.latencyMs).filter(Number.isFinite).sort((a, b) => a - b);
+  const median = lat.length ? lat[Math.floor(lat.length / 2)] : 0;
+  return Math.max(HEDGE_FLOOR_MS, Math.round(HEDGE_FACTOR * median));
+}
+/** send(signal) → Promise<resp>. Resolves { resp, hedge } with hedge = {afterMs, winner, ms} when a duplicate was fired. */
+export function hedged(send, { signal, delayMs, timers = { set: setTimeout, clear: clearTimeout } } = {}) {
+  const t0 = Date.now();
+  const controllers = [];
+  const abortAll = () => { for (const c of controllers) c.abort(); };
+  return new Promise((resolve, reject) => {
+    let settled = false, pending = 0, timer = null;
+    const done = () => { settled = true; if (timer !== null) { timers.clear(timer); timer = null; } signal?.removeEventListener?.('abort', abortAll); };
+    const start = (label) => {
+      const c = new AbortController();
+      controllers.push(c);
+      pending++;
+      send(c.signal).then((resp) => {
+        if (settled) return;
+        done();
+        for (const other of controllers) if (other !== c) other.abort();
+        resolve({ resp, hedge: controllers.length > 1 ? { afterMs: delayMs, winner: label, ms: Date.now() - t0 } : null });
+      }, (e) => {
+        pending--;
+        if (settled || pending > 0) return;
+        done(); abortAll(); reject(e);
+      });
+    };
+    if (signal?.aborted) { reject(signal.reason || new Error('aborted')); return; }
+    signal?.addEventListener?.('abort', abortAll, { once: true });
+    start('original');
+    if (delayMs != null) timer = timers.set(() => { timer = null; if (!settled && !signal?.aborted) start('duplicate'); }, delayMs);
+  });
+}
+
 function recordTurn(run, resp, content) {
   const u = resp.usage || {}, tm = resp._timing || {};
   const row = {
@@ -884,6 +931,7 @@ function recordTurn(run, resp, content) {
     toolResultChars: toolResultChars(run.messages), stop_reason: resp.stop_reason ?? null,
     tools: content.filter(c => c.type === 'tool_use').map(c => c.name),
     thinking: (resp.content || []).some(c => c.type === 'thinking' || c.type === 'redacted_thinking'),
+    ...(resp._hedge ? { hedge: resp._hedge } : {}),
   };
   // xAI usage extras (e.g. reasoning tokens) keep their upstream names, unknown shape today.
   for (const k of Object.keys(u)) if (!/^(input_tokens|output_tokens|cache_read_input_tokens|cache_creation_input_tokens)$/.test(k)) row[k] = u[k];
@@ -985,7 +1033,11 @@ async function loop(run) {
 
     let resp;
     try {
-      resp = await createMessage({ system: run.system, messages: run.messages, tools: run.tools, signal: run.abort.signal });
+      const newChars = JSON.stringify(run.messages[run.messages.length - 1]?.content ?? '').length;
+      const { resp: r, hedge } = await hedged((signal) => createMessage({ system: run.system, messages: run.messages, tools: run.tools, signal }),
+        { signal: run.abort.signal, delayMs: hedgeDelay(run.turns, newChars) });
+      resp = r;
+      if (hedge) { resp._hedge = hedge; resp._timing = { ...(resp._timing || {}), latencyMs: hedge.ms }; }   // the turn took as long as the caller waited
     } catch (e) {
       if (run.cancelled) return;
       return finish(run, 'error', { error: `model: ${e.message}` });

@@ -91,7 +91,7 @@ test('batch: each step carries changed, and the summary names steps that changed
   ] }, { call });
   assert.deepEqual(b.results[0].result.changed, ['Name: "" → "vm1"']);
   assert.equal(b.results[1].result.changed, 'none');
-  assert.equal(b.summary, '2/2 steps ok; step 1 (fast_click "Help") changed nothing on the form');
+  assert.equal(b.summary, '2/2 steps ok; step 0 (fast_fill "Name") changed: Name: "" → "vm1" | step 1 (fast_click "Help") changed nothing on the form');
 });
 
 test('cost: before/after form read on a 300-field form stays in the low ms', async () => {

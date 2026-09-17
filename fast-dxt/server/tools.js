@@ -257,7 +257,7 @@ export const TOOLS = [
   },
   {
     name: 'fast_batch',
-    description: 'Run steps you already know in one call: `actions`:[{name, args}], or {ifFound, then, else} to branch without a turn. Every step runs; the result leads with a per-step summary and ends with one page preview.',
+    description: 'Chain steps you already know in one call: `actions`:[{name, args}], or {ifFound, then, else} to branch without a turn. Every step runs and the summary says what each step changed; one page preview comes at the end.',
     inputSchema: {
       type: 'object',
       properties: {
