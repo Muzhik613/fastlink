@@ -116,3 +116,54 @@ test('a clean exact win carries no runner-up note', async () => {
   assert.equal(r.clicked.text, 'Stop');
   assert.equal(r.alsoMatched, undefined, JSON.stringify(r.alsoMatched));
 });
+
+// The LIVE stopwatch.net shape (build 8b93bb0, ccb089d): the primary control is a <button>
+// holding an icon <span> and a label <span>, and the label is relabelled by swapping that
+// span's TEXT NODE; the same click re-renders the controls around it. The header carries a
+// nav link "Stopwatch" pointing at "/" — with the button's entry stale, "Stop" matched THAT
+// link, the page navigated to the site root and fast_click came back
+// "injected script returned no value" (the page had reset to READY / 00:00).
+const LIVE = `<header data-y="20"><a href="/" data-y="20">Stopwatch</a><a href="/timer" data-y="20">Timer</a></header>
+  <div id="ctl" data-y="600"><button id="swPrimary" data-y="600"><span id="ico"></span><span id="lab">Start</span></button>
+  <button id="lap" data-y="600" disabled>Lap</button><button id="rst" data-y="600">Reset</button></div>`;
+const wireLive = (d) => d.getElementById('swPrimary').addEventListener('click', () => {
+  const lab = d.getElementById('lab');
+  lab.textContent = lab.textContent === 'Start' ? 'Stop' : 'Start';        // the text node is swapped
+  d.getElementById('lap').disabled = lab.textContent !== 'Stop';
+  d.getElementById('rst').outerHTML = `<button id="rst" data-y="600">${lab.textContent === 'Stop' ? 'Clear' : 'Reset'}</button>`;  // the neighbours re-render
+});
+
+test('LIVE shape: the relabelled button is matched by its CURRENT text, not the nav link "Stopwatch"', async () => {
+  const w = page(LIVE, wireLive);
+  await run(w, 'fast_snapshot', {});
+  const a = await run(w, 'fast_click', { text: 'Start' });
+  assert.equal(a.labelNow, 'Stop');
+  const r = await run(w, 'fast_click', { text: 'Stop' });
+  assert.equal(r.clicked.tag, 'button', JSON.stringify(r.clicked));
+  assert.equal(w.document.getElementById('lab').textContent, 'Start', 'the stopwatch was really paused');
+});
+
+test('a click that navigates answers at once instead of waiting out the page it is leaving', async () => {
+  const w = page('<a id="go" href="/next" data-y="100">Stopwatch</a>', (d) => d.getElementById('go').addEventListener('click', () => {
+    d.defaultView.dispatchEvent(new d.defaultView.Event('pagehide'));   // the frame starts going away
+  }));
+  await run(w, 'fast_snapshot', {});
+  const t0 = Date.now();
+  const r = await run(w, 'fast_click', { text: 'Stopwatch' });
+  assert.equal(r.navigating, true, JSON.stringify(r));
+  assert.match(r.note, /being replaced/);
+  assert.ok(Date.now() - t0 < 400, `took ${Date.now() - t0}ms`);
+});
+
+test('the page never answers with nothing: a throw inside the action comes back as an error naming it', async () => {
+  const w = page('<button data-y="100">Boom</button>');
+  await run(w, 'fast_snapshot', {});
+  // page.js reads the page through this on every path; make it throw the way a hostile
+  // or mid-teardown document does
+  w.Element.prototype.getBoundingClientRect = function () { throw new Error('kaboom'); };
+  let r;
+  try { r = await w.__fastlink.run('fast_click', { text: 'Boom', noSnapshot: true }); }
+  catch (e) { r = { rejected: String(e && e.message) }; }
+  assert.equal(r.rejected, undefined, 'the run must never reject — the caller would get nothing at all');
+  assert.ok(typeof r.error === 'string' && r.error.length, JSON.stringify(r));
+});

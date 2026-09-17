@@ -327,6 +327,20 @@ async function reinjectPageScript(tabId, frameId = 0) {
   }
 }
 
+// What the page last did, for when the bridge comes back empty. Tiny and its own call:
+// it must survive the frame that just died (a fresh frame answers with nothing recorded).
+async function probePageState(tabId, frameId = 0) {
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] }, world: 'MAIN',
+      func: () => ({ url: location.href, lastDispatch: (window.__fastlink || {}).lastDispatch || null, lastError: (window.__fastlink || {}).lastError || null }),
+    });
+    return result || {};
+  } catch (e) {
+    return { gone: true, why: e?.message || String(e) };
+  }
+}
+
 async function injectPageAction(action, args, frameId = 0) {
   // Resolve the tab to act on through the single source of truth (pinned target
   // if set & alive, else the active tab) and inject by explicit id, so
@@ -336,6 +350,7 @@ async function injectPageAction(action, args, frameId = 0) {
   if (!target?.id) return { error: 'No tab to act on (no pinned target and no active tab).' };
   if (!isInjectableUrl(target.url)) return { error: `Restricted URL: ${target.url}` };
 
+  const beforeUrl = target.url;
   let result = await runBridge(target.id, action, args, frameId);
 
   // HEALTH-CHECK / AUTO-REINJECT. After an extension reload the MAIN-world
@@ -377,11 +392,27 @@ async function injectPageAction(action, args, frameId = 0) {
     return { error: result.__injectError };
   }
 
-  // null/undefined from the injected script means it threw before returning.
-  // Surface that as an error rather than guessing what happened (the old
-  // "click probably fired, navigatedAway: true" hack masked real bugs).
+  // null/undefined from the injected script: the page context never answered — it threw,
+  // or (live stopwatch.net) the click navigated and took the frame down mid-answer. Never
+  // hand back a bare "no value": ask the page what it last did and say whether the action
+  // had already dispatched, so the model knows whether the page moved.
   if (result == null) {
-    return { error: `${action}: injected script returned no value — likely an exception in the page context. Try fast_evaluate or check chrome://extensions service worker logs.` };
+    const probe = await probePageState(target.id, frameId);
+    const dispatched = probe.lastDispatch && Date.now() - probe.lastDispatch.at < 30000 ? probe.lastDispatch : null;
+    const movedTo = probe.url && probe.url !== beforeUrl ? probe.url : null;
+    if (movedTo || probe.gone) {
+      // the frame was replaced: for an action that can navigate this is what success looks like
+      const note = `the page navigated${movedTo ? ` to ${movedTo}` : ''} before ${action} could answer${dispatched ? `; the ${dispatched.action} on "${dispatched.target}" HAD already been dispatched` : ''}`;
+      return NAVIGATING_ACTIONS.has(action)
+        ? { ok: true, navigated: true, ...(movedTo ? { url: movedTo } : {}), ...(dispatched ? { clicked: dispatched.target } : {}), note }
+        : { error: `${action}: ${note}`, navigated: true, dispatched: !!dispatched };
+    }
+    const why = probe.lastError && Date.now() - probe.lastError.at < 30000 ? probe.lastError.message : null;
+    return {
+      error: `${action}: the page context did not return a result${why ? ` — it threw: ${why}` : ' (no exception recorded — the frame was replaced or the script was cut off)'}`,
+      dispatched: !!dispatched,
+      ...(dispatched ? { note: `the ${dispatched.action} on "${dispatched.target}" HAD already been dispatched — the page may have changed; read it before retrying` } : {}),
+    };
   }
   return result;
 }

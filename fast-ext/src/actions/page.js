@@ -1003,15 +1003,17 @@ const setupObserver = () => {
           for (const node of m.addedNodes)   if (node.nodeType === 1) PENDING.adds.add(node);
           // A control that RELABELS ITSELF swaps a TEXT node (live stopwatch.net: the primary
           // button went Start → Stop): characterData is not observed and a text node is not an
-          // element, so the entry kept "Start" and a click for "Stop" matched an FAQ button
-          // 2,700px below the fold. Re-index the nearest INDEXED ancestor (≤5 hops) — no extra
-          // mutation records, and only elements we already track.
+          // element, so the entry kept "Start" and a click for "Stop" matched the nav link
+          // "Stopwatch", which navigated away. EVERY indexed ancestor within 5 hops is
+          // re-indexed, not just the nearest: the text sits in a <span> inside the button and
+          // the button's own entry is the one a click matches on. No extra mutation records,
+          // and only elements already tracked.
           let textMoved = false;
           for (const node of m.addedNodes) if (node.nodeType === 3) { textMoved = true; break; }
           if (!textMoved) for (const node of m.removedNodes) if (node.nodeType === 3) { textMoved = true; break; }
           if (textMoved) {
             let a = m.target;
-            for (let k = 0; a && a.nodeType === 1 && k < 5; k++, a = a.parentElement) if (INDEX.byEl.has(a)) { PENDING.reindex.add(a); break; }
+            for (let k = 0; a && a.nodeType === 1 && k < 5; k++, a = a.parentElement) if (INDEX.byEl.has(a)) PENDING.reindex.add(a);
           }
         } else if (m.type === 'characterData') {
           const p = m.target.parentElement;
@@ -4247,16 +4249,27 @@ async function runPageAction(action, args) {
       else if (checkedOf(el) === null && (el.tagName === 'BUTTON' || el.tagName === 'A' || /^(button|link|tab|menuitem)$/i.test(el.getAttribute('role') || '') || item.clickable)) reactCap = REACT_CLICK_MS;
       if (reactCap) layersBefore = modalLayers();
     } catch {}
+    // LEAVING THE PAGE: a click that navigates tears this frame down, and anything we do
+    // after it (the react wait, the settle, the snapshot) races the teardown — the injected
+    // script then never answers and the caller gets nothing at all (live stopwatch.net: a
+    // click that hit the nav link "Stopwatch" went to "/" and fast_click came back
+    // "injected script returned no value"). Stop waiting the moment the page starts leaving.
+    let leaving = false;
+    const onLeave = () => { leaving = true; };
+    try { addEventListener('pagehide', onLeave, true); addEventListener('beforeunload', onLeave, true); addEventListener('unload', onLeave, true); } catch {}
     const tDispatch = nowMs();
     if (item.clickable || !NATIVE_CLICK.test(el.tagName)) pointerSeq(el); else el.click();
     phase('dispatchMs', nowMs() - tDispatch);
-    if (reactCap) {
+    // What the last click dispatched, for the background to report when this frame dies
+    // before the answer gets out (read by index.js when the bridge returns nothing).
+    try { window.__fastlink.lastDispatch = { action: 'fast_click', target: String(item.text || item.label || args.text || '').slice(0, 80), at: Date.now(), willNavigate }; } catch {}
+    if (reactCap && !willNavigate && !leaving) {
       const tR = nowMs();
       const live = observerLive();
       const reacted = () => INDEX.lastMutMs && INDEX.lastMutMs >= tDispatch;
-      const settle = async (cap) => { while (nowMs() - INDEX.lastMutMs < REACT_QUIET_MS && nowMs() - tR < cap) await wait(25); };
+      const settle = async (cap) => { while (!leaving && nowMs() - INDEX.lastMutMs < REACT_QUIET_MS && nowMs() - tR < cap) await wait(25); };
       if (live) {
-        while (!reacted() && nowMs() - tR < reactCap) await wait(25);
+        while (!leaving && !reacted() && nowMs() - tR < reactCap) await wait(25);
         // the first mutation is often a backdrop or an animation frame, not the finished panel
         // (live Oracle 8c427c0f: reactWaitMs 25, the picker showed a second later): settle until quiet
         if (reacted()) await settle(reactCap);
@@ -4267,8 +4280,8 @@ async function runPageAction(action, args) {
         const m = modalLayers();
         return m.dialogs <= layersBefore.dialogs && m.backdrops.some((b) => !layersBefore.backdrops.includes(b));
       };
-      if (modalPending()) {
-        while (modalPending() && nowMs() - tR < REACT_MODAL_MS) await wait(50);
+      if (!leaving && modalPending()) {
+        while (!leaving && modalPending() && nowMs() - tR < REACT_MODAL_MS) await wait(50);
         if (live) await settle(REACT_MODAL_MS);   // its name and content land a tick after its role
       }
       // the backdrop this click put up or took down, for `changed` when no dialog line says it
@@ -4281,6 +4294,9 @@ async function runPageAction(action, args) {
       } catch {}
       phase('reactWaitMs', nowMs() - tR);
     }
+    try { removeEventListener('pagehide', onLeave, true); removeEventListener('beforeunload', onLeave, true); removeEventListener('unload', onLeave, true); } catch {}
+    // The page is on its way out: answer NOW with what the click did, before the frame goes.
+    if (leaving) return { clicked: item, navigating: true, url: location.href, note: 'the click started a navigation; this page is being replaced — read the new page before acting again' };
     const out = await withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
     // What the click DID leads the result: where the page is now, whether the URL
     // moved, whether a dialog opened/closed, and what holds focus.
@@ -4978,6 +4994,12 @@ if (typeof window !== 'undefined') {
       try { noteServedDeep(out); } catch {}
       if (PHASES && out && typeof out === 'object') { phase('totalMs', nowMs() - tAll); out._debug = { phases: PHASES }; }
       return out;
+    } catch (e) {
+      // Never leave the caller with nothing: the background reads lastError when the bridge
+      // comes back empty (a frame torn down mid-answer returns no value at all).
+      const message = String((e && e.stack) || (e && e.message) || e).slice(0, 300);
+      try { window.__fastlink.lastError = { action, message, at: Date.now() }; } catch {}
+      return { error: `${action}: the page threw — ${message}`, threw: true };
     } finally { NO_FRAME_NOTICE.on = false; PHASES = null; }
   };
   window.__fastlink.cancelWaits = () => { const n = ACTIVE_WAITS.size; for (const c of [...ACTIVE_WAITS]) c(); return n; };
