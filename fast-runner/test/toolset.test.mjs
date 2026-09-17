@@ -55,7 +55,7 @@ test('toolsets choose tools only: allow (and a comment), no describe / rename ov
 test('one short system prompt for every toolset, no server instructions essay', () => {
   const sys = buildSystem();
   assert.ok(sys.length < 1000, `system prompt ${sys.length} chars`);
-  assert.match(sys, /\bbatch\b/); assert.match(sys, /\bdone\b/); assert.match(sys, /\bask\b/);
+  assert.match(sys, /several tool calls in one response: they run in order, stop at the first failure, and only the last returns a page preview/); assert.match(sys, /\bdone\b/); assert.match(sys, /\bask\b/);
   assert.doesNotMatch(sys, /fast_batch|fast_fill|report_done|ask_caller/, 'short names only');
   assert.match(sys, /When a step fails, read the error, fix the call, and continue\./);
   assert.match(sys, /omitted counts are normal/); assert.match(sys, /truncated:true means an explicit read was cut/);
@@ -73,8 +73,8 @@ test('default toolset = every server tool except hidden + native', () => {
   for (const t of tools.filter(t => !NATIVE.includes(t.name))) { assert.equal(back.get(t.name), canonicalName(t.name)); assert.equal(t.name, shortName(canonicalName(t.name))); }
 });
 
-test('hidden tools (scorer fast_frame_read, operator fast_ext_reload) are never model-facing, even when allowed', () => {
-  assert.deepEqual([...HIDDEN_TOOLS].sort(), ['fast_ext_reload', 'fast_frame_read']);
+test('hidden tools (scorer fast_frame_read, operator fast_ext_reload, fast_batch) are never model-facing, even when allowed', () => {
+  assert.deepEqual([...HIDDEN_TOOLS].sort(), ['fast_batch', 'fast_ext_reload', 'fast_frame_read']);
   assert.ok(!HIDDEN_TOOLS.has('fast_evaluate'), 'phase2-eval offers fast_evaluate on purpose');
   for (const name of ['default', 'phase2', 'phase2-eval', 'no-cdp']) {
     const { tools, back } = buildTools(TOOLS, loadToolset(name));
@@ -88,10 +88,10 @@ test('short tool names: the model sees them in the list, descriptions, params an
   assert.deepEqual(SHORT_NAMES, {
     fast_snapshot: 'read', fast_text: 'text', fast_click: 'click', fast_click_xy: 'click_at', fast_fill: 'fill',
     fast_select_option: 'select', fast_type: 'type', fast_key_press: 'key', fast_scroll: 'scroll', fast_wait: 'wait',
-    fast_tab: 'open', fast_nav: 'go', fast_batch: 'batch', fast_screenshot: 'look', report_done: 'done', ask_caller: 'ask',
+    fast_tab: 'open', fast_nav: 'go', fast_screenshot: 'look', report_done: 'done', ask_caller: 'ask',
   });
   const { tools, back } = buildTools(TOOLS, loadToolset('phase2'));
-  assert.deepEqual(names(tools), ['read', 'click', 'fill', 'open', 'go', 'wait', 'text', 'select', 'key', 'scroll', 'batch', 'click_at', 'ask', 'done']);
+  assert.deepEqual(names(tools), ['read', 'click', 'fill', 'open', 'go', 'wait', 'text', 'select', 'key', 'scroll', 'click_at', 'ask', 'done']);
   const blob = JSON.stringify(tools);
   for (const long of Object.keys(SHORT_NAMES)) assert.ok(!blob.includes(long), `no ${long} anywhere the model reads`);
   assert.equal(back.get('select'), 'fast_select_option');
@@ -140,17 +140,17 @@ test('"default" and unset and FASTRUN_TOOLSET resolve the same file', () => {
   assert.equal(c.name, 'phase2');
 });
 
-test('phase2 = its 12 allowed tools + 2 native; phase2-eval adds fast_evaluate; no-cdp has no debugger tool', () => {
+test('phase2 = its 11 allowed tools + 2 native; phase2-eval adds fast_evaluate; no-cdp has no debugger tool', () => {
   const p2 = loadToolset('phase2');
   const t2 = buildTools(TOOLS, p2).tools;
-  assert.equal(t2.length, 14);
+  assert.equal(t2.length, 13);
   assert.deepEqual([...names(t2).slice(0, -2)].map(canonicalName).sort(), [...p2.allow].sort());
   assert.deepEqual(names(t2).slice(-2), NATIVE);
   const ev = loadToolset('phase2-eval');
   assert.deepEqual(ev.allow, [...p2.allow, 'fast_evaluate']);
-  assert.equal(buildTools(TOOLS, ev).tools.length, 15);
+  assert.equal(buildTools(TOOLS, ev).tools.length, 14);
   const nc = buildTools(TOOLS, loadToolset('no-cdp')).tools;
-  assert.equal(nc.length, 13);
+  assert.equal(nc.length, 12);
   for (const n of names(nc)) assert.ok(!CDP.includes(canonicalName(n)), `${n} needs CDP`);
 });
 

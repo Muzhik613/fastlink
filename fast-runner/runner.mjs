@@ -26,7 +26,7 @@ const todayLine = () => {
   return `Today is ${dow} ${date} (${TZ}). Compute relative dates from this; never guess the year.`;
 };
 const SYSTEM = `You operate a real Chrome browser through the tools below. Work until the task is done.
-- Chain steps you already know in one fast_batch (each step reports what it changed); fill a form with one fast_fill {fields}.
+- For steps you already know, make several tool calls in one response: they run in order, stop at the first failure, and only the last returns a page preview. Fill a form with one fast_fill {fields}.
 - An action's result ends with a page preview; act on it. A preview's omitted counts are normal. truncated:true means an explicit read was cut: read again with full:true before relying on it.
 - When a step fails, read the error, fix the call, and continue.
 - Only claim what a tool result shows (a write's read-back value or a preview counts).
@@ -667,13 +667,13 @@ const gateFields = (run) => run.gate === 'off' ? { gate: 'off' } : {
 // Owner: tool names Grok reads must be very short and clear. ONE map, applied to every toolset at
 // the runner boundary: `forModel` on everything the model reads (tool list, descriptions, the system
 // prompt, tool results, refusals, check notes, nudges) and `fromModel` on every call it makes
-// (its tool name and fast_batch step names). The MCP server, the run store (runs.jsonl), the gate
+// (its tool name). The MCP server, the run store (runs.jsonl), the gate
 // and every log keep the canonical fast_* names, so history stays comparable and Claude / relay
 // callers are unaffected. Names without an entry (fast_evaluate, fast_list…) pass through unchanged.
 export const SHORT_NAMES = {
   fast_snapshot: 'read', fast_text: 'text', fast_click: 'click', fast_click_xy: 'click_at', fast_fill: 'fill',
   fast_select_option: 'select', fast_type: 'type', fast_key_press: 'key', fast_scroll: 'scroll', fast_wait: 'wait',
-  fast_tab: 'open', fast_nav: 'go', fast_batch: 'batch', fast_screenshot: 'look', report_done: 'done', ask_caller: 'ask',
+  fast_tab: 'open', fast_nav: 'go', fast_screenshot: 'look', report_done: 'done', ask_caller: 'ask',
 };
 const CANONICAL = Object.fromEntries(Object.entries(SHORT_NAMES).map(([k, v]) => [v, k]));
 const NAME_TOKEN = /\b(?:fast_[a-z_]+|report_done|ask_caller)\b/g;
@@ -689,19 +689,9 @@ export function forModel(blocks) {
     return b;
   });
 }
-/** A call as the model made it → canonical tool name and args (fast_batch steps, incl. then/else). */
+/** A call as the model made it → canonical tool name (args are passed on as sent). */
 export function fromModel(name, args) {
-  const canon = canonicalName(name);
-  const steps = (list) => Array.isArray(list) ? list.map((st) => {
-    if (!st || typeof st !== 'object') return st;
-    const out = { ...st };
-    if (typeof out.name === 'string') out.name = canonicalName(out.name);
-    if (out.then) out.then = steps(out.then);
-    if (out.else) out.else = steps(out.else);
-    return out;
-  }) : list;
-  if (canon !== 'fast_batch' || !args || typeof args !== 'object') return { name: canon, args };
-  return { name: canon, args: { ...args, ...(args.actions ? { actions: steps(args.actions) } : {}), ...(args.steps ? { steps: steps(args.steps) } : {}) } };
+  return { name: canonicalName(name), args };
 }
 // ── Aim only by id or text ────────────────────────────────────────────────────
 // Owner-approved: Grok aims a click with `id` (from a read) or `text` (the visible label), plus
@@ -784,7 +774,11 @@ export function loadToolset(spec = process.env.FASTRUN_TOOLSET || 'default') {
 // not a toolset. Not fast_evaluate: that is
 // also a scorer instrument, but toolset.phase2-eval.json passes it to the model on purpose (the
 // owner's A/B, bench/hvm-queue-feedback.sh), and phase2/no-cdp already leave it out.
-export const HIDDEN_TOOLS = new Set(['fast_frame_read', 'fast_ext_reload']);
+// fast_batch: Grok batches by making several tool calls in one response (the loop runs them in order and
+// stops at the first failure). In 129 logged runs Grok called fast_batch 35 times, 2 with ifFound, and ran
+// known chains one call per turn anyway (70d0f59f: Next x3 as three turns). The server keeps fast_batch for
+// other callers; the gate still reads fast_batch rows in older run logs.
+export const HIDDEN_TOOLS = new Set(['fast_frame_read', 'fast_ext_reload', 'fast_batch']);
 
 // The toolset's allow-filter, then HIDDEN_TOOLS. Descriptions come from the server only (one short
 // set in fast-dxt/server/tools.js); a toolset chooses tools, never rewrites them.
@@ -806,6 +800,23 @@ export function buildTools(mcpTools, toolset) {
 // clients and is NOT given to Grok: the tool descriptions carry what it needs.
 export function buildSystem() {
   return toModelText(`${SYSTEM}\n${todayLine()}`);
+}
+
+// Several calls in one response: only the LAST result that carries a page preview keeps it; earlier
+// results in the same response lose `snapshot` (and its stale/partial flags), so N calls never mean N
+// previews. Only JSON results with a \`snapshot\` object are touched.
+export function keepNewestPreview(results) {
+  const withPreview = [];
+  results.forEach((b, i) => {
+    if (b?.type !== 'tool_result' || b.content?.[0]?.type !== 'text') return;
+    let o; try { o = JSON.parse(b.content[0].text); } catch { return; }
+    if (o && typeof o === 'object' && o.snapshot && typeof o.snapshot === 'object') withPreview.push([i, o]);
+  });
+  for (const [i, o] of withPreview.slice(0, -1)) {
+    const { snapshot, snapshotFresh, snapshotStale, snapshotPartial, snapshotTimedOut, snapshotNote, ...rest } = o;
+    results[i] = { ...results[i], content: [{ type: 'text', text: JSON.stringify(rest) }, ...results[i].content.slice(1)] };
+  }
+  return withPreview.length ? withPreview.length - 1 : 0;
 }
 
 // Only the NEWEST image stays in the conversation; every older one becomes a short text stub. A
@@ -1062,8 +1073,13 @@ async function loop(run) {
 
     const results = [];
     const batchStart = run.toolLog.length;   // checks started from here on go out with the NEXT batch
+    let failedCall = null;   // several calls in one response run in order and stop at the first failure
     for (const u of uses) {
       if (run.cancelled) return;
+      if (failedCall) {
+        results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: [{ type: 'text', text: `not run: ${failedCall} failed earlier in this response` }] });
+        continue;
+      }
       const call = fromModel(u.name, u.input || {});   // the model's short names → canonical, once
       const args = call.args;
       await settleShots(run);   // a pending check's screenshot is taken before the page is touched again
@@ -1122,12 +1138,14 @@ async function loop(run) {
       onEvent?.({ type: 'tool', name: real || u.name, args, ms, ok, preview });
 
       results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResultContent(res), ...(ok ? {} : { is_error: true }) });
+      if (!ok) failedCall = real || u.name;
       const stop = stuckReason(run.toolLog);
       if (stop) {
         run.messages.push({ role: 'user', content: forModel(results) });
         return finish(run, 'error', { error: stop });
       }
     }
+    keepNewestPreview(results);
     // checks from EARLIER batches have been running while the model thought and
     // these calls ran; they are normally done by now and ride along with this result
     for (const text of await deliverChecks(run, { before: batchStart })) {

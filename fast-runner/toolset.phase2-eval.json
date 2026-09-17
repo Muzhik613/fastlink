@@ -12,7 +12,6 @@
     "fast_wait",
     "fast_tab",
     "fast_nav",
-    "fast_batch",
     "fast_evaluate"
   ]
 }

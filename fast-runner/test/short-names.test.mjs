@@ -2,35 +2,25 @@
 // the server, the run store and the gate keep fast_*.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fromModel, forModel, toModelText, toolResultContent, refusalText, gateProblems, recordResult, entryFacts, buildTools, loadToolset } from '../runner.mjs';
-import { runBatch } from '../../fast-dxt/server/batch.js';
+import { fromModel, forModel, toModelText, toolResultContent, refusalText, gateProblems, recordResult, entryFacts, buildTools, loadToolset, keepNewestPreview } from '../runner.mjs';
 import { TOOLS } from '../../fast-dxt/server/tools.js';
 
-test('a batch the model writes with short step names runs as the canonical tools', async () => {
-  const modelCall = { name: 'batch', input: { actions: [
-    { name: 'fill', args: { match: 'Virtual machine name', value: 'fastlink-bench-vm' } },
-    { ifFound: 'Resource group', then: [{ name: 'select', args: { field: 'Region', option: 'Japan East' } }], else: [{ name: 'click', args: { text: 'Create new' } }] },
-    { name: 'key', args: { key: 'Enter' } },
-  ] } };
-  const { tools, back } = buildTools(TOOLS, loadToolset('phase2'));
-  assert.ok(tools.some(t => t.name === 'batch') && back.get('batch') === 'fast_batch');
-  const call = fromModel(modelCall.name, modelCall.input);
-  assert.equal(call.name, 'fast_batch');
-  assert.deepEqual(call.args.actions.map(a => a.name || 'ifFound'), ['fast_fill', 'ifFound', 'fast_key_press']);
-  assert.equal(call.args.actions[1].then[0].name, 'fast_select_option');
-  assert.equal(call.args.actions[1].else[0].name, 'fast_click');
-  assert.equal(modelCall.input.actions[0].name, 'fill', 'the model\'s own input is not mutated');
-  // and the server's batch runner executes exactly those canonical tools
-  const ran = [];
-  const out = await runBatch(call.args, { call: async (name, args) => {
-    ran.push(name);
-    if (name === 'fast_list') return { result: [{ targetTab: true, url: 'https://x/' }] };
-    if (name === 'fast_evaluate') return { result: 'complete' };
-    if (name === 'fast_wait') return { result: { found: { text: 'Resource group' } } };
-    return { result: { ok: true, verified: true, snapshot: { items: [] } } };
-  } });
-  assert.deepEqual(ran.filter(n => !['fast_list', 'fast_evaluate', 'fast_wait'].includes(n)), ['fast_fill', 'fast_select_option', 'fast_key_press']);
-  assert.match(out.summary, /3\/3 steps ok|steps ok/);
+test('several calls in one response: only the last result keeps its page preview; batch is not model-facing', () => {
+  const { tools, back } = buildTools(TOOLS, loadToolset('default'));
+  assert.ok(!tools.some(t => t.name === 'batch' || t.name === 'fast_batch') && ![...back.values()].includes('fast_batch'), 'fast_batch hidden');
+  const preview = (label) => ({ url: 'https://x/', omitted: { items: 3 }, items: [{ i: 'f1:1', label }] });
+  const results = [
+    { type: 'tool_result', tool_use_id: 'a', content: [{ type: 'text', text: JSON.stringify({ clicked: 'Next', changed: ['now showing "Security"'], snapshot: preview('A'), snapshotStale: false }) }] },
+    { type: 'tool_result', tool_use_id: 'b', content: [{ type: 'text', text: JSON.stringify({ found: { text: 'Security' } }) }] },
+    { type: 'tool_result', tool_use_id: 'c', content: [{ type: 'text', text: JSON.stringify({ clicked: 'Next', changed: ['now showing "Boot volume"'], snapshot: preview('C') }) }] },
+    { type: 'tool_result', tool_use_id: 'd', is_error: true, content: [{ type: 'text', text: 'not run: fast_click failed earlier in this response' }] },
+  ];
+  assert.equal(keepNewestPreview(results), 1);
+  assert.deepEqual(JSON.parse(results[0].content[0].text), { clicked: 'Next', changed: ['now showing "Security"'] }, 'earlier preview (and its flags) dropped, the change kept');
+  assert.equal(JSON.parse(results[2].content[0].text).snapshot.items[0].label, 'C', 'the last preview stays');
+  assert.equal(results[3].content[0].text, 'not run: fast_click failed earlier in this response');
+  assert.equal(keepNewestPreview([results[1]]), 0);
+  assert.equal(fromModel('click', { id: 'f1:1' }).name, 'fast_click');
 });
 
 test('a result hint naming fast_select_option reaches the model as select; the run store keeps the original', () => {

@@ -1,5 +1,5 @@
 {
-  "_comment": "Phase-2 triage (docs/TOOL_TRIAGE_DRAFT.md §3a): 12 raw FastLink tools (fast_fill absorbs fill_form: fields:{}; fast_batch never aborts, ifFound branches) + ask_caller/report_done = 14. fast_click_xy stays until the fast_click{x,y} fold lands in tools.js. fast_evaluate dropped 2026-09-15: disabled on the runner's relay account, 11/32 cells wasted a call on it. Select with --toolset phase2.",
+  "_comment": "Phase-2 triage (docs/TOOL_TRIAGE_DRAFT.md §3a): 12 raw FastLink tools (fast_fill absorbs fill_form: fields:{}; batching = several tool calls in one response) + ask_caller/report_done = 14. fast_click_xy stays until the fast_click{x,y} fold lands in tools.js. fast_evaluate dropped 2026-09-15: disabled on the runner's relay account, 11/32 cells wasted a call on it. Select with --toolset phase2.",
   "allow": [
     "fast_snapshot",
     "fast_text",
@@ -11,7 +11,6 @@
     "fast_scroll",
     "fast_wait",
     "fast_tab",
-    "fast_nav",
-    "fast_batch"
+    "fast_nav"
   ]
 }
