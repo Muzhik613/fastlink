@@ -55,3 +55,21 @@ test('createMessage sends the shaped body to the chosen endpoint with its auth (
     delete process.env.GROKCODE_URL;
   }
 });
+
+test('proxy mode sends GROKCODE_TOKEN as the bearer (a gate in front of a shared proxy), to /v1/messages and /health', async () => {
+  assert.equal(modelEndpoint({ GROKCODE_URL: 'https://grok.example.test', GROKCODE_TOKEN: 'gate-secret' }).authorization, 'Bearer gate-secret');
+  assert.equal(modelEndpoint({ GROKCODE_URL: 'https://grok.example.test' }).authorization, 'Bearer grokcode-local', 'unset: the local placeholder');
+  assert.equal(modelEndpoint({ XAI_API_KEY: 'k', GROKCODE_TOKEN: 'gate-secret' }).authorization, 'Bearer k', 'a key still means direct');
+  const saved = globalThis.fetch; const sent = [];
+  globalThis.fetch = async (url, init) => { sent.push({ url, auth: init?.headers?.authorization }); return new Response(JSON.stringify(String(url).endsWith('/health') ? { ok: true } : { content: [], usage: {} }), { status: 200 }); };
+  try {
+    const env = { GROKCODE_URL: 'https://grok.example.test/', GROKCODE_TOKEN: 'gate-secret', FASTRUN_PROXY_AUTOSTART: 'off' };
+    assert.deepEqual(await ensureModel(env), { ok: true });
+    assert.deepEqual(sent[0], { url: 'https://grok.example.test/health', auth: 'Bearer gate-secret' });
+    const keep = { k: process.env.XAI_API_KEY, u: process.env.GROKCODE_URL, t: process.env.GROKCODE_TOKEN };
+    delete process.env.XAI_API_KEY; process.env.GROKCODE_URL = env.GROKCODE_URL; process.env.GROKCODE_TOKEN = env.GROKCODE_TOKEN;
+    try { await createMessage({ messages: [{ role: 'user', content: 'hi' }] }); }
+    finally { for (const [k, v] of [['XAI_API_KEY', keep.k], ['GROKCODE_URL', keep.u], ['GROKCODE_TOKEN', keep.t]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
+    assert.deepEqual(sent[1], { url: 'https://grok.example.test/v1/messages', auth: 'Bearer gate-secret' });
+  } finally { globalThis.fetch = saved; }
+});

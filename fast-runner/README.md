@@ -34,7 +34,7 @@ claude mcp add --scope user fastrun -- node /home/yaakov/code/Fastlink/fast-runn
 `ask_caller` in the CLI reads the answer from stdin. `FASTRUN_DEBUG=1` shows the spawned server's stderr.
 
 ## Notes
-- Reasoning effort is fixed when the proxy starts (`GROKCODE_EFFORT`, runner starts it with `low`). To change it, restart the proxy: `pkill -f grokcode/proxy.mjs`, then run again.
+- Reasoning effort: `GROKCODE_EFFORT` is sent as `reasoning_effort` on every request. A local proxy the runner starts also gets it (default `low`), and a proxy with its own `GROKCODE_EFFORT` overrides the request's value.
 - `grok_run` holds 240s; on `{status:"running"}` poll `grok_status` and (when it turns into a question) `grok_answer`.
 - Tool results over 80k chars are truncated before Grok sees them, with a leading `[truncated:true — …]` line.
 
@@ -54,7 +54,10 @@ What a per-user browser container needs to serve `http.mjs` with the local trans
 - **Chromium that loads unpacked extensions**: Chrome for Testing (branded Chrome ≥137 ignores `--load-extension`), started with `--load-extension=<repo>/fast-ext --user-data-dir=<profile> --no-first-run --no-default-browser-check --password-store=basic` (without the last one the extension's network is frozen ~25 s by the keyring). Add `--no-sandbox` where user namespaces are blocked, and give it a display (Xvfb) or run headless=new. Use the **committed** `fast-ext` (a checkout at the deployed commit); `bench/hvm-rig.sh` is a working reference launcher.
 - **Broker**: nothing to start. The first `fast-dxt/server` the runner spawns starts `fast-dxt/broker/index.js` on 127.0.0.1:9876 if none is listening; the extension dials 127.0.0.1:9876. Keep 9876 internal.
 - **Browser label**: a container with one browser needs none. The extension says hello as `primary` and the local broker routes to it; leave `FASTRUN_BROWSER` unset. For a named slot (e.g. `container`), set it the way `bench/hvm-rig.sh rig_label` does: open `chrome-extension://ockcjadbkdfgfllidpcoamcepahfmlpf/options.html?slot=container` in the running Chrome (a second `chrome --no-sandbox --user-data-dir=<profile> <url>` forwards it), wait for the reload, relaunch Chrome, then set `FASTRUN_BROWSER=container`.
-- **Model access**: set `XAI_API_KEY` (from the platform's secret store) and the runner calls `https://api.x.ai/v1/messages` directly. No proxy, no grok login. Set `GROKCODE_EFFORT` too, or grok-4.6 runs at its default xhigh effort. Without a key it falls back to the grokcode proxy plus a `grok login` (`GROKCODE_URL` / `GROKCODE_DIR` / `GROKCODE_HOME` / `FASTRUN_PROXY_AUTOSTART`), the local setup.
+- **Model access**, one client, one of two ways:
+  - **Shared proxy behind a gate (the frontdesk setup)**: `GROKCODE_URL=https://grok.ytx.app`, `GROKCODE_TOKEN=<gate key>` (secret, sent as `Authorization: Bearer`, stripped by the gate; the proxy injects its own grok login), `FASTRUN_PROXY_AUTOSTART=off`, no `XAI_API_KEY`.
+  - **Direct**: `XAI_API_KEY` (secret) calls `https://api.x.ai/v1/messages` with the key; no proxy.
+  - Either way set `GROKCODE_EFFORT` (e.g. `medium`); unset, grok-4.6 runs at xhigh.
 - **Envs**:
   | env | value in a container | meaning |
   |---|---|---|
@@ -66,8 +69,10 @@ What a per-user browser container needs to serve `http.mjs` with the local trans
   | `FASTRUN_MODEL` | `grok-4.6` | driving model |
   | `FASTRUN_GATE` | `on` | report_done gate |
   | `FASTRUN_RECORD` | `off` | no screen recording |
-  | `XAI_API_KEY` | secret | call xAI directly (no proxy) |
-  | `XAI_BASE_URL` | unset | override `https://api.x.ai` |
+  | `GROKCODE_URL` | `https://grok.ytx.app` | the (gated) grokcode proxy |
+  | `GROKCODE_TOKEN` | secret (gate key) | bearer sent to `GROKCODE_URL` (unset: the local proxy's placeholder) |
+  | `FASTRUN_PROXY_AUTOSTART` | `off` | never start a local proxy |
   | `GROKCODE_EFFORT` | `medium` | `reasoning_effort` on every request |
-  | `GROKCODE_URL` / `GROKCODE_DIR` / `GROKCODE_HOME` / `FASTRUN_PROXY_AUTOSTART` | unset (proxy mode only) | proxy URL / start it from / whose login / never start it |
-- **Ports**: 8799 (http.mjs, the only one exposed) and 9876 (broker, internal); 8790 only in proxy mode. Outbound: https://api.x.ai (direct mode) and whatever the tasks browse.
+  | `XAI_API_KEY` / `XAI_BASE_URL` | unset | direct mode instead (key wins over the proxy) |
+  | `GROKCODE_DIR` / `GROKCODE_HOME` | unset | local proxy only: where to start it / whose `grok login` |
+- **Ports**: 8799 (http.mjs, the only one exposed) and 9876 (broker, internal). Outbound: the model endpoint (`https://grok.ytx.app`, or `https://api.x.ai` in direct mode) and whatever the tasks browse.

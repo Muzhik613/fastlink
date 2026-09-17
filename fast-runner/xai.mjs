@@ -2,8 +2,9 @@
 // two ways, chosen by env on every call:
 //   direct  XAI_API_KEY set: XAI_BASE_URL (default https://api.x.ai), Authorization: Bearer <key>.
 //           No proxy (a container holds the key as a secret).
-//   proxy   no key: GROKCODE_URL (default http://127.0.0.1:8790), the grokcode proxy, which injects the grok CLI
-//           login token from $HOME/.grok/auth.json. No token passes through the runner.
+//   proxy   no key: GROKCODE_URL (default http://127.0.0.1:8790), a grokcode proxy, which injects its own grok
+//           login token. The bearer sent to it is GROKCODE_TOKEN when set (e.g. a gate in front of a shared proxy,
+//           which checks and strips it), else a placeholder the local proxy ignores.
 // Proxy mode only, for a proxy this module starts when nothing answers:
 //   GROKCODE_DIR             where proxy.mjs lives (default the owner's checkout)
 //   GROKCODE_HOME            HOME the started proxy reads its login from (default this process's HOME)
@@ -18,7 +19,7 @@ const PROXY_DIR = process.env.GROKCODE_DIR || '/home/yaakov/code/grokcode';
 
 export function modelEndpoint(env = process.env) {
   if (env.XAI_API_KEY) return { mode: 'direct', base: (env.XAI_BASE_URL || 'https://api.x.ai').replace(/\/+$/, ''), authorization: `Bearer ${env.XAI_API_KEY}` };
-  return { mode: 'proxy', base: (env.GROKCODE_URL || 'http://127.0.0.1:8790').replace(/\/+$/, ''), authorization: 'Bearer grokcode-local' };
+  return { mode: 'proxy', base: (env.GROKCODE_URL || 'http://127.0.0.1:8790').replace(/\/+$/, ''), authorization: `Bearer ${env.GROKCODE_TOKEN || 'grokcode-local'}` };
 }
 
 // The request fixups xAI needs, as grokcode's proxy.mjs applies them; done here so the direct path is
@@ -39,9 +40,9 @@ export function shapeRequest(body, env = process.env) {
   return out;
 }
 
-async function health(base) {
+async function health({ base, authorization }) {
   try {
-    const r = await fetch(`${base}/health`, { signal: AbortSignal.timeout(2000) });
+    const r = await fetch(`${base}/health`, { headers: { authorization }, signal: AbortSignal.timeout(5000) });
     return r.ok ? await r.json() : null;
   } catch { return null; }
 }
@@ -51,7 +52,7 @@ async function health(base) {
 export async function ensureModel(env = process.env) {
   const ep = modelEndpoint(env);
   if (ep.mode === 'direct') return { mode: 'direct', base: ep.base };
-  const h = await health(ep.base);
+  const h = await health(ep);
   if (h) return h;
   if (String(env.FASTRUN_PROXY_AUTOSTART || '').toLowerCase() === 'off') throw new Error(`no grokcode proxy answers on ${ep.base} (FASTRUN_PROXY_AUTOSTART=off; or set XAI_API_KEY to call xAI directly)`);
   const log = openSync(`${PROXY_DIR}/proxy.log`, 'a');
@@ -64,7 +65,7 @@ export async function ensureModel(env = process.env) {
   child.unref();
   for (let i = 0; i < 40; i++) {
     await new Promise(r => setTimeout(r, 250));
-    const h2 = await health(ep.base);
+    const h2 = await health(ep);
     if (h2) return h2;
   }
   throw new Error(`grokcode proxy did not come up on ${ep.base}; see ${PROXY_DIR}/proxy.log`);
