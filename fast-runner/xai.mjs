@@ -2,6 +2,13 @@
 import { spawn } from 'node:child_process';
 import { openSync } from 'node:fs';
 
+// Where the model is reached, all by env so a deployment points at its own proxy and login:
+//   GROKCODE_URL             the grokcode proxy (default http://127.0.0.1:8790)
+//   GROKCODE_DIR             where proxy.mjs lives, to start it when nothing answers (default the owner's checkout)
+//   GROKCODE_HOME            HOME for a proxy this module starts: it reads and refreshes <home>/.grok/auth.json,
+//                            the grok CLI's own login (`grok login`). Default: this process's HOME. No token is
+//                            ever copied or passed by the runner.
+//   FASTRUN_PROXY_AUTOSTART  "off" = never start a proxy (a deployment runs its own); default on
 const PROXY_DIR = process.env.GROKCODE_DIR || '/home/yaakov/code/grokcode';
 const BASE = process.env.GROKCODE_URL || 'http://127.0.0.1:8790';
 export const MODEL = process.env.FASTRUN_MODEL || 'grok-4.6';
@@ -17,10 +24,11 @@ async function health() {
 export async function ensureProxy() {
   const h = await health();
   if (h) return h;
+  if (String(process.env.FASTRUN_PROXY_AUTOSTART || '').toLowerCase() === 'off') throw new Error(`no grokcode proxy answers on ${BASE} (FASTRUN_PROXY_AUTOSTART=off)`);
   const log = openSync(`${PROXY_DIR}/proxy.log`, 'a');
   const child = spawn(process.execPath, ['proxy.mjs'], {
     cwd: PROXY_DIR,
-    env: { GROKCODE_EFFORT: 'low', ...process.env },
+    env: { GROKCODE_EFFORT: 'low', ...process.env, ...(process.env.GROKCODE_HOME ? { HOME: process.env.GROKCODE_HOME } : {}) },
     detached: true,
     stdio: ['ignore', log, log],
   });

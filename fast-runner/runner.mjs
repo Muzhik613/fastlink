@@ -1191,6 +1191,27 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
   return hold(run, holdMs);
 }
 
+// ONE entry for every caller (caller-mcp.mjs's MCP tools, http.mjs's routes): an operation and its JSON
+// arguments in, a JSON-serializable result out, never a throw. Defaults that are not per call come from
+// env, so a deployment (e.g. a browser container) sets them once: FASTRUN_TRANSPORT (default "relay"),
+// FASTRUN_BROWSER, FASTRUN_TOOLSET, FASTRUN_GATE. `hold_ms` (optional, 0-3,600,000) overrides the 240 s
+// hold of run / answer.
+export async function dispatch(op, a = {}, env = process.env) {
+  const holdMs = Number.isFinite(a.hold_ms) ? Math.max(0, Math.min(3_600_000, a.hold_ms)) : undefined;
+  const hold = holdMs === undefined ? {} : { holdMs };
+  try {
+    switch (op) {
+      case 'run': return await runTask({ task: a.task, transport: a.transport || env.FASTRUN_TRANSPORT || 'relay', browser: a.browser || env.FASTRUN_BROWSER || undefined, toolset: a.toolset, gate: a.gate, ...hold });
+      case 'answer': return await answer(a.run_id, a.answer, hold);
+      case 'status': return status(a.run_id);
+      case 'cancel': return cancel(a.run_id);
+      default: return { status: 'error', error: `unknown operation ${op}` };
+    }
+  } catch (e) {
+    return { status: 'error', error: e.message };
+  }
+}
+
 export function answer(runId, text, { holdMs = 240_000 } = {}) {
   const run = runs.get(runId);
   if (!run) return Promise.resolve({ status: 'error', run_id: runId, error: 'unknown run_id' });
