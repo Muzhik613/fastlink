@@ -55,6 +55,12 @@ const CONTROL_ROLES = new Set([
   'menuitemradio', 'tab', 'switch', 'link',
 ]);
 const CONTROL_BONUS = 1.25; // additive, crosses at most ~one scoring tier — never a hard override
+// A field that IS the asked text beats the same text buried in a longer one, and what the
+// user can see beats what is below the fold (live stopwatch.net 8b93bb0: fast_click "Stop"
+// hit the FAQ button "Is Stopwatch.net free to use?" 2,700px down and scrolled to it, while
+// the primary control relabelled exactly "Stop" sat on screen). EXACT outranks every other
+// term; ONSCREEN crosses a field tier; FIT (how much of the field the text fills) only breaks ties.
+const EXACT_BONUS = 8, ONSCREEN_BONUS = 2, FIT_WEIGHT = 0.5;
 const isControlItem = (it) => {
   if (!it) return false;
   if (CONTROL_TAGS.has(it.tag)) return true;
@@ -991,6 +997,18 @@ const setupObserver = () => {
         if (m.type === 'childList') {
           for (const node of m.removedNodes) if (node.nodeType === 1) PENDING.removes.add(node);
           for (const node of m.addedNodes)   if (node.nodeType === 1) PENDING.adds.add(node);
+          // A control that RELABELS ITSELF swaps a TEXT node (live stopwatch.net: the primary
+          // button went Start → Stop): characterData is not observed and a text node is not an
+          // element, so the entry kept "Start" and a click for "Stop" matched an FAQ button
+          // 2,700px below the fold. Re-index the nearest INDEXED ancestor (≤5 hops) — no extra
+          // mutation records, and only elements we already track.
+          let textMoved = false;
+          for (const node of m.addedNodes) if (node.nodeType === 3) { textMoved = true; break; }
+          if (!textMoved) for (const node of m.removedNodes) if (node.nodeType === 3) { textMoved = true; break; }
+          if (textMoved) {
+            let a = m.target;
+            for (let k = 0; a && a.nodeType === 1 && k < 5; k++, a = a.parentElement) if (INDEX.byEl.has(a)) { PENDING.reindex.add(a); break; }
+          }
         } else if (m.type === 'characterData') {
           const p = m.target.parentElement;
           if (p) PENDING.reindex.add(p);
@@ -1802,6 +1820,9 @@ const frontload = (obj, head) => {
   return out;
 };
 
+// One spelling for match comparisons: trimmed, whitespace-collapsed, lower case, so
+// "Stop" matches " Stop\n" and an exact match is not lost to layout whitespace.
+const normMatch = (v) => (v == null ? '' : cleanLabel(String(v)).toLowerCase());
 // Look up an element by snapshot id. Stable for the page's lifetime.
 const elById = (id) => INDEX.byId.get(id);
 
@@ -1816,15 +1837,23 @@ async function runPageAction(action, args) {
 
   // Match-ranking & helpers used by multiple actions.
   const matchScore = (it, t) => {
-    const inT = (s) => s && s.toLowerCase().includes(t);
-    let score = 0;
-    if (inT(it.innerText))   score = Math.max(score, 4);
-    if (inT(it.label))       score = Math.max(score, 3);
-    if (inT(it.placeholder)) score = Math.max(score, 3);
-    if (inT(it.name))        score = Math.max(score, 2);
-    if (inT(it.ariaLabel))   score = Math.max(score, 1);
-    if (inT(it.title))       score = Math.max(score, 0.5);
-    if (score === 0 && inT(it.text)) score = 0.25;
+    let score = 0, exact = false, fit = 0;
+    // one field: does it carry the text, is it exactly the text, how much of it does the text fill
+    const take = (v, s) => {
+      const n = normMatch(v);
+      if (!n || !n.includes(t)) return false;
+      score = Math.max(score, s);
+      if (n === t) exact = true;
+      fit = Math.max(fit, t.length / n.length);
+      return true;
+    };
+    take(it.innerText, 4);
+    take(it.label, 3);
+    take(it.placeholder, 3);
+    take(it.name, 2);
+    take(it.ariaLabel, 1);
+    take(it.title, 0.5);
+    if (score === 0 && take(it.text, 0.25)) score = 0.25;
     // Type preference: nudge real interactive CONTROLS above generic links/text
     // when scores are close. Without this a plain <a>"External" (innerText=4)
     // outranks the radio whose name "External" comes from a <label> (label=3).
@@ -1833,11 +1862,18 @@ async function runPageAction(action, args) {
     // A script-only target (no-href <a>, cursor:pointer text) always ranks BELOW
     // every real control/link match (min real score 0.25 > max weak 0.04), but is
     // still a candidate — never "nothing to click" when it carries the text.
+    // exact-text and on-screen preference (see EXACT_BONUS): a weak (script-only) target stays
+    // below every real control either way — its highest total still scores under 0.25 after ×0.01.
+    if (score > 0) {
+      if (exact) score += EXACT_BONUS;
+      if (!it.offscreen) score += ONSCREEN_BONUS;
+      score += fit * FIT_WEIGHT;
+    }
     if (it.clickable) score *= 0.01;
     return score;
   };
   const matchItems = (items, text) => {
-    const t = (text || '').toLowerCase();
+    const t = normMatch(text);
     if (!t) return [];
     const scored = [];
     for (const it of items) {
@@ -4209,6 +4245,14 @@ async function runPageAction(action, args) {
         while (modalPending() && nowMs() - tR < REACT_MODAL_MS) await wait(50);
         if (live) await settle(REACT_MODAL_MS);   // its name and content land a tick after its role
       }
+      // the backdrop this click put up or took down, for `changed` when no dialog line says it
+      try {
+        const m = modalLayers();
+        if (m.dialogs <= layersBefore.dialogs) {
+          if (m.backdrops.some((x) => !layersBefore.backdrops.includes(x))) INDEX.clickModal = 'a modal opened (its dialog not named yet)';
+          else if (layersBefore.backdrops.some((x) => !m.backdrops.includes(x))) INDEX.clickModal = 'a modal closed';
+        }
+      } catch {}
       phase('reactWaitMs', nowMs() - tR);
     }
     const out = await withSnap({ clicked: item, willNavigate, totalMatches: ordered.length, index: idx }, snap);
@@ -4216,7 +4260,12 @@ async function runPageAction(action, args) {
     // moved, whether a dialog opened/closed, and what holds focus.
     const head = { clicked: item, url: location.href, urlChanged: location.href !== urlBefore };
     const labelNow = labelRead();
-    if (labelNow && labelBefore != null && labelNow !== labelBefore) head.labelNow = labelNow;
+    if (labelNow && labelBefore != null && labelNow !== labelBefore) {
+      head.labelNow = labelNow;
+      // the control the click relabelled is a change of its own (live stopwatch.net: Start → Stop
+      // came back changed "none"); formState only reads fields, so fast_click hands it over
+      (INDEX.clickChanged || (INDEX.clickChanged = [])).push(`the clicked control: ${JSON.stringify(labelBefore)} → ${JSON.stringify(labelNow)}`);
+    }
     INDEX.lastClick = {
       labels: [...new Set([item.text, item.label, item.ariaLabel, labelBefore, args.text].filter(Boolean).map((t) => cleanLabel(String(t)).toLowerCase()))],
       labelNow: head.labelNow || null, path: pagePath(),
@@ -4765,7 +4814,7 @@ const formState = () => {
   // dialogs by ELEMENT, not name: a same-named panel opening inside another (Oracle's image
   // picker is a "Side Panel" inside the "Side Panel" create form) is its own open/close
   const dialogs = new Map();   // element → label
-  let view = { current: '', headings: [] }, backdrops = [];
+  let view = { current: '', headings: [] };
   try {
     const els = document.querySelectorAll(DIALOG_SEL);
     for (let i = 0; i < els.length && i < 50; i++) {
@@ -4774,7 +4823,6 @@ const formState = () => {
     }
     const act = activeDialogRoot();
     if (act && !dialogs.has(act)) dialogs.set(act, dialogLabel(act));
-    backdrops = modalLayers().backdrops;
     // the view: the current step / page / tab and the visible headings (a wizard's Next changes these
     // without touching a field — live Oracle caff4e8f: three Next clicks said "none" while the wizard
     // moved Security → Networking → Storage)
@@ -4792,7 +4840,7 @@ const formState = () => {
       dialogs.set(el, `${label ? `dialog "${label}"` : 'dialog (no name yet)'}${nested ? ' (nested)' : ''}`);
     }
   } catch {}
-  return { fields, dialogs, view, backdrops, partial };
+  return { fields, dialogs, view, partial };
 };
 // "Label: \"old\" → \"new\"", "dialog \"X\" opened/closed". A field the page re-rendered (a new
 // element) is matched by its label when that label is unique on both sides. Pure given states.
@@ -4819,11 +4867,6 @@ const diffFormState = (a, b) => {
   const shut = (key, n) => (n > 0 ? `${key} closed (${n} still open)` : `${key} closed`);
   for (const [key, n] of nb) if (n > (na.get(key) || 0)) dialogLines.push(open(key, n));
   for (const [key, n] of na) if (n > (nb.get(key) || 0)) dialogLines.push(shut(key, nb.get(key) || 0));
-  // a modal backdrop that came or went with no dialog line to say so (its dialog not yet a dialog)
-  if (!dialogLines.length && a.backdrops && b.backdrops) {
-    if (b.backdrops.some((x) => !a.backdrops.includes(x))) dialogLines.push('a modal opened (its dialog not named yet)');
-    else if (a.backdrops.some((x) => !b.backdrops.includes(x))) dialogLines.push('a modal closed');
-  }
   // the view line, unless a dialog line already says what changed
   if (a.view && b.view && !dialogLines.length) {
     if (a.view.current !== b.view.current && (a.view.current || b.view.current)) out.push(`step: ${JSON.stringify(a.view.current)} → ${JSON.stringify(b.view.current)}`);
@@ -4884,6 +4927,7 @@ if (typeof window !== 'undefined') {
     PHASES = timing ? {} : null;
     const tAll = nowMs();
     let before = null, stateMs = 0;
+    INDEX.clickChanged = []; INDEX.clickModal = '';
     if (write) { const t = nowMs(); try { initIndex(); drainPendingSync(2000, 20); before = formState(); } catch {} stateMs += nowMs() - t; phase('changedBeforeMs', nowMs() - t); }
     try {
       const tAct = nowMs();
@@ -4891,7 +4935,13 @@ if (typeof window !== 'undefined') {
       phase('actionMs', nowMs() - tAct);
       if (write && before && r && typeof r === 'object' && !r.error && !r.dryRun) {
         const t = nowMs();
-        try { drainPendingSync(2000, 20); const after = formState(); r = withChanged(r, diffFormState(before, after), before.partial || after.partial); } catch {}
+        try {
+          drainPendingSync(2000, 20);
+          const after = formState();
+          const lines = [...(INDEX.clickChanged || []), ...diffFormState(before, after)];
+          if (INDEX.clickModal && !lines.some((l) => /^dialog /.test(l))) lines.push(INDEX.clickModal);
+          r = withChanged(r, lines, before.partial || after.partial);
+        } catch {}
         stateMs += nowMs() - t;
         phase('changedAfterMs', nowMs() - t);
         window.__fastlink.lastChangedMs = Math.round(stateMs);   // cost probe for measurement, not in the result
