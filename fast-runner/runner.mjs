@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createMessage, ensureProxy, MODEL } from './xai.mjs';
+import { createMessage, ensureModel, MODEL } from './xai.mjs';
 import { connect } from './fastlink-client.mjs';
 import { startVisualCheck, startLookCheck, settleShots, takeNotes } from './visual-check.mjs';
 import { startRecording, stopRecording } from './recorder.mjs';
@@ -1169,7 +1169,7 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
   const recording = startRecording(id, { maxSec: runBudgets.maxWallMs / 1000 + 300 });
   let client, tools, back;
   try {
-    await ensureProxy();
+    await ensureModel();
     client = await connect({ transport, browser });
     ({ tools, back } = buildTools(await client.listTools(), toolset));
   } catch (e) {

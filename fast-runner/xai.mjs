@@ -1,47 +1,76 @@
-// Anthropic-Messages client for Grok via the grokcode proxy (owns the xAI OAuth token).
+// Anthropic-Messages client for Grok: xAI's Anthropic-compatible POST /v1/messages, one client, reached one of
+// two ways, chosen by env on every call:
+//   direct  XAI_API_KEY set: XAI_BASE_URL (default https://api.x.ai), Authorization: Bearer <key>.
+//           No proxy (a container holds the key as a secret).
+//   proxy   no key: GROKCODE_URL (default http://127.0.0.1:8790), the grokcode proxy, which injects the grok CLI
+//           login token from $HOME/.grok/auth.json. No token passes through the runner.
+// Proxy mode only, for a proxy this module starts when nothing answers:
+//   GROKCODE_DIR             where proxy.mjs lives (default the owner's checkout)
+//   GROKCODE_HOME            HOME the started proxy reads its login from (default this process's HOME)
+//   FASTRUN_PROXY_AUTOSTART  "off" = never start one
+// Both modes: GROKCODE_EFFORT = reasoning_effort sent with every request (low|medium|high|xhigh; unset = model
+// default, which is xhigh for grok-4.6).
 import { spawn } from 'node:child_process';
 import { openSync } from 'node:fs';
 
-// Where the model is reached, all by env so a deployment points at its own proxy and login:
-//   GROKCODE_URL             the grokcode proxy (default http://127.0.0.1:8790)
-//   GROKCODE_DIR             where proxy.mjs lives, to start it when nothing answers (default the owner's checkout)
-//   GROKCODE_HOME            HOME for a proxy this module starts: it reads and refreshes <home>/.grok/auth.json,
-//                            the grok CLI's own login (`grok login`). Default: this process's HOME. No token is
-//                            ever copied or passed by the runner.
-//   FASTRUN_PROXY_AUTOSTART  "off" = never start a proxy (a deployment runs its own); default on
-const PROXY_DIR = process.env.GROKCODE_DIR || '/home/yaakov/code/grokcode';
-const BASE = process.env.GROKCODE_URL || 'http://127.0.0.1:8790';
 export const MODEL = process.env.FASTRUN_MODEL || 'grok-4.6';
+const PROXY_DIR = process.env.GROKCODE_DIR || '/home/yaakov/code/grokcode';
 
-async function health() {
+export function modelEndpoint(env = process.env) {
+  if (env.XAI_API_KEY) return { mode: 'direct', base: (env.XAI_BASE_URL || 'https://api.x.ai').replace(/\/+$/, ''), authorization: `Bearer ${env.XAI_API_KEY}` };
+  return { mode: 'proxy', base: (env.GROKCODE_URL || 'http://127.0.0.1:8790').replace(/\/+$/, ''), authorization: 'Bearer grokcode-local' };
+}
+
+// The request fixups xAI needs, as grokcode's proxy.mjs applies them; done here so the direct path is
+// identical to the proxy path (the proxy re-applying them is a no-op). Of proxy.mjs's other behaviours none
+// applies to this client: model remap (it maps claude-* ids; we send grok ids), system-role folding (we send
+// only user/assistant), count_tokens stubbing (never called), SSE keepalive and block reindexing (we never stream).
+export function shapeRequest(body, env = process.env) {
+  const out = { ...body };
+  delete out.stop_sequences;                 // grok-4.6 rejects stop / stop_sequences with a 400
+  delete out.stop;
+  if (env.GROKCODE_EFFORT) out.reasoning_effort = env.GROKCODE_EFFORT;   // xAI ignores thinking:{disabled}; this is the lever
+  if (Array.isArray(out.tools)) {            // xAI rejects a tool whose object input_schema has no required array
+    out.tools = out.tools.map((t) => {
+      const sch = t?.input_schema;
+      return sch && sch.type === 'object' && !Array.isArray(sch.required) ? { ...t, input_schema: { ...sch, required: [] } } : t;
+    });
+  }
+  return out;
+}
+
+async function health(base) {
   try {
-    const r = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2000) });
+    const r = await fetch(`${base}/health`, { signal: AbortSignal.timeout(2000) });
     return r.ok ? await r.json() : null;
   } catch { return null; }
 }
 
-// Start proxy.mjs if nothing answers on :8790. Effort is fixed at proxy start (GROKCODE_EFFORT).
-export async function ensureProxy() {
-  const h = await health();
+// Make sure the model is reachable before a run connects anything: direct mode needs nothing; proxy mode
+// starts proxy.mjs if nothing answers (unless FASTRUN_PROXY_AUTOSTART=off).
+export async function ensureModel(env = process.env) {
+  const ep = modelEndpoint(env);
+  if (ep.mode === 'direct') return { mode: 'direct', base: ep.base };
+  const h = await health(ep.base);
   if (h) return h;
-  if (String(process.env.FASTRUN_PROXY_AUTOSTART || '').toLowerCase() === 'off') throw new Error(`no grokcode proxy answers on ${BASE} (FASTRUN_PROXY_AUTOSTART=off)`);
+  if (String(env.FASTRUN_PROXY_AUTOSTART || '').toLowerCase() === 'off') throw new Error(`no grokcode proxy answers on ${ep.base} (FASTRUN_PROXY_AUTOSTART=off; or set XAI_API_KEY to call xAI directly)`);
   const log = openSync(`${PROXY_DIR}/proxy.log`, 'a');
   const child = spawn(process.execPath, ['proxy.mjs'], {
     cwd: PROXY_DIR,
-    env: { GROKCODE_EFFORT: 'low', ...process.env, ...(process.env.GROKCODE_HOME ? { HOME: process.env.GROKCODE_HOME } : {}) },
+    env: { GROKCODE_EFFORT: 'low', ...env, ...(env.GROKCODE_HOME ? { HOME: env.GROKCODE_HOME } : {}) },
     detached: true,
     stdio: ['ignore', log, log],
   });
   child.unref();
   for (let i = 0; i < 40; i++) {
     await new Promise(r => setTimeout(r, 250));
-    const h2 = await health();
+    const h2 = await health(ep.base);
     if (h2) return h2;
   }
-  throw new Error(`grokcode proxy did not come up on ${BASE}; see ${PROXY_DIR}/proxy.log`);
+  throw new Error(`grokcode proxy did not come up on ${ep.base}; see ${PROXY_DIR}/proxy.log`);
 }
 
-// xAI reports its own timing on every response (passed through by the grokcode proxy): time to first
+// xAI reports its own timing on every response (passed through by the grokcode proxy in proxy mode): time to first
 // token, end-to-end generation time, mean inter-token latency, and a request id. latencyMs minus e2e is
 // time spent before xAI started generating (queue, proxy, network); a long TTFT with few output tokens
 // is a queue stall, not reasoning (output_tokens already counts hidden reasoning tokens).
@@ -58,20 +87,16 @@ export function upstreamTiming(headers) {
 // through (mapModel only rewrites claude-* ids), so grok-4.6 reaches api.x.ai as
 // grok-4.6 even when the run itself is driving on grok-4.3.
 export async function createMessage({ system, messages, tools, maxTokens = 4096, signal, model = MODEL }) {
-  const body = { model, max_tokens: maxTokens, system, messages, tools };
-  const payload = JSON.stringify(body);
+  const ep = modelEndpoint();
+  const payload = JSON.stringify(shapeRequest({ model, max_tokens: maxTokens, system, messages, tools }));
   const t0 = Date.now();
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
     let res;
     try {
-      res = await fetch(`${BASE}/v1/messages`, {
+      res = await fetch(`${ep.base}/v1/messages`, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'anthropic-version': '2023-06-01',
-          authorization: 'Bearer grokcode-local', // real token injected by the proxy
-        },
+        headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', authorization: ep.authorization },
         body: payload,
         signal,
       });
