@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!--
+  FastLink self-hosted Chrome update manifest (see release/README.md).
+  Polled by Chrome (~every 5h) through the update_url in fast-ext/manifest.json and
+  the forcelist policy on the self-hosted installs. The URL keeps the old
+  Turetsky/fastlink path because installed copies carry it; GitHub serves the
+  renamed repo (Muzhik613/fastlink) under it.
+-->
+<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
+  <app appid='ockcjadbkdfgfllidpcoamcepahfmlpf'>
+    <updatecheck codebase='https://github.com/Muzhik613/fastlink/releases/download/ext-v0.4.5/fastlink-0.4.5.crx' version='0.4.5' />
+  </app>
+</gupdate>

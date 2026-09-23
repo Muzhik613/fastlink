@@ -33,6 +33,13 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-23 — release channel restored: the father's laptop auto-updates again (v0.4.5)
+- **What:** `release/` is back: `updates.xml` (version 0.4.5, codebase = GitHub Release asset `ext-v0.4.5/fastlink-0.4.5.crx` on Muzhik613/fastlink), `build-crx.sh` (now packs the COMMITTED `fast-ext/` via git archive and also emits a load-unpacked zip) and `README.md`. `fast-ext/manifest.json` has `update_url` again and is at 0.4.5.
+- **Why:** the father's laptop (Alex, corporate-managed, per the 2026-07-12 entry) force-installs the signed .crx from `raw.githubusercontent.com/Turetsky/fastlink/main/release/updates.xml`. The 2026-09-16 prune (04dd486) deleted that file on the premise "nothing installs from a release", so the URL 404'd and the laptop silently stayed on 0.4.3. It needed `fast_switch focus:false` (below) remotely.
+- **Files:** `release/*`, `fast-ext/manifest.json`, `CLAUDE.md` (section 6).
+- **Watch out:** the URL path keeps `Turetsky/fastlink` because installed copies carry it; GitHub serves the renamed repo under it. Never delete `release/` again; every extension release must also bump `updates.xml` + upload the .crx. The updateCheck.js self-reload client stays deleted: Chrome's own updater is the only puller.
+- **Status:** committed / pushed / released; live URLs verified (see commit).
+
 ## 2026-09-23 — fast_switch focus:false targets a tab without raising Chrome
 - **What:** `fast_switch` takes `focus:false`: it pins the tab and returns (`focused:false`) without `chrome.tabs.update({active})` or `chrome.windows.update({focused})`. Default (omitted/true) is unchanged. Schema added in `fast-dxt/server/tools.js` and mirrored in `fastlink-relay/tools.js`.
 - **Why:** the owner's father's script reads WhatsApp Web through FastLink and every read pulled Chrome to the front. The only focus-raiser on that path was `switchTab` itself; reads never needed focus (they route by the pin, `requestAnimationFrame` waits are already capped for background tabs, and a screenshot of a pinned background tab goes through CDP).
