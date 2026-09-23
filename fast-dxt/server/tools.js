@@ -128,6 +128,7 @@ export const TOOLS = [
       properties: {
         tabId: { type: 'number', description: 'Tab id from fast_list.' },
         match: { type: 'string', description: 'URL or title substring.' },
+        focus: { type: 'boolean', description: 'false: target the tab without activating it or raising Chrome (reads work on background tabs).' },
       },
     },
   },

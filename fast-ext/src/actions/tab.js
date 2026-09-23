@@ -271,6 +271,13 @@ async function switchTab(args = {}) {
   // snaps back to another tab (e.g. the claude.ai chat tab). Pinning happens
   // before the focus change so the pin is set even if focus is rejected.
   await setTargetTab(target.id);
+  // focus:false only pins: every read/act routes by the pin (and a screenshot of
+  // a pinned background tab goes through CDP), so nothing needs the tab on screen.
+  // A script polling a tab (WhatsApp Web) then never raises Chrome. Mirrors
+  // fast_tab background:true — the tab is neither activated nor its window focused.
+  if (args.focus === false) {
+    return { id: target.id, url: target.url, title: target.title, targetTab: target.id, focused: false };
+  }
   // Bringing the tab to the foreground is best-effort — if the user clicks
   // away, the pin (not focus) is what routes subsequent actions.
   try {
