@@ -9,8 +9,14 @@ export async function evaluate({ fn, args }) {
   const cdp = await evaluateViaCDP(got.tab.id, fn, userArgs);
   if (cdp.ok) return cdp.value;
   if (cdp.userError) return { error: cdp.userError };
-  // CDP unavailable (e.g. devtools already attached on this tab) — fall back.
-  return evaluateViaScripting(fn, userArgs);
+  // CDP unavailable — fall back to an in-page eval. A page whose CSP forbids
+  // 'unsafe-eval' (web.whatsapp.com, github.com) blocks that, so the CSP message
+  // alone hides the real problem: report why CDP failed alongside it.
+  const r = await evaluateViaScripting(fn, userArgs);
+  if (r && typeof r === 'object' && typeof r.error === 'string' && /unsafe-eval|Content Security Policy/i.test(r.error)) {
+    return { error: `fast_evaluate: the debugger path failed (${cdp.reason}), and this page's Content Security Policy blocks the in-page fallback`, code: cdp.code || 'cdp_unavailable' };
+  }
+  return r;
 }
 
 async function evaluateViaCDP(tabId, fnStr, userArgs) {
@@ -31,8 +37,8 @@ async function evaluateViaCDP(tabId, fnStr, userArgs) {
       return { ok: false, userError: msg };
     }
     return { ok: true, value: res?.result?.value ?? null };
-  } catch {
-    return { ok: false }; // CDP unavailable → caller falls back to scripting
+  } catch (e) {
+    return { ok: false, reason: e?.message || String(e), code: e?.code }; // CDP unavailable → caller falls back to scripting
   }
 }
 

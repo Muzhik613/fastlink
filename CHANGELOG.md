@@ -33,6 +33,13 @@ Extension changes only take effect after **commit + `bash scripts/ship-ext.sh`**
 
 ---
 
+## 2026-09-23 — fast_evaluate on CSP pages: self-heal a stale debugger session, report the real cause (v0.4.6)
+- **What:** `ensureAttached` (input.js): when `chrome.debugger.attach` throws "already attached", detach (succeeds only on a session this extension owns) and re-attach; if detach fails, throw `debugger_busy` ("DevTools or another extension is attached"). `cdp()` re-attaches once and resends on "not attached". `evaluate.js` keeps the CDP failure reason and, when the in-page fallback is blocked by CSP `unsafe-eval`, returns both instead of the bare CSP message.
+- **Why:** the father's WhatsApp automation: after all his installs dropped (1006) at 1:55pm, every `fast_evaluate` on web.whatsapp.com failed with the CSP `unsafe-eval` error. `evaluateViaCDP` swallowed ANY CDP error and fell back to `(0,eval)` in the page, which WhatsApp's CSP forbids, so the CSP message masked the real failure. The `attached` Set lives in the service worker and the session lives in the browser: a respawned worker starts empty while the old session is still on the tab, so attach() threw on every call until the tab closed. The code was unchanged since 0.4.3, so the 0.4.5 update (see below) did not introduce it; the drop/respawn exposed it.
+- **Files:** `fast-ext/src/actions/input.js`, `fast-ext/src/actions/evaluate.js`, `fast-ext/manifest.json`, `release/updates.xml`.
+- **Watch out:** never swallow a CDP error on its way to the eval fallback again. `debugger_busy` means someone else really is attached; do not force-detach it. The self-update work (30-min check + reload when idle) is parked on branch `hold/auto-update-0.4.6` and is NOT in this release.
+- **Status:** committed; released as ext-v0.4.6; see the commit for live verification.
+
 ## 2026-09-23 — release channel restored: the father's laptop auto-updates again (v0.4.5)
 - **What:** `release/` is back: `updates.xml` (version 0.4.5, codebase = GitHub Release asset `ext-v0.4.5/fastlink-0.4.5.crx` on Muzhik613/fastlink), `build-crx.sh` (now packs the COMMITTED `fast-ext/` via git archive and also emits a load-unpacked zip) and `README.md`. `fast-ext/manifest.json` has `update_url` again and is at 0.4.5.
 - **Why:** the father's laptop (Alex, corporate-managed, per the 2026-07-12 entry) force-installs the signed .crx from `raw.githubusercontent.com/Turetsky/fastlink/main/release/updates.xml`. The 2026-09-16 prune (04dd486) deleted that file on the premise "nothing installs from a release", so the URL 404'd and the laptop silently stayed on 0.4.3. It needed `fast_switch focus:false` (below) remotely.

@@ -15,7 +15,26 @@ const attached = new Set(); // tabIds we currently hold a debugger session on
 
 async function ensureAttached(tabId) {
   if (attached.has(tabId)) return;
-  await chrome.debugger.attach({ tabId }, CDP_VERSION);
+  try {
+    await chrome.debugger.attach({ tabId }, CDP_VERSION);
+  } catch (e) {
+    if (!/already attached/i.test(e?.message || '')) throw e;
+    // `attached` lives in the service worker, the session lives in the browser.
+    // A respawned worker starts with an empty set while OUR session from the
+    // previous worker is still on the tab, so attach() throws "Another debugger
+    // is already attached". Before this, that error was swallowed and every CDP
+    // call on the tab failed until the tab closed (fast_evaluate then fell back to
+    // an in-page eval that CSP pages like web.whatsapp.com block). detach() only
+    // succeeds on a session this extension owns, so it cleanly tells ours apart
+    // from DevTools or another extension.
+    try { await chrome.debugger.detach({ tabId }); }
+    catch {
+      const err = new Error('another debugger (DevTools open on this tab, or another extension) is attached to this tab; close it and retry');
+      err.code = 'debugger_busy';
+      throw err;
+    }
+    await chrome.debugger.attach({ tabId }, CDP_VERSION);
+  }
   attached.add(tabId);
 }
 
@@ -61,7 +80,16 @@ async function ensureAdvancedControl() {
 export async function cdp(tabId, method, params) {
   await ensureAdvancedControl();
   await ensureAttached(tabId);
-  return chrome.debugger.sendCommand({ tabId }, method, params || {});
+  try {
+    return await chrome.debugger.sendCommand({ tabId }, method, params || {});
+  } catch (e) {
+    // Our bookkeeping said attached, but the session is gone (detached without an
+    // onDetach reaching this worker). Re-attach once and resend.
+    if (!/not attached/i.test(e?.message || '')) throw e;
+    attached.delete(tabId);
+    await ensureAttached(tabId);
+    return chrome.debugger.sendCommand({ tabId }, method, params || {});
+  }
 }
 
 // Trusted click at a TOP-LEVEL viewport pixel via the CDP Input domain.
