@@ -82,7 +82,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         url: { type: 'string', description: 'URL to open.' },
-        background: { type: 'boolean', description: 'Do not focus the new tab.' },
+        background: { type: 'boolean', description: 'Default true: the tab opens without raising Chrome. false: bring it to the front (only when the user should see it).' },
         waitMs: { type: 'number', description: 'Max load wait in ms (default 10000).' },
         noSnapshot: { type: 'boolean', description: 'Skip the page preview.' },
       },
@@ -119,7 +119,7 @@ export const TOOLS = [
       properties: {
         tabId: { type: 'number', description: 'Tab id from fast_list.' },
         match: { type: 'string', description: 'URL or title substring.' },
-        focus: { type: 'boolean', description: 'false: target the tab without activating it or raising Chrome (reads work on background tabs).' },
+        focus: { type: 'boolean', description: 'Default false: target the tab without raising Chrome (reads and actions work on background tabs). true: bring it to the front.' },
       },
     },
   },

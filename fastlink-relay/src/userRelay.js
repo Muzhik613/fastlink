@@ -46,6 +46,17 @@ const NO_DEVICE_ERROR =
   + 'Only if you intend to use the cloud relay: open the FastLink extension, set it to "relay" mode, and pair it (paste your code from the relay site). '
   + 'Note: FASTLINK_TOKEN is unrelated and is NOT the fix.';
 
+// Never raise Chrome unless the caller asks (owner, 2026-10-08: "my cursor always ends up in
+// chrome"). fast_tab opens in the background and fast_switch only pins, unless the call says
+// background:false / focus:true. Reads, clicks and screenshots all work on a pinned background
+// tab, so the default costs nothing. Every path (single tools and batch steps) goes through
+// callExtension, so this is the one place.
+function quietFocus(action, args) {
+  if (action === 'fast_tab' && (!args || args.background === undefined)) return { ...(args || {}), background: true };
+  if (action === 'fast_switch' && (!args || args.focus === undefined)) return { ...(args || {}), focus: false };
+  return args;
+}
+
 export class UserRelay extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -467,6 +478,7 @@ export class UserRelay extends DurableObject {
   // even if another browser redials mid-call. There is deliberately no "pick a
   // socket here" fallback: that was the most-recent-wins bug.
   callExtension(action, args, timeoutMs = REQUEST_TIMEOUT_MS, ws = null) {
+    args = quietFocus(action, args);
     if (!ws || ws.readyState !== 1) return Promise.resolve({
       error: NO_DEVICE_ERROR,
       noDeviceConnected: true,
