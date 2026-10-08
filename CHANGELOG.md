@@ -2355,3 +2355,10 @@ accidentally revert them:
 - **Files:** `bench/run.js`.
 - **Watch out:** pass `--install <label>` explicitly when observing another profile; never rely on the broker default again.
 - **Status:** in code.
+
+## 2026-10-08 — relay: tabs stay in the background by default
+- **What:** `callExtension` rewrites `fast_tab` to `background:true` and `fast_switch` to `focus:false` unless the call sets them. Tool descriptions say so.
+- **Why:** owner: "my cursor always ends up in chrome". Every default fast_tab/fast_switch focused the Chrome window.
+- **Files:** `fastlink-relay/src/userRelay.js`, `fastlink-relay/tools.js`.
+- **Watch out:** applies to all relay users. Extensions older than v0.4.5 ignore `focus:false` and still raise Chrome on fast_switch.
+- **Status:** deployed (version a97038ed), verified: fast_tab on mac1 left Terminal frontmost.
