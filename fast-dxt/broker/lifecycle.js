@@ -27,7 +27,14 @@ export function writePidFile() {
   process.on('exit', () => { try { unlinkSync(PID_FILE); } catch {} });
 }
 
+// FASTLINK_BROKER_PERSIST=1: a service manager (launchd KeepAlive) owns this broker, so
+// never idle out. An idle exit leaves a gap in which a server spawns its own detached
+// broker; that one then holds the ports and the managed copy restart-loops on EADDRINUSE.
 export function startIdleWatchdog({ hasMcpClients, hasExtension }) {
+  if (process.env.FASTLINK_BROKER_PERSIST === '1') {
+    log('persist mode: idle exit disabled');
+    return;
+  }
   let idleSince = null;
   setInterval(() => {
     const idle = !hasMcpClients() && !hasExtension();
