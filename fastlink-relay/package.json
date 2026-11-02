@@ -7,6 +7,7 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "wrangler dev",
+    "test": "node --import ./test/register.mjs --test \"test/*.test.mjs\"",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "timing": "node relay-timing-report.js",

@@ -123,7 +123,11 @@ async function handleOne(rpc, relay, trace) {
         // WHICH BROWSER this call drives is resolved per REQUEST and threaded
         // down (see dispatchTool) — never re-picked mid-call, and never stored on
         // the DO instance, which two concurrent chat products would race over.
-        const session = { clientKey: await relay.clientKey(trace.request), target: undefined };
+        const session = {
+          clientKey: await relay.clientKey(trace.request),
+          sessionKey: relay.sessionKey(trace.request) ?? trace.minted ?? null,
+          target: undefined,
+        };
         return ok(id, await dispatchTool(params || {}, relay, session));
       } finally {
         recordTiming(relay, trace.sessionId, params?.name || 'unknown', startTs, Date.now());
@@ -223,7 +227,7 @@ async function consentVerdict(relay, name, ws) {
 // Resolve (once per request) the browser this call drives. Memoized on `session`
 // so a tool that probes several times still talks to ONE browser.
 async function targetFor(relay, session) {
-  if (session.target === undefined) session.target = await relay.resolveTarget(session.clientKey);
+  if (session.target === undefined) session.target = await relay.resolveTarget(session.clientKey, session.sessionKey);
   return session.target;
 }
 
@@ -306,8 +310,9 @@ async function dispatchTool(params, relay, session) {
 // identical: install:"<name>" pins, install:"auto" releases.
 //
 // The pin is stored SERVER-SIDE in the user's DO, keyed by the chat product
-// (relay.clientKey), NOT by MCP session — Grok opens a new MCP session for every
-// single tool call, so a session-scoped pin would never survive to the next one.
+// (relay.clientKey), so Grok's new-MCP-session-per-call keeps it. A client that
+// echoes Mcp-Session-Id (Claude Code) also gets its own session pin, which wins:
+// parallel Claude Code sessions share one OAuth client (userRelay SESSION PINS).
 async function handleProfile(relay, args, session) {
   const raw = String(args?.install ?? '').trim().toLowerCase();
   const devices = await relay.deviceList();
@@ -317,7 +322,7 @@ async function handleProfile(relay, args, session) {
   const defaultBrowser = await relay.getDefaultDevice();
 
   if (raw === '' || RESERVED_DEVICE_NAMES.has(raw)) {
-    await relay.setSelection(session.clientKey, null);
+    await relay.setSelection(session.clientKey, null, session.sessionKey);
     return {
       selected: null,
       mode: 'auto',
@@ -342,7 +347,7 @@ async function handleProfile(relay, args, session) {
       browsers,
     };
   }
-  await relay.setSelection(session.clientKey, want);
+  await relay.setSelection(session.clientKey, want, session.sessionKey);
   return {
     selected: want,
     mode: 'pinned',
@@ -350,7 +355,7 @@ async function handleProfile(relay, args, session) {
     browsers,
     defaultBrowser,
     hint: dev.connected
-      ? `Pinned to "${want}" — every later call from this connection drives that browser. fast_profile install:"auto" releases it.`
+      ? `Pinned to "${want}" — every later call from this ${session.sessionKey ? 'session' : 'connection'} drives that browser. fast_profile install:"auto" releases it.`
       : `Pinned to "${want}", but it is NOT connected right now. Calls will error (they will not silently go to another browser) until that Chrome profile reconnects. Connected now: ${live.join(', ') || '(none)'}.`,
   };
 }
@@ -373,7 +378,7 @@ async function relayStatus(relay, session) {
   const devices = await relay.deviceList();
   const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen }));
   const liveNames = devices.filter((d) => d.connected).map((d) => d.name);
-  const sel = await relay.getSelection(session.clientKey);
+  const sel = await relay.getSelection(session.clientKey, session.sessionKey);
   const defaultBrowser = await relay.getDefaultDevice();
   // "connected" = this connection can actually reach a browser right now, i.e.
   // the SELECTED one is live — not merely "some browser of mine is live".

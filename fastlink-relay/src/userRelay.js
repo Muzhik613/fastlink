@@ -37,6 +37,7 @@ const DEVICE_CACHE_TTL_MS = 60_000;
 // client has never chosen", which falls through to the per-user default.
 // 'auto' can never be a device NAME (db.RESERVED_DEVICE_NAMES), so no ambiguity.
 const AUTO = 'auto';
+const SESSION_PIN_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Shown when the account has no live browser at all (nothing to target).
 const NO_DEVICE_ERROR =
@@ -240,11 +241,34 @@ export class UserRelay extends DurableObject {
 
   #pinKey(clientKey) { return `dev:pin:${clientKey}`; }
 
+  // SESSION PINS (2026-11-02): a client that echoes Mcp-Session-Id (Claude Code
+  // does, one MCP session per process) also gets a pin of its OWN. Every Claude
+  // Code session on a machine shares one OAuth client, so the chat-product pin
+  // alone let one session's fast_profile re-route another's calls mid-task: a
+  // WhatsApp send pinned to mac2 had its tab reads answered by mac1 after a
+  // parallel Gmail session pinned mac1. The session pin wins when present; the
+  // chat-product pin stays as the fallback for clients like Grok that open a new
+  // session per call. Session pins expire after SESSION_PIN_TTL_MS.
+  #sessionPinKey(sessionKey) { return `dev:spin:${sessionKey}`; }
+
+  // Stable per-MCP-session id from the request, or null (client did not echo one).
+  sessionKey(request) {
+    const sid = request.headers.get('mcp-session-id') || '';
+    return /^[0-9a-f-]{36}$/i.test(sid) ? sid.toLowerCase() : null;
+  }
+
   // Resolve what this client should drive:
   //   { mode:'pinned', name, source:'pin'|'default' } | { mode:'auto', source }
-  async getSelection(clientKey) {
+  async getSelection(clientKey, sessionKey = null) {
     let pin;
-    try { pin = await this.ctx.storage.get(this.#pinKey(clientKey)); } catch { pin = undefined; }
+    if (sessionKey) {
+      let sp;
+      try { sp = await this.ctx.storage.get(this.#sessionPinKey(sessionKey)); } catch { sp = undefined; }
+      if (sp && Date.now() - (sp.at || 0) < SESSION_PIN_TTL_MS) pin = sp.name;
+    }
+    if (pin === undefined) {
+      try { pin = await this.ctx.storage.get(this.#pinKey(clientKey)); } catch { pin = undefined; }
+    }
     if (pin === AUTO) return { mode: 'auto', source: 'pin' };
     if (pin) return { mode: 'pinned', name: pin, source: 'pin' };
     let def;
@@ -253,9 +277,20 @@ export class UserRelay extends DurableObject {
     return { mode: 'auto', source: 'unset' };
   }
 
-  // Pin this client to a browser name, or to AUTO (null/'' → auto).
-  async setSelection(clientKey, name) {
+  // Pin this client to a browser name, or to AUTO (null/'' → auto). With a
+  // sessionKey the pin is also kept for that session alone (see SESSION PINS).
+  async setSelection(clientKey, name, sessionKey = null) {
     await this.ctx.storage.put(this.#pinKey(clientKey), name || AUTO);
+    if (!sessionKey) return;
+    await this.ctx.storage.put(this.#sessionPinKey(sessionKey), { name: name || AUTO, at: Date.now() });
+    await this.#pruneSessionPins();
+  }
+
+  async #pruneSessionPins() {
+    let entries;
+    try { entries = await this.ctx.storage.list({ prefix: 'dev:spin:' }); } catch { return; }
+    const stale = [...entries].filter(([, v]) => Date.now() - (v?.at || 0) >= SESSION_PIN_TTL_MS).map(([k]) => k);
+    if (stale.length) { try { await this.ctx.storage.delete(stale.slice(0, 128)); } catch { /* best-effort */ } }
   }
 
   // The account-wide default browser — used by any chat product that never calls
@@ -276,12 +311,12 @@ export class UserRelay extends DurableObject {
   // be honoured is a hard, named error, not a redirect to some other browser.
   // Most-recent-wins survives ONLY as the explicit "auto" mode.
   // Returns { ws, name, mode } | { error, ...diagnostics }.
-  async resolveTarget(clientKey) {
+  async resolveTarget(clientKey, sessionKey = null) {
     const devices = await this.deviceList();
     const connected = devices.filter((d) => d.connected);
     const names = devices.map((d) => d.name);
     const connectedNames = connected.map((d) => d.name);
-    const sel = await this.getSelection(clientKey);
+    const sel = await this.getSelection(clientKey, sessionKey);
 
     if (sel.mode === 'auto') {
       if (!connected.length) return { error: NO_DEVICE_ERROR, noDeviceConnected: true, browsers: names };
@@ -321,6 +356,10 @@ export class UserRelay extends DurableObject {
     try { entries = await this.ctx.storage.list({ prefix: 'dev:pin:' }); } catch { return; }
     for (const [k, v] of entries) {
       if (v === oldName) { try { await this.ctx.storage.put(k, newName); } catch { /* best-effort */ } }
+    }
+    try { entries = await this.ctx.storage.list({ prefix: 'dev:spin:' }); } catch { return; }
+    for (const [k, v] of entries) {
+      if (v?.name === oldName) { try { await this.ctx.storage.put(k, { ...v, name: newName }); } catch { /* best-effort */ } }
     }
   }
 
