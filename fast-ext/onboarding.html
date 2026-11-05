@@ -194,10 +194,36 @@
     .msg.ok   { display: block; background: var(--fl-ok-bg);   color: var(--fl-ok-text); }
     .msg.info { display: block; background: var(--fl-read-bg); color: var(--fl-read-text); }
 
-    .disclosure { margin-top: 16px; border-top: 1px solid var(--fl-border); padding-top: 14px; }
-    .disclosure summary { cursor: pointer; color: var(--fl-signal); font-size: 13.5px; font-weight: 600; }
-    .disclosure[open] summary { margin-bottom: 8px; }
-    .advanced { margin-top: 10px; }
+    /* ---- step 1: two equal ways to pair, side by side ---- */
+    .ways { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+    @media (max-width: 640px) { .ways { grid-template-columns: 1fr; } }
+    .way {
+      border: 1px solid var(--fl-border-strong); border-radius: var(--fl-r);
+      background: var(--fl-surface); padding: 16px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .way h3 { margin: 0; font-size: 15px; font-weight: 700; }
+    .way .fine { margin: 0; }
+    .way label { margin: 4px 0 0; }
+    .way .row { margin-top: 4px; }
+    .advanced { margin-top: 12px; }
+    .advanced summary { cursor: pointer; }
+
+    /* ---- step 2: name this browser ---- */
+    .step.attention {
+      border-color: var(--fl-signal);
+      box-shadow: 0 0 0 3px var(--fl-signal-soft), var(--fl-shadow);
+    }
+    .slug { font-family: var(--fl-mono); color: var(--fl-text); }
+
+    /* ---- step 3: picture-like click path for claude.ai ---- */
+    .ui {
+      display: inline-block; padding: 1px 8px; border-radius: 6px; font-weight: 600; font-size: 13px;
+      background: var(--fl-surface-2); border: 1px solid var(--fl-border-strong); color: var(--fl-text);
+      white-space: nowrap;
+    }
+    .ai-block { margin-top: 16px; }
+    .ai-block h3 { margin: 0 0 4px; font-size: 15px; font-weight: 700; }
+    ol.howto.big li { margin: 9px 0; }
 
     .foot {
       text-align: center; color: var(--fl-text-dim); font-size: 13.5px;
@@ -222,13 +248,13 @@
       <div class="hero-text">
         <span class="eyebrow">Get started</span>
         <h1>Welcome to <span class="fl-wordmark">Fast<span class="lk">Link</span></span></h1>
-        <p class="lead">FastLink lets Claude drive your own Chrome tab — read the page, click, fill forms, capture console &amp; network. A couple of quick steps to connect.</p>
+        <p class="lead">FastLink lets Claude drive your own Chrome tab — read the page, click, fill forms, capture console &amp; network. Three quick steps to connect.</p>
       </div>
     </div>
     <div class="hero-rule"></div>
 
     <div class="steps">
-      <!-- STEP 1 — Sign in & connect -->
+      <!-- STEP 1 — Pair this browser (two equal ways) -->
       <div class="card step locked" id="step1">
         <div class="step-head">
           <span class="num" id="num1">1</span>
@@ -237,58 +263,88 @@
             <h2>Connect this browser <span id="conn-pill" class="pill off">Not connected</span></h2>
           </div>
         </div>
-        <p class="desc" id="step1-detail">Click <strong>Sign in &amp; connect</strong> — a relay sign-in window opens (sign in with Google). This browser then pairs automatically and saves a device token; there are no codes to copy. You only do this once per browser.</p>
-        <div class="row">
-          <button id="signin-btn" class="primary">Sign in &amp; connect</button>
-          <span class="hint" id="signin-hint"></span>
+        <p class="desc" id="step1-detail">Pick either way — both do the same thing. You only do this once per browser.</p>
+        <div class="ways" id="ways">
+          <div class="way">
+            <h3>Sign in with Google</h3>
+            <p class="fine">A sign-in window opens; this browser pairs itself.</p>
+            <div class="row">
+              <button id="signin-btn" class="primary">Sign in &amp; connect</button>
+            </div>
+            <span class="hint" id="signin-hint"></span>
+          </div>
+          <div class="way">
+            <h3>Use a pairing code</h3>
+            <p class="fine">No Google sign-in here. Get a code from <a id="gen-code" class="linkbtn" href="https://relay.ytx.app/pair/new" target="_blank" rel="noopener">relay.ytx.app/pair/new</a> (any browser already signed in works; valid 10 min).</p>
+            <label for="code">Pairing code</label>
+            <input id="code" type="text" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false" maxlength="20" />
+            <div class="row">
+              <button id="pair-btn" class="ghost">Pair with code</button>
+            </div>
+          </div>
         </div>
         <div id="msg" class="msg"></div>
-
-        <details class="disclosure" id="manual-disclosure">
-          <summary>Have a pairing code instead?</summary>
-          <p class="fine">Only needed if the one-click <strong>Sign in &amp; connect</strong> above didn't work, or to pair a second Chrome profile.</p>
-          <div class="row">
-            <a id="gen-code" class="linkbtn" href="https://relay.ytx.app/pair/new" target="_blank" rel="noopener">Generate a code →</a>
-          </div>
-          <p class="fine">Sign in there and it'll show you a one-time code (expires in 10 minutes) to paste below.</p>
-          <label for="code">Pairing code</label>
-          <input id="code" type="text" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false" maxlength="20" />
-          <div class="row">
-            <button id="pair-btn" class="ghost small">Pair with code</button>
-          </div>
-          <details class="advanced">
-            <summary class="fine" style="cursor:pointer;">Advanced — relay URL</summary>
-            <label for="relayBase">Relay URL</label>
-            <input id="relayBase" type="url" placeholder="https://relay.ytx.app" value="https://relay.ytx.app" autocomplete="off" spellcheck="false" />
-          </details>
+        <details class="advanced">
+          <summary class="fine">Advanced — relay URL</summary>
+          <label for="relayBase">Relay URL</label>
+          <input id="relayBase" type="url" placeholder="https://relay.ytx.app" value="https://relay.ytx.app" autocomplete="off" spellcheck="false" />
         </details>
       </div>
 
-      <!-- STEP 2 — Add to claude.ai -->
-      <div class="card step locked" id="step3">
+      <!-- STEP 2 — Name this browser (always prompted right after pairing) -->
+      <div class="card step locked" id="step2">
         <div class="step-head">
-          <span class="num" id="num3">2</span>
+          <span class="num" id="num2">2</span>
           <div class="step-titles">
-            <span class="kicker">claude.ai connector</span>
-            <h2>Add FastLink to claude.ai</h2>
+            <span class="kicker">Name</span>
+            <h2>Name this browser</h2>
           </div>
         </div>
-        <p class="desc">Add this URL as a custom connector in claude.ai, then sign in with the <strong>same account</strong> you paired with above. Claude can then drive this browser.</p>
+        <p class="desc">Give it a name you'll recognise, like <strong>Home laptop</strong> or <strong>Shuli's Chromebook</strong>. If you use FastLink on more than one browser, this is how you tell the AI which one to use.</p>
+        <label for="name-input">Name</label>
+        <div class="row" style="margin-top:0;">
+          <input id="name-input" type="text" maxlength="40" autocomplete="off" spellcheck="false" style="flex:1; min-width:0;" disabled />
+          <button id="name-btn" class="primary" disabled>Save name</button>
+        </div>
+        <p class="fine" id="name-preview"></p>
+        <div id="name-msg" class="msg"></div>
+      </div>
+
+      <!-- STEP 3 — Connect your AI -->
+      <div class="card step locked" id="step3">
+        <div class="step-head">
+          <span class="num" id="num3">3</span>
+          <div class="step-titles">
+            <span class="kicker">Your AI</span>
+            <h2>Connect your AI to FastLink</h2>
+          </div>
+        </div>
+        <p class="desc">You add FastLink to your AI <strong>once</strong>, using this web address:</p>
         <div class="connector">
           <code id="connector-url">https://relay.ytx.app/mcp</code>
           <button id="copy-btn" class="ghost small">Copy</button>
         </div>
-        <ol class="howto">
-          <li>In claude.ai, open <strong>Settings → Connectors → Add custom connector</strong>.</li>
-          <li>Paste the URL above and save, then click <strong>Connect</strong> and sign in with the <strong>same account</strong>.</li>
-          <li>Start a chat and ask Claude to use FastLink on your active tab.</li>
-        </ol>
+
+        <div class="ai-block">
+          <h3>Claude (claude.ai)</h3>
+          <ol class="howto big">
+            <li>Open <a id="claude-connectors" class="linkbtn" href="https://claude.ai/settings/connectors" target="_blank" rel="noopener">claude.ai → Settings → Connectors</a>.</li>
+            <li>Click <span class="ui">Add custom connector</span>. Name: <span class="ui">FastLink</span>. URL: paste the address above. Click <span class="ui">Add</span>.</li>
+            <li>Click <span class="ui">Connect</span> next to FastLink and sign in with the <strong>same Google account</strong> you used in step 1.</li>
+            <li>In a new chat, type: <em>“Use FastLink to read my current tab.”</em></li>
+          </ol>
+        </div>
+
+        <div class="ai-block">
+          <h3>Other AI apps</h3>
+          <p class="fine">Any app that can add a <strong>custom connector</strong> or <strong>remote MCP server</strong>: add the same address and sign in with the same Google account. Claude Code / Claude Desktop on this computer don't need this — they connect directly through the local FastLink server.</p>
+        </div>
       </div>
 
       <!-- STEP 4 — Watch Claude work -->
       <div class="card step locked span2" id="step4">
         <div class="step-head">
-          <span class="num" id="num4">3</span>
+          <span class="num" id="num4">4</span>
           <div class="step-titles">
             <span class="kicker">Stay in the loop</span>
             <h2>Watch Claude work</h2>

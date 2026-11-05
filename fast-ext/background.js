@@ -517,21 +517,20 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 // The onboarding/options page pairs the relay (web-auth or manual code) and then
 // messages us to bring the relay transport up LIVE — no chrome.runtime.reload(),
-// so the open onboarding tab survives to show the "connected" + "add to claude.ai"
+// so the open page survives to show the "name this browser" + "connect your AI"
 // steps. Registered synchronously at top level (MV3) so it can wake a dead worker.
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'fastlink:relay-paired') {
-    const wasRunning = relayStarted;   // already dialing (possibly an older token)?
     chrome.storage.local.get(
       ['deviceToken', 'relayWssUrl', 'relayBase', 'relayEnabled', 'fastlinkMode'],
     ).then((c) => {
+      // A RE-pair: the live transport captured the old token at start, so drop
+      // it and dial again with the new one — still no extension reload, so the
+      // page that paired survives to prompt for this browser's name.
+      if (relayStarted) { stopRelay(); relayStarted = false; }
       if (c.relayEnabled !== false && c.fastlinkMode !== 'local') startRelay(c);
       reconcile();
-      // wasRunning ⇒ this is a RE-pair; the live transport still holds the old
-      // token (relayClient captures it at start), so the caller should reload to
-      // pick up the new one. Fresh pairing (the onboarding path) starts live with
-      // no reload, so the onboarding tab survives.
-      sendResponse({ ok: true, relayStarted, needsReload: wasRunning });
+      sendResponse({ ok: true, relayStarted });
     });
     return true;   // async sendResponse
   }

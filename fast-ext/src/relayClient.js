@@ -484,7 +484,7 @@ export async function authorizeViaTabPoll(relayBase) {
       // token fragment onto the chromiumapp.org placeholder page.
       if (res.status === 405 || res.status === 501) {
         if (tab) { try { await chrome.tabs.remove(tab.id); } catch {} }
-        throw new Error('This relay doesn’t support automatic tab sign-in yet — use “Have a pairing code instead?” below.');
+        throw new Error('This relay doesn’t support automatic tab sign-in yet — use “Use a pairing code” instead.');
       }
       if (!res.ok) continue;                         // 429 limiter blip / 5xx — next tick
       let body;

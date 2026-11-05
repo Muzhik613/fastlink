@@ -1,51 +1,48 @@
 // onboarding.js — first-run flow (SIGNUP-SPEC §2, §3 ext-auth).
-// Step 1: one-click "Sign in & connect" via chrome.identity.launchWebAuthFlow
-// (authorizeViaWebAuthFlow) → relay hands back a device token → we ask
-// background.js to bring the relay transport up LIVE (no extension reload, so
-// this page survives to show the connected state + step 2). If the auth window
-// fails, authorizeViaTabPoll opens a regular sign-in tab automatically; manual
-// pairing-code entry stays as the LAST-resort fallback behind a disclosure.
-// Step 2: shows the claude.ai connector URL with a Copy button + instructions.
+// Step 1: pair this browser with the relay — two equal, side-by-side ways:
+//   • "Sign in & connect": chrome.identity.launchWebAuthFlow, falling back to
+//     the automatic sign-in tab (authorizeViaTabPoll) if the window fails;
+//   • a pairing code from {relay}/pair/new (no Google sign-in in this browser).
+//   Either way background.js brings the relay up LIVE (no extension reload), so
+//   this page survives to show the next steps.
+// Step 2: right after a pairing, ALWAYS prompt for this browser's name (the
+//   name fast_status / fast_profile show), pre-filled when the relay only gave
+//   it an auto name (browser-N).
+// Step 3: plain steps to add the connector URL to claude.ai / other AI apps.
 
 import { authorizeViaWebAuthFlow, authorizeViaTabPoll, claimPairingCode } from './src/relayClient.js';
+import { devicesFetch, slugifyName, suggestName, isAutoName } from './src/browserName.js';
 
 const $ = (id) => document.getElementById(id);
 const DEFAULT_RELAY_BASE = 'https://relay.ytx.app';
 
-function showMsg(text, kind) {
-  const el = $('msg');
+function showMsg(text, kind, id = 'msg') {
+  const el = $(id);
   el.textContent = text;
-  el.className = `msg ${kind}`;
+  el.className = kind ? `msg ${kind}` : 'msg';
 }
 
 function relayBaseValue() {
   return ($('relayBase').value || '').trim() || DEFAULT_RELAY_BASE;
 }
 
-function connectorUrl(base) {
-  return `${String(base || DEFAULT_RELAY_BASE).replace(/\/+$/, '')}/mcp`;
-}
+const trimBase = (base) => String(base || DEFAULT_RELAY_BASE).replace(/\/+$/, '');
 
-function pairNewUrl(base) {
-  return `${String(base || DEFAULT_RELAY_BASE).replace(/\/+$/, '')}/pair/new`;
-}
-
-// Reflect connection state into the step cards. Steps 2–3 (add-to-claude.ai,
-// watch-Claude) unlock once the browser is paired.
+// Reflect connection state into the step cards. Steps 2–4 unlock once paired.
 function paintConnected(connected, relayBase) {
   const pill = $('conn-pill');
   const step1 = $('step1');
-  $('connector-url').textContent = connectorUrl(relayBase);
+  $('connector-url').textContent = `${trimBase(relayBase)}/mcp`;
 
-  const later = ['step3', 'step4'];
+  const later = ['step2', 'step3', 'step4'];
   if (connected) {
     pill.textContent = 'Connected';
     pill.className = 'pill ok';
     step1.classList.remove('locked'); step1.classList.add('done');
     $('num1').textContent = '✓';
-    $('step1-detail').textContent = 'This browser is paired with the relay. Finish the steps below to start driving.';
-    $('signin-btn').textContent = 'Re-pair this browser';
-    $('signin-btn').classList.remove('primary'); $('signin-btn').classList.add('ghost', 'small');
+    $('step1-detail').textContent = 'This browser is paired. To pair it again (e.g. with a different account), use either option below.';
+    $('signin-btn').textContent = 'Sign in again';
+    $('signin-btn').classList.remove('primary'); $('signin-btn').classList.add('ghost');
     later.forEach((id) => $(id).classList.remove('locked'));
   } else {
     pill.textContent = 'Not connected';
@@ -53,26 +50,29 @@ function paintConnected(connected, relayBase) {
     step1.classList.remove('done'); step1.classList.add('locked');
     later.forEach((id) => $(id).classList.add('locked'));
   }
+  $('name-input').disabled = !connected;
+  $('name-btn').disabled = !connected;
 }
 
-// After a fresh pairing: ask background to start the relay transport live.
-// If background reports the relay was ALREADY running (a re-pair), it still
-// holds the old token, so fall back to a reload to pick up the new one.
+// After a pairing (fresh or re-pair): background (re)starts the relay transport
+// live with the new token — no extension reload, so this page survives. Only if
+// background is unreachable do we reload to pick up the new config.
 async function bringRelayUp() {
   try {
-    const resp = await chrome.runtime.sendMessage({ type: 'fastlink:relay-paired' });
-    if (resp?.needsReload) {
-      showMsg('Re-paired. Reloading FastLink to apply…', 'info');
-      setTimeout(() => chrome.runtime.reload(), 600);
-      return false;
-    }
+    await chrome.runtime.sendMessage({ type: 'fastlink:relay-paired' });
+    return true;
   } catch {
-    // Background may have been asleep / message dropped; a reload is the safe
-    // fallback to pick up the new config.
     setTimeout(() => chrome.runtime.reload(), 600);
     return false;
   }
-  return true;
+}
+
+// Shared tail of both pairing ways: go live, then prompt for a name.
+async function afterPair(base, userId) {
+  if (!(await bringRelayUp())) return;
+  paintConnected(true, base);
+  showMsg(`Connected${userId ? ` as ${userId}` : ''}.`, 'ok');
+  await loadName({ prompt: true });
 }
 
 async function onSignIn() {
@@ -82,9 +82,6 @@ async function onSignIn() {
   showMsg('Opening the sign-in window…', 'info');
   try {
     const base = relayBaseValue();
-    // launchWebAuthFlow first; on failure (popup blocked, flow error, 2nd-profile
-    // quirks) fall back to the automatic tab-poll flow — same as options.js. The
-    // pairing-code disclosure stays as the last resort.
     let userId;
     try {
       ({ userId } = await authorizeViaWebAuthFlow(base));
@@ -93,11 +90,7 @@ async function onSignIn() {
       showMsg('Opening a sign-in tab instead…', 'info');
       ({ userId } = await authorizeViaTabPoll(base));
     }
-    const live = await bringRelayUp();
-    if (live) {
-      paintConnected(true, base);
-      showMsg(`Connected${userId ? ` as ${userId}` : ''}. Now add FastLink to claude.ai below.`, 'ok');
-    }
+    await afterPair(base, userId);
   } catch (e) {
     showMsg(e?.message || String(e), 'err');
   } finally {
@@ -113,13 +106,72 @@ async function onManualPair() {
   try {
     const base = relayBaseValue();
     const { userId } = await claimPairingCode($('code').value, base);
-    const live = await bringRelayUp();
-    if (live) {
-      paintConnected(true, base);
-      showMsg(`Paired${userId ? ` as ${userId}` : ''}. Now add FastLink to claude.ai below.`, 'ok');
-    }
+    await afterPair(base, userId);
   } catch (e) {
     showMsg(e?.message || String(e), 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---- step 2: name ----------------------------------------------------------
+// Once the user edits the field, relay refreshes never overwrite it.
+let nameDirty = false;
+
+function paintPreview() {
+  const slug = slugifyName($('name-input').value);
+  const el = $('name-preview');
+  el.replaceChildren();
+  if (!slug) return;
+  const s = document.createElement('span');
+  s.className = 'slug';
+  s.textContent = slug;
+  el.append('The AI will see it as ', s, '.');
+}
+
+function markNamed(named) {
+  const step2 = $('step2');
+  step2.classList.toggle('done', named);
+  step2.classList.toggle('attention', !named);
+  $('num2').textContent = named ? '✓' : '2';
+}
+
+// Read this browser's name from the relay. An auto name (browser-N) counts as
+// unnamed: pre-fill a suggestion and, after a fresh pairing, pull focus here.
+async function loadName({ prompt = false } = {}) {
+  let data;
+  try { data = await devicesFetch('GET'); } catch (e) { showMsg(e?.message || String(e), 'err', 'name-msg'); return; }
+  if (!data) return;
+  const input = $('name-input');
+  const unnamed = !data.self || isAutoName(data.self);
+  if (!nameDirty) input.value = unnamed ? suggestName(data.devices) : data.self;
+  paintPreview();
+  markNamed(!unnamed);
+  if (unnamed && prompt) {
+    $('step2').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    input.focus();
+    input.select();
+    showMsg('Now give this browser a name — edit the suggestion or keep it, then Save.', 'info', 'name-msg');
+  }
+}
+
+async function onSaveName() {
+  const name = slugifyName($('name-input').value);
+  if (!name) { showMsg('Type a name for this browser first.', 'err', 'name-msg'); return; }
+  const btn = $('name-btn');
+  btn.disabled = true;
+  showMsg('Saving…', 'info', 'name-msg');
+  try {
+    const data = await devicesFetch('POST', { name });
+    if (!data) { showMsg('Pair this browser first (step 1).', 'err', 'name-msg'); return; }
+    $('name-input').value = data.self;
+    nameDirty = false;
+    paintPreview();
+    markNamed(true);
+    showMsg(`Saved — this browser is “${data.self}”.`, 'ok', 'name-msg');
+    $('step3').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    showMsg(e?.message || String(e), 'err', 'name-msg');
   } finally {
     btn.disabled = false;
   }
@@ -137,17 +189,22 @@ async function onCopy() {
   }
 }
 
-// Keep the "Generate a code →" link pointed at the (possibly customized) relay.
+// Keep the code link pointed at the (possibly customized) relay.
 function syncGenCodeLink() {
   const a = $('gen-code');
-  if (a) a.href = pairNewUrl(relayBaseValue());
+  const url = `${trimBase(relayBaseValue())}/pair/new`;
+  a.href = url;
+  a.textContent = url.replace(/^https?:\/\//, '');
 }
 
 $('signin-btn').addEventListener('click', onSignIn);
 $('pair-btn').addEventListener('click', onManualPair);
+$('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') onManualPair(); });
+$('name-btn').addEventListener('click', onSaveName);
+$('name-input').addEventListener('input', () => { nameDirty = true; paintPreview(); });
+$('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') onSaveName(); });
 $('copy-btn').addEventListener('click', onCopy);
 $('relayBase').addEventListener('input', syncGenCodeLink);
-$('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') onManualPair(); });
 
 // Live-refresh if the relay connects/drops while this page is open.
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -163,6 +220,7 @@ async function refresh() {
   const connected = !!c.deviceToken && !relayDisabled;
   paintConnected(connected, base);
   syncGenCodeLink();
+  if (connected) loadName();
 }
 
 refresh();

@@ -6,6 +6,7 @@
 // Applying a transport change reloads the extension so background.js re-reads config.
 
 import { claimPairingCode, authorizeViaWebAuthFlow, authorizeViaTabPoll } from './src/relayClient.js';
+import { RELAY_NAME_ERRORS, devicesFetch, slugifyName, suggestName, isAutoName } from './src/browserName.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -36,14 +37,14 @@ showTab(location.hash.slice(1) || TAB_DEFAULT);
 
 const DEFAULT_RELAY_BASE = 'https://relay.ytx.app';
 
-// Keep the disclosure's "Generate a code →" link pointed at the (possibly
-// customized) relay — same scheme as onboarding.js.
-function pairNewUrl(base) {
-  return `${String(base || DEFAULT_RELAY_BASE).replace(/\/+$/, '')}/pair/new`;
-}
+// Keep the pairing-code link pointed at the (possibly customized) relay —
+// same scheme as onboarding.js.
 function syncGenCodeLink() {
   const a = $('gen-code');
-  if (a) a.href = pairNewUrl(($('relayBase').value || '').trim());
+  if (!a) return;
+  const url = `${String(($('relayBase').value || '').trim() || DEFAULT_RELAY_BASE).replace(/\/+$/, '')}/pair/new`;
+  a.href = url;
+  a.textContent = url.replace(/^https?:\/\//, '');
 }
 const STORAGE_KEYS = [
   'fastlinkMode', 'localEnabled', 'relayEnabled', 'deviceToken',
@@ -137,8 +138,8 @@ async function render() {
     detail.textContent = 'Using the localhost broker (Claude Code / Desktop). Not paired with a cloud relay.';
   }
 
-  // Pairing card: show the "✓ Paired as <user>" confirmation and dim the how-to
-  // once this browser actually holds a device token (and the relay isn't disabled).
+  // Pairing card: show the "✓ Paired as <user>" confirmation once this browser
+  // actually holds a device token (and the relay isn't disabled).
   // Reuses the existing relayUserId / deviceToken values — no new pairing logic.
   const paired = relayConfigured && !relayDisabled;
   const confirm = $('pair-confirm');
@@ -154,8 +155,6 @@ async function render() {
       confirm.style.display = 'none';
     }
   }
-  const howto = $('pair-howto');
-  if (howto) howto.classList.toggle('dimmed', paired);
 
   // Pre-fill the relay base from the last-used value so the user rarely re-types it.
   if (c.relayBase) $('relayBase').value = c.relayBase;
@@ -172,13 +171,12 @@ async function render() {
   if (c.relayAuthError && relayDisabled) showMsg(c.relayAuthError, 'err');
 }
 
-// Ask background.js to bring the relay transport up LIVE after a fresh pairing
-// (no extension reload). Returns true if it started live; false means a reload
-// was triggered (re-pair carrying a new token, or background was unreachable).
+// Ask background.js to (re)start the relay transport LIVE with the new token
+// (fresh pair or re-pair — no extension reload, so this page survives to prompt
+// for the browser's name). Only an unreachable background forces a reload.
 async function bringRelayUp() {
   try {
-    const resp = await chrome.runtime.sendMessage({ type: 'fastlink:relay-paired' });
-    if (resp?.needsReload) { setTimeout(() => chrome.runtime.reload(), 600); return false; }
+    await chrome.runtime.sendMessage({ type: 'fastlink:relay-paired' });
     return true;
   } catch {
     setTimeout(() => chrome.runtime.reload(), 600);
@@ -206,7 +204,7 @@ async function onSignIn() {
     showMsg(live
       ? `Connected${userId ? ` as ${userId}` : ''}. The cloud relay is now active.`
       : `Connected${userId ? ` as ${userId}` : ''}. Reloading FastLink to apply…`, 'ok');
-    if (live) render();
+    if (live) { render(); renderRelayDevices({ prompt: true }); }
   } catch (e) {
     showMsg(e?.message || String(e), 'err');
   } finally {
@@ -225,8 +223,8 @@ async function onPair() {
     const live = await bringRelayUp();
     showMsg(live
       ? `Paired${userId ? ` as ${userId}` : ''}. The cloud relay is now active.`
-      : `Paired${userId ? ` as ${userId}` : ''}. Reloading FastLink to connect…`, 'ok');
-    if (live) render();
+      : `Paired${userId ? ` as ${userId}` : ''}. Reloading FastLink to apply…`, 'ok');
+    if (live) { render(); renderRelayDevices({ prompt: true }); }
   } catch (e) {
     showMsg(e?.message || String(e), 'err');
   } finally {
@@ -331,44 +329,14 @@ async function onToggleDebugger() {
 // (fast_profile install:"<name>"). Same sanitizing rule as the broker slot, so a
 // name means the same thing on both transports.
 //
-// The relay is authoritative (names live in D1, selection lives in the user's
-// Durable Object). This page reads/writes them through {base}/devices, authed
-// with the device token this browser already holds — exactly like the
-// site-permission card. Nothing is mirrored into chrome.storage: a second
-// copy of a name would just be a way to disagree with the relay.
+// The relay is authoritative; reads/writes go through src/browserName.js
+// (shared with the onboarding page's post-pair naming step).
 // ---------------------------------------------------------------------------
-const RELAY_NAME_ERRORS = {
-  invalid_device_token: 'This browser is no longer paired — re-pair it in Connection above.',
-  invalid_name: 'Use letters, digits, "-" or "_" (e.g. "work"), starting with a letter or digit.',
-  reserved_name: '“auto”, “default” and “none” are reserved words — pick another name.',
-  name_taken: 'Another browser on your account already uses that name. Pick a different one.',
-  unknown_device: 'The relay doesn’t recognise this browser — re-pair it in Connection above.',
-  invalid_json: 'The relay rejected the request.',
-};
-
 function relayNameMsg(text, kind) {
   const el = $('relay-name-msg');
   if (!el) return;
   el.textContent = text || '';
   el.className = kind ? `msg ${kind}` : 'msg';
-}
-
-async function devicesFetch(method, body) {
-  const c = await chrome.storage.local.get(['relayBase', 'deviceToken']);
-  if (!c.deviceToken) return null;                       // not paired — card renders its empty state
-  const base = String(c.relayBase || DEFAULT_RELAY_BASE).replace(/\/+$/, '');
-  const url = `${base}/devices`;
-  const res = method === 'GET'
-    ? await fetch(`${url}?deviceToken=${encodeURIComponent(c.deviceToken)}`)
-    : await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ deviceToken: c.deviceToken, ...body }),
-      });
-  let b = {};
-  try { b = await res.json(); } catch {}
-  if (!res.ok) throw new Error(RELAY_NAME_ERRORS[b?.error] || b?.error || `Request failed (HTTP ${res.status}).`);
-  return b;
 }
 
 // Paint the card from a /devices payload: this browser's name, the account
@@ -390,11 +358,14 @@ function paintRelayDevices(data) {
     return;
   }
 
+  const unnamed = !data.self || isAutoName(data.self);
   if (input) {
     input.disabled = false;
-    // Don't clobber what the user is mid-way through typing.
-    if (document.activeElement !== input) input.value = data.self || '';
+    // Don't clobber what the user is mid-way through typing. An auto name
+    // (browser-N) gets a sensible suggestion to save instead.
+    if (document.activeElement !== input) input.value = unnamed ? suggestName(data.devices) : data.self;
   }
+  $('relay-name-card')?.classList.toggle('attention', unnamed);
   if (toggle) {
     toggle.disabled = false;
     toggle.checked = !!(data.self && data.default === data.self);
@@ -432,9 +403,18 @@ function paintRelayDevices(data) {
   }
 }
 
-async function renderRelayDevices() {
+// prompt: right after a pairing, pull the user to the name card when this
+// browser still has only an auto name.
+async function renderRelayDevices({ prompt = false } = {}) {
   try {
-    paintRelayDevices(await devicesFetch('GET'));
+    const data = await devicesFetch('GET');
+    paintRelayDevices(data);
+    if (prompt && data && (!data.self || isAutoName(data.self))) {
+      $('relay-name-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      $('relay-name').focus();
+      $('relay-name').select();
+      relayNameMsg('Now name this browser — keep the suggestion or type your own, then Save name.', 'info');
+    }
   } catch (e) {
     paintRelayDevices(null);
     relayNameMsg(e?.message || String(e), 'err');
@@ -445,9 +425,9 @@ async function onSaveRelayName() {
   const btn = $('relay-name-btn');
   const raw = ($('relay-name').value || '').trim();
   if (!raw) { relayNameMsg('Enter a name for this browser first.', 'info'); return; }
-  // Sanitize client-side with the SAME rule the relay applies, so the user sees
-  // what will actually be stored instead of a silent normalization.
-  const name = sanitizeInstallId(raw);
+  // Slugify client-side into the relay's name rule, so the user sees what will
+  // actually be stored instead of a silent normalization.
+  const name = slugifyName(raw);
   if (!name) { relayNameMsg(RELAY_NAME_ERRORS.invalid_name, 'err'); return; }
   btn.disabled = true;
   relayNameMsg('Saving…', 'info');
