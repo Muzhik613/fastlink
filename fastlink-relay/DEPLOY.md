@@ -1,5 +1,7 @@
 # FastLink Relay — Deployment Guide (OWNER steps)
 
+> **Operators only.** Users: see README "Using FastLink" — do not deploy this relay; use the hosted one at `relay.ytx.app`.
+
 Ordered, copy-pasteable steps to stand up the multi-tenant relay and connect it
 to claude.ai. Run everything from `fastlink-relay/` under WSL. Binding/secret
 names match **SPEC.md** (the contract).

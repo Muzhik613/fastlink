@@ -1,36 +1,61 @@
 # FastLink
 
-FastLink bridges **Claude** (Claude Code, Claude Desktop, or claude.ai web) to a real **Chrome
+FastLink bridges **Claude** (claude.ai web, Claude Code, or Claude Desktop) to a real **Chrome
 tab**, so Claude can read page snapshots, click, fill forms, run JS, and batch-automate the
 browser the user is actually looking at.
 
 ```
-Claude  ⇄  MCP server  ⇄  broker (WebSocket)  ⇄  Chrome extension  ⇄  page
+claude.ai web  ⇄  hosted relay (relay.ytx.app)  ⇄  Chrome extension  ⇄  page
+Claude Code / Desktop  ⇄  local MCP server + broker  ⇄  Chrome extension  ⇄  page
 ```
 
 ---
 
-## Install
+## Using FastLink (users)
 
-**See [`docs/INSTALL.md`](docs/INSTALL.md)** — a single, deterministic, cross-platform
-(macOS / Windows / Windows+WSL / Linux) guide written to be executed step-by-step by Claude. In
-short: install Node ≥ 18, `npm --prefix fast-dxt install`, register the MCP server with Claude
-(Claude Code via `claude mcp add`, or Claude Desktop via the `.mcpb`), Load-unpacked the Chrome
-extension, then verify with `fast_status`.
+> **Do NOT deploy `fastlink-relay/`.** It is the operator's hosted service, already running at
+> `https://relay.ytx.app`. Users need **no** Cloudflare account, D1/KV IDs, Google OAuth secrets,
+> or `wrangler` — skip everything under *Operators / self-hosting* below.
+
+1. **Install the Chrome extension** (no Web Store listing): `chrome://extensions` → enable
+   **Developer mode** → **Load unpacked** → select this repo's `fast-ext/` folder.
+   (ChromeOS: the folder must be visible to Chrome, e.g. under *Linux files*.) The FastLink
+   setup page opens automatically on first install; reopen it later from the extension's options.
+2. **Pair with the hosted relay**: on that page click **Sign in & connect** and sign in with
+   Google. The browser pairs itself and stores a device token — no codes to copy. (Fallback only:
+   *Have a pairing code instead?* → `https://relay.ytx.app/pair/new` → paste the code.)
+3. **Connect Claude** — pick one:
+   - **claude.ai web**: Settings → Connectors → **Add custom connector** → URL
+     `https://relay.ytx.app/mcp` → save → **Connect**, signing in with the **same Google
+     account** used in step 2 (a different account = "browser offline").
+   - **Claude Code / Desktop on the same machine** (no relay, no pairing): follow
+     [`docs/INSTALL.md`](docs/INSTALL.md) to run the local MCP server from `fast-dxt/`.
+4. **Verify**: ask Claude to run `fast_status`, then e.g. "snapshot my active tab".
 
 ---
 
-## Components
+## Operators / self-hosting
 
-### Active (a local install is the first three; the relay is cloud-only)
+Everything below is for the FastLink operator/developer. End users stop at the section above.
+
+### Hosted relay (`fastlink-relay/`)
+
+Multi-tenant Cloudflare Worker + Durable Objects + D1/KV behind `relay.ytx.app`. Deploy steps,
+bindings and secrets: [`fastlink-relay/DEPLOY.md`](fastlink-relay/DEPLOY.md) (contract:
+`fastlink-relay/SPEC.md`). Only someone running their **own** relay needs this; a self-hosted
+relay is selected per browser under *Advanced — relay URL* on the extension's pairing card.
+
+### Components
+
+#### Active (a local install is the first three; the relay is cloud-only)
 
 | Component | Where it runs | What it is |
 |---|---|---|
 | **`fast-dxt/`** — MCP server + broker | Node, next to Claude | `server/index.js` exposes the `fast_*` tools over MCP (stdio). It **auto-spawns** `broker/index.js`, the WebSocket hub between MCP client(s) and the extension. Also the source of the Claude Desktop `.mcpb` bundle. |
 | **`fast-ext/`** — Chrome extension | The user's Chrome | MV3 extension that actually drives the page. Loaded unpacked (Developer mode). |
-| **`fastlink-relay/`** — cloud relay | Cloudflare Worker + Durable Objects | **Optional**, only for claude.ai **web** driving the browser. Not part of a local install. Mirrors `fast-dxt/server/tools.js`. |
+| **`fastlink-relay/`** — cloud relay | Cloudflare Worker + Durable Objects | **Operator-hosted** at `relay.ytx.app` for claude.ai **web**. Users never deploy it; not part of a local install. Mirrors `fast-dxt/server/tools.js`. |
 
-### Legacy — ignore for development, not part of any install
+#### Legacy — ignore for development, not part of any install
 
 | Directory | Status |
 |---|---|
@@ -41,9 +66,7 @@ extension, then verify with `fast_status`.
 > 2026-09-16. The two directories above are untracked, so they stay until the owner migrates
 > Profile 5 onto `fast-ext/` with the `secondary` slot label.
 
----
-
-## Docs
+### Docs
 
 | Doc | Purpose |
 |---|---|
@@ -53,9 +76,7 @@ extension, then verify with `fast_status`.
 
 `docs/` also holds design/status notes (speed tiers, benchmarks, issue logs).
 
----
-
-## Repo layout
+### Repo layout
 
 - `fast-dxt/` — MCP server (`server/`) + auto-spawned broker (`broker/`); tool schemas in
   `server/tools.js`.
@@ -65,14 +86,12 @@ extension, then verify with `fast_status`.
   Windows copy, reloads the pinned profile via the broker, verifies the build sha.
 - `docs/` — install + design/status docs. `bench/` — benchmark harnesses.
 
----
-
-## Notes
+### Notes
 
 - **Ports:** extension slots `9876` (primary) / `9877` (secondary 2nd profile); internal
   MCP↔broker `9870`.
-- **Web Store:** not published, and there is no self-hosted `.crx` channel — use Load-unpacked
-  (Developer mode). `fast-ext/scripts/package.sh` builds the uploadable zip if one is ever cut.
+- **Web Store:** not published — users Load-unpacked (Developer mode). The signed `.crx`
+  auto-update channel in [`release/`](release/README.md) is only for force-installed managed
+  devices (policy `ExtensionInstallForcelist`), not a general install path.
 - **Non-DOM targets** (canvas, cross-origin iframes): `fast_screenshot` → `fast_click_xy` / `fast_type`.
   There is no model-backed vision tier and no API key to configure.
-</content>
