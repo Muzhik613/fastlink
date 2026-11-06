@@ -116,7 +116,7 @@ wrangler secret put MAIL_API_KEY                              # Resend API key
 > `MAIL_API_KEY`. Until that's done, run in **shared mode** (Option A). (auth.js
 > reads `MAIL_API_KEY || RESEND_API_KEY` — standardize on `MAIL_API_KEY`.)
 
-### Operator admin token (`/admin/feedback`, `/admin/drop-legacy-pins`)
+### Operator admin token (`/admin/feedback`)
 
 ```bash
 openssl rand -hex 32 | wrangler secret put RELAY_ADMIN_TOKEN
@@ -125,17 +125,10 @@ openssl rand -hex 32 | wrangler secret put RELAY_ADMIN_TOKEN
 Unset → every `/admin/*` route answers 404 (fast_feedback still stores rows).
 Callers send `Authorization: Bearer <RELAY_ADMIN_TOKEN>`.
 
-### One-time: sweep the pre-redesign pin keys (right after the redesign deploy)
+### Pre-redesign pin keys (done)
 
-```bash
-cur=''; while :; do
-  r=$(curl -s -X POST "https://relay.ytx.app/admin/drop-legacy-pins?after=$cur" -H "Authorization: Bearer $RELAY_ADMIN_TOKEN")
-  echo "$r"; [ "$(echo "$r" | jq -r .done)" = true ] && break; cur=$(echo "$r" | jq -r .next)
-done
-```
-
-Then delete `handleDropLegacyPins` (auth.js) and `#dropLegacyPins` /
-`/__drop-legacy-pins` (userRelay.js) in a follow-up commit and redeploy.
+The one-time sweep of `dev:pin:*` / `dev:spin:*` / `dev:default` ran on 2026-11-06
+(7 users, 45 keys) and its code was then deleted.
 
 ### Revoking a machine (helper agent token)
 

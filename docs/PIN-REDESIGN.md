@@ -120,10 +120,8 @@ docs/UPDATING.md, docs/BUG-5-multi-install-routing.md).
 1. Apply D1 migration 0007 remotely; `wrangler secret put RELAY_ADMIN_TOKEN`.
 2. Relay deploy (backward compatible: old extensions and OAuth clients keep working;
    `browser` is optional).
-3. One-time cleanup: run the `/admin/drop-legacy-pins` sweep (fastlink-relay/DEPLOY.md) so
-   no `dev:pin:*` / `dev:spin:*` / `dev:default` key is left in any user's DO. Then delete the sweep code
-   (auth.js `handleDropLegacyPins`, userRelay.js `#dropLegacyPins`) in a follow-up commit and
-   redeploy.
+3. Done 2026-11-06: one-time sweep of `dev:pin:*` / `dev:spin:*` / `dev:default` (7 users,
+   45 keys); the sweep code was deleted afterwards.
 4. Pair each machine once and switch Claude Code configs from the `fastlink-relay` URL
    connector / old local `fastlink` to the helper. This comes BEFORE the extension release:
    extension 0.4.8 drops the local broker connection the old local `fastlink` still uses.

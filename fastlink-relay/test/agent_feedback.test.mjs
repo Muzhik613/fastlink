@@ -169,24 +169,3 @@ test('/agent/machines: a machine lists its owner\'s machines and revokes one by 
   assert.equal((await machines(e, t1)).status, 401);
   assert.equal((await machines(e, t3)).status, 200);
 });
-
-test('/admin/drop-legacy-pins: admin-only, pages through users, calls each DO', async () => {
-  const db = fakeD1(); const e = env(db, { RELAY_ADMIN_TOKEN: 'admin-secret-xyz' });
-  for (const u of ['u1', 'u2', 'u3']) db.raw.prepare(`INSERT INTO users (user_id, email, created_at) VALUES (?, ?, ?)`).run(u, `${u}@x`, Date.now());
-  const sweep = (q, tok = 'admin-secret-xyz') => makeDefaultHandler().fetch(new Request(`https://relay.test/admin/drop-legacy-pins${q}`, { method: 'POST', headers: { authorization: `Bearer ${tok}` } }), e, {});
-  assert.equal((await sweep('', 'wrong')).status, 401);
-  const p1 = await (await sweep('?limit=2')).json();
-  assert.deepEqual([p1.users, p1.done, p1.next], [2, false, 'u2']);
-  const p2 = await (await sweep(`?after=${p1.next}&limit=2`)).json();
-  assert.deepEqual([p2.users, p2.done], [1, true]);
-  assert.deepEqual(e.seen.map((s) => [s.id, s.path]), [['id:u1', '/__drop-legacy-pins'], ['id:u2', '/__drop-legacy-pins'], ['id:u3', '/__drop-legacy-pins']]);
-  assert.equal((await makeDefaultHandler().fetch(new Request('https://relay.test/admin/drop-legacy-pins', { method: 'POST' }), env(fakeD1()), {})).status, 404);
-});
-
-test('DO /__drop-legacy-pins removes the old pins and the retired account default, nothing else', async () => {
-  const { r, storage } = await makeRelay({});
-  for (const k of ['dev:pin:c1', 'dev:pin:c2', 'dev:spin:s1', 'dev:default', 'tidx']) await storage.put(k, 'x');
-  const res = await r.fetch(new Request('https://do/__drop-legacy-pins', { method: 'POST' }));
-  assert.deepEqual(await res.json(), { deleted: 4 });
-  assert.deepEqual([...storage.m.keys()].sort(), ['tidx']);
-});

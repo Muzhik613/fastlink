@@ -11,7 +11,6 @@
 //   POST     /agent/pair           — the fast-dxt helper exchanges a code for an agent token (fla_…)
 //   GET/POST /agent/machines       — a paired machine lists / revokes its owner's machines (Bearer fla_…)
 //   GET      /admin/feedback       — operator read of fast_feedback rows (RELAY_ADMIN_TOKEN)
-//   POST     /admin/drop-legacy-pins — ONE-TIME rollout sweep of the old pin keys (RELAY_ADMIN_TOKEN)
 //   *        /ext                  — WSS upgrade; resolve device token -> user's DO
 //   GET      /  /health            — health check
 //
@@ -82,8 +81,6 @@ export function makeDefaultHandler() {
             return handleAgentMachines(request, env);
           case '/admin/feedback':
             return handleAdminFeedback(request, env);
-          case '/admin/drop-legacy-pins':
-            return handleDropLegacyPins(request, env);
           case '/ext/authorize':
             return handleExtAuthorize(request, env);
           case '/ext/authorize/wait':
@@ -584,32 +581,6 @@ async function handleAdminFeedback(request, env) {
   return new Response(JSON.stringify({ items, last: items.length ? items[items.length - 1].id : after }), {
     headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   });
-}
-
-// ===========================================================================
-// ONE-TIME ROLLOUT CLEANUP (docs/PIN-REDESIGN.md §7). The redesign dropped the
-// relay-side pins; this sweeps their leftover keys (dev:pin:*, dev:spin:*) out of
-// every user's DO. Paged by user id because a Worker invocation has a subrequest
-// cap: call with ?after=<cursor> until `done`. DELETE this handler and the DO's
-// /__drop-legacy-pins in the follow-up commit once the sweep has run.
-//   POST ?after=<user_id>&limit=<≤40>  → { users, deleted, next, done }
-// ===========================================================================
-const SWEEP_PAGE_MAX = 40;
-
-async function handleDropLegacyPins(request, env) {
-  const denied = adminDenied(request, env, 'POST');
-  if (denied) return denied;
-  const url = new URL(request.url);
-  const after = url.searchParams.get('after') || '';
-  const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || String(SWEEP_PAGE_MAX), 10) || SWEEP_PAGE_MAX, 1), SWEEP_PAGE_MAX);
-  const ids = await db.listUserIds(env.DB, after, limit);
-  let deleted = 0;
-  for (const userId of ids) {
-    const stub = env.USER_RELAY.get(env.USER_RELAY.idFromName(String(userId)));
-    const res = await stub.fetch(new Request('https://do/__drop-legacy-pins', { method: 'POST' }));
-    deleted += (await res.json()).deleted || 0;
-  }
-  return jsonResponse({ users: ids.length, deleted, next: ids.length ? ids[ids.length - 1] : after, done: ids.length < limit });
 }
 
 // ===========================================================================

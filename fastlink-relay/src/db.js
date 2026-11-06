@@ -632,15 +632,6 @@ export async function revokeAgent(db, agentToken) {
     .run();
 }
 
-// Every user id, paged by id (operator sweeps).
-export async function listUserIds(db, after = '', limit = 40) {
-  const { results } = await db
-    .prepare(`SELECT user_id FROM users WHERE user_id > ? ORDER BY user_id LIMIT ?`)
-    .bind(String(after), limit)
-    .all();
-  return (results || []).map((r) => r.user_id);
-}
-
 // --- feedback (migration 0007) ----------------------------------------------
 
 export async function getUserEmail(db, userId) {

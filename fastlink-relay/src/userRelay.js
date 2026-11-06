@@ -112,8 +112,6 @@ export class UserRelay extends DurableObject {
     if (url.pathname === '/__ext') return this.#acceptExtension(request);
     if (url.pathname === '/__mcp') return handleMcpRequest(request, this);
     if (url.pathname === '/__revoke') return this.#revokeDevice(request);
-    // ONE-TIME ROLLOUT CLEANUP (auth.js /admin/drop-legacy-pins): delete with it.
-    if (url.pathname === '/__drop-legacy-pins') return this.#dropLegacyPins();
     // Named-browser management for the extension options page. Reached only via
     // auth.js's device-token-authed /devices, which resolves the token to THIS
     // user before forwarding — the DO never sees an unauthenticated request and
@@ -146,21 +144,6 @@ export class UserRelay extends DurableObject {
     this.ctx.acceptWebSocket(server, ['ext']); // tag 'ext' survives hibernation
     try { server.serializeAttachment({ connectedAt: Date.now(), deviceToken: token }); } catch { /* non-fatal */ }
     return new Response(null, { status: 101, webSocket: client });
-  }
-
-  // ONE-TIME ROLLOUT CLEANUP: remove the pre-redesign pin keys and the retired
-  // account default (dev:default) from this DO.
-  async #dropLegacyPins() {
-    let deleted = 0;
-    for (const prefix of ['dev:pin:', 'dev:spin:', 'dev:default']) {
-      for (;;) {
-        const batch = await this.ctx.storage.list({ prefix, limit: 128 });
-        if (!batch.size) break;
-        await this.ctx.storage.delete([...batch.keys()]);
-        deleted += batch.size;
-      }
-    }
-    return new Response(JSON.stringify({ deleted }), { headers: { 'content-type': 'application/json' } });
   }
 
   // Merge into a socket's hibernation-surviving attachment. serializeAttachment
