@@ -24,7 +24,8 @@ const sessionSeen = [];    // mcp-session-id headers
 let nextTab = 100;
 const liveTabs = new Set([7]);
 let useSse = false;
-let serveMeta = false;      // when true, results say which browser served them (relay _meta)
+let serveMeta = false;
+let slowNext = 0;          // ms the fake relay waits before its next tools/call reply      // when true, results say which browser served them (relay _meta)
 
 const BROWSERS = [
   { name: 'home', connected: true, lastSeen: 1 },
@@ -86,6 +87,7 @@ const relay = createServer(async (req, res) => {
     result = { tools: TOOLS };
   } else if (rpc.method === 'tools/call') {
     calls.push(rpc.params);
+    if (slowNext) { const ms = slowNext; slowNext = 0; await new Promise((r) => setTimeout(r, ms)); }
     const a = rpc.params.arguments || {};
     result = toolResult(rpc.params.name, a);
     if (serveMeta) result = { ...result, _meta: { 'fastlink/browser': a.browser || a.lastBrowser || 'home' } };
@@ -333,6 +335,8 @@ test('call.js: scripts call FastLink with the machine pairing, browser on every 
     const bad = await fl.call('fast_snapshot', { tabId: 99999 });
     assert.match(bad.error, /No tab with id/);
     assert.equal('result' in bad, false);
+    slowNext = 300;
+    await assert.rejects(fl.call('fast_snapshot', { tabId: tab.result.tabId }, { timeoutMs: 50 }), /timeout fast_snapshot/);
   } finally {
     if (prev === undefined) delete process.env.FASTLINK_AGENT_FILE; else process.env.FASTLINK_AGENT_FILE = prev;
   }
