@@ -38,8 +38,9 @@ export function fakeStorage() {
 }
 
 // A hibernatable ext socket stamped with a device token; records what the relay sends.
-export function fakeSocket(deviceToken, connectedAt = Date.now()) {
-  let att = { connectedAt, deviceToken };
+// `version` = what the extension's hello announced (null = no hello yet).
+export function fakeSocket(deviceToken, connectedAt = Date.now(), version = '0.4.8') {
+  let att = { connectedAt, deviceToken, ...(version ? { version } : {}) };
   return {
     readyState: 1,
     sent: [],

@@ -388,7 +388,7 @@ function imageResult(result) {
 // `browser` (or none → the only online one, else `lastBrowser`) would be routed.
 async function relayStatus(relay, browser, lastBrowser) {
   const devices = await relay.deviceList();
-  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen }));
+  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen, version: d.version }));
   const target = await relay.resolveTarget(browser, lastBrowser);
   const connected = !!(target && target.ws);
   const policy = await relay.evalPolicy();

@@ -165,3 +165,25 @@ test('writes carry expectOrigin = the origin the gates approved for that tab', a
   await reply(r, a, a.lastCall().id, { result: { ok: true }, origin: 'https://site.test', tabId: 7 });
   await p;
 });
+
+test('a call naming a tab is refused for extensions older than 0.4.8 (they would act on the current tab)', async () => {
+  const { supportsTabId } = await import('../src/userRelay.js');
+  for (const [v, ok] of [['0.4.8', true], ['0.4.10', true], ['0.5.0', true], ['1.0', true], ['0.4.7', false], ['0.4.6', false], ['', false], ['dev', false]]) {
+    assert.equal(supportsTabId(v), ok, v);
+  }
+  for (const version of ['0.4.6', null]) {
+    const a = fakeSocket('tokA', Date.now(), version);
+    const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets: [a] });
+    const ta = target(r, 'w', 'tokA');
+    const refused = await r.callExtension('fast_evaluate', { tabId: 7, fn: '() => 1' }, undefined, ta);
+    assert.equal(refused.extensionTooOld, true);
+    assert.match(refused.error, /needs 0\.4\.8/);
+    assert.equal(a.sent.length, 0, 'nothing reached the old extension');
+    // no tabId → runs as before; fast_switch/fast_close keep their own tabId
+    for (const [action, args] of [['fast_text', {}], ['fast_switch', { tabId: 7 }], ['fast_close', { tabId: 7 }]]) {
+      const p = r.callExtension(action, args, undefined, ta);
+      await reply(r, a, a.lastCall().id, { result: 'ok' });
+      assert.equal((await p).result, 'ok', action);
+    }
+  }
+});

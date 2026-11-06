@@ -159,3 +159,10 @@ test('a non-number tabId is refused, top level and in batch steps', async () => 
   assert.match(JSON.stringify(batch.data), /tabId must be a number/);
   assert.equal(a.sent.filter((m) => m.action === 'fast_click').length, 0);
 });
+
+test('fast_status reports each online browser\'s extension version', async () => {
+  const a = fakeSocket('tokA', Date.now(), '0.4.8'); const b = fakeSocket('tokB', Date.now(), '0.4.6');
+  const { r } = await makeRelay({ devices: [{ name: 'work', token: 'tokA' }, { name: 'home', token: 'tokB' }, { name: 'off', token: 'tokC' }], sockets: [a, b] });
+  const { data } = await mcpCall(r, 'fast_status', { browser: 'work' });
+  assert.deepEqual(data.browsers.map((x) => [x.name, x.version]), [['work', '0.4.8'], ['home', '0.4.6'], ['off', null]]);
+});

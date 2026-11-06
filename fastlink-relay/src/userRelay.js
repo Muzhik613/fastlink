@@ -66,6 +66,22 @@ function quietFocus(action, args) {
 const TARGET_MOVERS = new Set(['fast_tab', 'fast_switch', 'fast_close']);
 const originKey = (deviceToken, tabId) => `${deviceToken}#${tabId == null ? 'target' : tabId}`;
 
+// Per-call tabId is honoured from this extension version on (PIN-REDESIGN §3).
+export const TABID_MIN_VERSION = '0.4.8';
+const NATIVE_TAB_ACTIONS = new Set(['fast_switch', 'fast_close']);
+// The version the extension announced in its hello on this socket ('' if none yet).
+function extVersion(ws) {
+  try { return String((ws.deserializeAttachment() || {}).version || ''); } catch { return ''; }
+}
+// true when `v` (x.y.z) >= TABID_MIN_VERSION; unknown/garbled → false (fail safe).
+export function supportsTabId(v) {
+  const p = (x) => String(x).split('.').map((n) => parseInt(n, 10));
+  const a = p(v), b = p(TABID_MIN_VERSION);
+  if (!v || a.some(Number.isNaN)) return false;
+  for (let i = 0; i < 3; i++) { if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0); }
+  return true;
+}
+
 export class UserRelay extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -222,6 +238,8 @@ export class UserRelay extends DurableObject {
       deviceToken: r.deviceToken,
       connected: newestByToken.has(r.deviceToken),
       connectedAt: newestByToken.get(r.deviceToken)?.at || null,
+      // FastLink extension version from that browser's hello (null when offline).
+      version: newestByToken.has(r.deviceToken) ? (extVersion(newestByToken.get(r.deviceToken).ws) || null) : null,
       lastSeen: r.lastSeen,
     }));
   }
@@ -463,6 +481,18 @@ export class UserRelay extends DurableObject {
       error: NO_DEVICE_ERROR,
       noDeviceConnected: true,
     });
+    // SAFETY (11-06): extensions before 0.4.8 ignore a per-call tabId and act on
+    // whatever tab is current. A call that names a tab must never land on another
+    // one, so it is refused for those browsers (unknown version = refused too).
+    // fast_switch / fast_close always honoured their own tabId argument.
+    if (typeof rest.tabId === 'number' && !NATIVE_TAB_ACTIONS.has(action) && !supportsTabId(extVersion(ws))) {
+      const v = extVersion(ws) || 'an unknown version';
+      return Promise.resolve({
+        error: `Browser "${target.name || '?'}" runs FastLink ${v}, which can't act on a specific tab (needs ${TABID_MIN_VERSION} or newer), so "${action}" was not run. Reload the FastLink extension in that browser (click its toolbar icon) to load the update, then retry.`,
+        extensionTooOld: true,
+        extensionVersion: extVersion(ws) || null,
+      });
+    }
     const id = crypto.randomUUID();
     return new Promise((resolve) => {
       // tabKey: which tab's origin this result reports — the call's own tabId, else
