@@ -213,10 +213,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 async function refresh() {
-  const c = await chrome.storage.local.get(['deviceToken', 'relayBase', 'fastlinkConn', 'relayEnabled', 'fastlinkMode']);
+  const c = await chrome.storage.local.get(['deviceToken', 'relayBase', 'fastlinkConn', 'relayEnabled']);
   const base = c.relayBase || DEFAULT_RELAY_BASE;
   if (c.relayBase) $('relayBase').value = c.relayBase;
-  const relayDisabled = c.relayEnabled === false || c.fastlinkMode === 'local';
+  const relayDisabled = c.relayEnabled === false;
   const connected = !!c.deviceToken && !relayDisabled;
   paintConnected(connected, base);
   syncGenCodeLink();

@@ -4,7 +4,7 @@
 //
 // The relay is authoritative: names live in D1 and are read/written through
 // {base}/devices, authed with this browser's device token. Nothing is mirrored
-// into chrome.storage. The relay sanitizes with the install-slot rule
+// into chrome.storage. The relay sanitizes names
 // (lowercase [a-z0-9_-], alnum first, ≤32 — fastlink-relay/src/db.js
 // sanitizeDeviceName); slugifyName turns a human name ("Shuli's Chromebook")
 // into that form ("shulis-chromebook") BEFORE sending, so the user sees what

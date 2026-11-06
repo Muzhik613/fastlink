@@ -150,12 +150,12 @@ function readFieldsInFrame(frameSub, labels) {
 // fast_frame_read { frame, fields } — the live values of labelled fields inside
 // the frames whose URL contains `frame`, merged across every matching frame.
 // Ambiguity is refused: count > 1 → value null.
-export async function frameRead({ frame, fields } = {}) {
+export async function frameRead({ frame, fields, tabId } = {}) {
   if (typeof frame !== 'string' || !frame) return { error: 'fast_frame_read: frame (a substring of the frame URL) is required' };
   if (!Array.isArray(fields) || !fields.length || fields.some((f) => typeof f !== 'string' || !f.trim())) {
     return { error: 'fast_frame_read: fields must be a non-empty array of label texts' };
   }
-  const got = await getInjectableTab();
+  const got = await getInjectableTab(tabId);
   if (got.error) return got;
   const answers = (await inAllFrames(got.tab.id, readFieldsInFrame, [frame, fields])).map((a) => a.result);
   const matched = answers.filter((a) => a.matched);
@@ -296,7 +296,7 @@ async function probeFrames(tabId, ids, needle, maxKids) {
 export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_WALK } = {}) {
   const text = String((args && args.text) || '');
   const needle = text.replace(/\s+/g, ' ').trim().toLowerCase();
-  const got = await getInjectableTab();
+  const got = await getInjectableTab(args && args.tabId);
   if (got.error || !needle) return topWait();
   const tabId = got.tab.id;
   const t0 = Date.now();

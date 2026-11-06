@@ -114,7 +114,7 @@ const humanVerb = (a) => VERB[a] || String(a || '').replace(/^fast_/, '').replac
 function render() {
   // GATE: the transcript surfaces only while claude.ai-web (the relay) is driving
   // this browser. Otherwise show a neutral "no active claude.ai session" state
-  // rather than a stale message or local-broker activity.
+  // rather than a stale message.
   if (!relayActive) {
     els.status.textContent = 'No active claude.ai session';
     els.status.className = 'status idle';

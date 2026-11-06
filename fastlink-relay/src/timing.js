@@ -1,8 +1,6 @@
 // src/timing.js — per-session tool-call timing trace for the cloud relay.
 //
-// Mirrors fast-dxt/server/handlers.js logTiming EXACTLY in semantics, so a relay
-// run and a local run render through the same formatter (fast-dxt/server/
-// timing-format.js) and can be compared side by side:
+// Rendered by fast-dxt/server/timing-format.js (via relay-timing-report.js):
 //   gapMs = thisCall.start - previousCall.end  → the MODEL's think/round-trip time
 //   durMs = thisCall.end   - thisCall.start    → action execution time
 //
@@ -43,11 +41,9 @@ function state(relay) {
   return relay._trace;
 }
 
-// Stable, non-reversible 8-byte hex digest. THE fingerprint primitive for the
-// relay — used here to key a trace session by its credential and by
-// userRelay.js to key a browser selection by the chat product driving it.
-// Nothing sensitive is ever stored: only the digest.
-export async function fingerprint(input) {
+// Stable, non-reversible 8-byte hex digest, used to key a trace session by its
+// credential. Nothing sensitive is ever stored: only the digest.
+async function fingerprint(input) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(input)));
   return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -139,6 +135,16 @@ async function dropSession(relay, id) {
   } catch { /* best-effort cleanup */ }
   const st = state(relay);
   st.meta.delete(id);
+}
+
+// "name/version" the MCP client reported at initialize for this session, or
+// null (no session / no clientInfo).
+export async function traceClient(relay, sessionId) {
+  if (!sessionId) return null;
+  const meta = await loadMeta(relay, sessionId);
+  const c = meta && meta.client;
+  if (!c || !c.name) return null;
+  return c.version ? `${c.name}/${c.version}` : c.name;
 }
 
 // Record one tool call. Call it as the LAST thing in the tools/call path — it

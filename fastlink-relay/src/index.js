@@ -15,11 +15,19 @@
 // same DO. Strict per-tenant isolation is structural: an MCP grant can only ever
 // address its own DO.
 //
+// AGENT TOKENS (docs/PIN-REDESIGN.md §4): the fast-dxt helper authenticates to
+// /mcp with `Bearer fla_…` (minted once per machine by /agent/pair). The
+// provider calls resolveExternalToken for any bearer it doesn't know; we map an
+// fla_ token → agents row → { userId } props, so it lands in FastlinkApiHandler
+// exactly like an OAuth grant. resolveExternalToken only runs for the apiRoute,
+// so an agent token can reach /mcp and nothing else.
+//
 // See SPEC.md §3a.
 
 import { OAuthProvider } from '@cloudflare/workers-oauth-provider';
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { makeDefaultHandler, registerRateLimit } from './auth.js'; // oauth owns this: /authorize,/oauth/*,/pair/*,/ext
+import { makeDefaultHandler, registerRateLimit } from './auth.js'; // oauth owns this: /authorize,/oauth/*,/pair/*,/agent/pair,/ext
+import { lookupAgent } from './db.js';
 
 // The Durable Object class MUST be exported from the Worker's main module so the
 // runtime can construct it for the USER_RELAY binding.
@@ -71,20 +79,19 @@ export class FastlinkApiHandler extends WorkerEntrypoint {
     // never trusts this for isolation (that's the idFromName keying above) — it's
     // purely informational.
     try { fwd.headers.set('X-Fastlink-User-Id', String(userId)); } catch { /* immutable headers — non-fatal */ }
-    // MULTI-BROWSER TARGETING: the OAuth client id identifies WHICH chat product
-    // is calling (claude.ai and Grok dynamic-register separately), and it is
-    // stamped into the grant props, so it stays constant across both an access-
-    // token refresh AND a client that opens a fresh MCP session per tool call.
-    // That makes it the key the DO stores this connection's browser selection
-    // under (userRelay.clientKey). Also informational only for isolation — the DO
-    // is still addressed by idFromName(userId) above.
-    const clientId = this.ctx?.props?.cid ?? this.props?.cid;
-    if (clientId) {
-      try { fwd.headers.set('X-Fastlink-Client-Id', String(clientId)); } catch { /* non-fatal */ }
-    }
     const res = await stub.fetch(fwd);
     return withCors(res, cors);
   }
+}
+
+// Bearer fla_… → { props: { userId } } | null. Agent tokens carry no `idm`
+// stamp, so the userId-shape check in identityTokenCurrent still rejects an
+// agent paired under a previous identity mode.
+export async function resolveAgentToken({ token, env }) {
+  if (typeof token !== 'string' || !token.startsWith('fla_') || !env.DB) return null;
+  const agent = await lookupAgent(env.DB, token);
+  if (!agent || agent.revoked) return null;
+  return { props: { userId: String(agent.userId), agent: true } };
 }
 
 // Identity-mode reader (mirrors auth.js identityMode / userRelay.#identityMode so
@@ -174,6 +181,7 @@ const oauthProvider = new OAuthProvider({
   // this true (accepts plain) for backwards-compat; plain offers no cryptographic
   // protection, so we pin S256-only before any stranger connects (audit M1).
   allowPlainPKCE: false,
+  resolveExternalToken: resolveAgentToken,
 });
 
 // CORS-preflight shim (security audit S2 / task #11). claude.ai web is a browser

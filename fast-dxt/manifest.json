@@ -2,8 +2,8 @@
   "dxt_version": "0.1",
   "name": "fastlink",
   "display_name": "FastLink",
-  "version": "1.2.0",
-  "description": "FastLink — page snapshots, clicks, form fills, and batch automation via a paired Chrome extension",
+  "version": "2.0.0",
+  "description": "FastLink helper: drives your own Chrome (page snapshots, clicks, form fills, batch automation) through the FastLink relay. Pair this machine once with `node server/index.js pair <CODE>` (code from https://relay.ytx.app/pair/new).",
   "icon": "icons/icon-256.png",
   "author": {
     "name": "FastLink"
@@ -11,11 +11,15 @@
   "tools": [
     {
       "name": "fast_status",
-      "description": "Report whether the Chrome extension is connected to this MCP server, and connection diagnostics."
+      "description": "Which browsers are paired to your FastLink account, which are online, and which one this session drives."
+    },
+    {
+      "name": "fast_profile",
+      "description": "Choose which browser this session drives, by name, or \"auto\" for your default browser."
     },
     {
       "name": "fast_snapshot",
-      "description": "Snapshot of the active Chrome tab."
+      "description": "Snapshot of this session's Chrome tab."
     },
     {
       "name": "fast_click",
@@ -31,11 +35,11 @@
     },
     {
       "name": "fast_nav",
-      "description": "Navigate the active Chrome tab to a URL."
+      "description": "Navigate this session's Chrome tab to a URL."
     },
     {
       "name": "fast_list",
-      "description": "List all open tabs in the current Chrome window with id, url, title, and active state."
+      "description": "List the open tabs with id, url, title, and active state."
     },
     {
       "name": "fast_switch",
@@ -47,11 +51,15 @@
     },
     {
       "name": "fast_evaluate",
-      "description": "Escape hatch: run arbitrary JavaScript in the active Chrome tab (MAIN world, full DOM access)."
+      "description": "Escape hatch: run JavaScript in this session's Chrome tab."
+    },
+    {
+      "name": "fast_frame_read",
+      "description": "Read labelled field values inside a cross-origin frame."
     },
     {
       "name": "fast_text",
-      "description": "Read text (or HTML) from the active Chrome tab."
+      "description": "Read text (or HTML) from this session's Chrome tab."
     },
     {
       "name": "fast_select_option",
@@ -59,15 +67,15 @@
     },
     {
       "name": "fast_screenshot",
-      "description": "Capture a screenshot of the active Chrome tab."
+      "description": "Capture a screenshot of this session's Chrome tab."
     },
     {
       "name": "fast_key_press",
-      "description": "Press a single key on the active tab."
+      "description": "Press a single key on this session's tab."
     },
     {
       "name": "fast_scroll",
-      "description": "Scroll the active tab."
+      "description": "Scroll this session's tab."
     },
     {
       "name": "fast_close",
@@ -84,6 +92,10 @@
     {
       "name": "fast_type",
       "description": "Trusted typing into whatever element currently has focus, via CDP Input.insertText — React/LWC accept it because it's a real input event (unlike setting .val..."
+    },
+    {
+      "name": "fast_feedback",
+      "description": "Send a bug report or idea to the FastLink team."
     }
   ],
   "server": {

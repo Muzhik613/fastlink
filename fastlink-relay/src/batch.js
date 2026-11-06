@@ -1,5 +1,5 @@
 // fast_batch runner — pure orchestration over an injected `call(name, args)`.
-// Used by fast-dxt/server/handlers.js and MIRRORED at fastlink-relay/src/batch.js
+// The relay's fast_batch runner (the only copy; the local broker server was deleted)
 // (keep both files identical; the relay wires consent/audit into `call`/`gate`).
 //
 // Contract (2026-09-15, "batching is the default path for forms"):

@@ -95,7 +95,7 @@ export async function cdp(tabId, method, params) {
 // Trusted click at a TOP-LEVEL viewport pixel via the CDP Input domain.
 // Unlike injected JS .click() (isTrusted:false), this lands a real mouse event
 // that LWC/React honor and that can focus an iframe input without DOM reach-in.
-export async function clickXY({ x, y, button, clickCount }) {
+export async function clickXY({ x, y, button, clickCount, tabId: callTabId }) {
   // Guard the coords: missing/NaN x|y would dispatch a mouse event at
   // (undefined, undefined) — CDP coerces it to (0,0) and "clicks" the top-left
   // corner, a SILENT no-op for the intended target (and it would never focus the
@@ -103,7 +103,7 @@ export async function clickXY({ x, y, button, clickCount }) {
   if (typeof x !== 'number' || typeof y !== 'number' || Number.isNaN(x) || Number.isNaN(y)) {
     return { error: 'fast_click_xy: x and y must be numbers (viewport CSS pixels)' };
   }
-  const got = await getInjectableTab();
+  const got = await getInjectableTab(callTabId);
   if (got.error) return got;
   const tabId = got.tab.id;
   const btn = button || 'left';
@@ -349,9 +349,9 @@ async function selectAllAndDelete(tabId) {
 // live value, or `verified:false` with a machine-readable `reason` plus
 // `typedInto`. A forced write into an uninspectable frame is exactly the case
 // nothing can confirm, so it must never come back looking like a success.
-export async function typeText({ text, clear, force, allowIframe } = {}) {
+export async function typeText({ text, clear, force, allowIframe, tabId: callTabId } = {}) {
   if (typeof text !== 'string') return { error: 'fast_type: text is required (string)' };
-  const got = await getInjectableTab();
+  const got = await getInjectableTab(callTabId);
   if (got.error) return got;
   const tabId = got.tab.id;
   const forced = force === true || allowIframe === true;

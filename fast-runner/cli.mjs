@@ -1,20 +1,19 @@
 #!/usr/bin/env node
-// node cli.mjs [--local|--relay] [--browser NAME] [--toolset NAME|PATH] [--gate on|record|off] "task"
-//   streams tool calls, answers ask_caller from stdin, prints final JSON.
+// node cli.mjs [--browser NAME] [--toolset NAME|PATH] [--gate on|record|off] "task"
+//   drives the browser through the relay (--browser NAME is sent as `browser` on every call; omitted:
+//   the account default), streams tool calls, answers ask_caller from stdin, prints final JSON.
 // node cli.mjs --toolset NAME --dump-tools
-//   prints the exact tool list Grok would receive for that toolset (read from fast-dxt/server/tools.js —
-//   no server, broker or browser is touched), then exits.
+//   prints the exact tool list Grok would receive for that toolset (read from fastlink-relay/tools.js,
+//   minus the `browser` argument the relay transport fills — no relay or browser is touched), then exits.
 import { createInterface } from 'node:readline';
 import { runTask, answer, cancelAll, loadToolset, buildTools, buildSystem } from './runner.mjs';
 
 const argv = process.argv.slice(2);
-let transport = 'relay', browser, toolset, gate, dumpTools = false;
+let browser, toolset, gate, dumpTools = false;
 const rest = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (a === '--local') transport = 'local';
-  else if (a === '--relay') transport = 'relay';
-  else if (a === '--browser') browser = argv[++i];
+  if (a === '--browser') browser = argv[++i];
   else if (a === '--toolset') toolset = argv[++i];
   else if (a === '--gate') gate = argv[++i];
   else if (a === '--dump-tools') dumpTools = true;
@@ -24,10 +23,11 @@ for (let i = 0; i < argv.length; i++) {
 const fail = (e) => { console.error(`error: ${e.message}`); process.exit(2); };
 
 if (dumpTools) {
-  const { TOOLS } = await import('../fast-dxt/server/tools.js');
+  const { TOOLS } = await import('../fastlink-relay/tools.js');
+  const { withoutBrowserArg } = await import('./relay-transport.mjs');
   let ts;
   try { ts = loadToolset(toolset); } catch (e) { fail(e); }
-  const { tools } = buildTools(TOOLS, ts);
+  const { tools } = buildTools(TOOLS.map(withoutBrowserArg), ts);
   console.log(JSON.stringify({
     toolset: ts.name, file: ts.file, count: tools.length,
     systemPromptChars: buildSystem().length,
@@ -37,7 +37,7 @@ if (dumpTools) {
 }
 
 const task = rest.join(' ').trim();
-if (!task) { console.error('usage: node cli.mjs [--local|--relay] [--browser NAME] [--toolset NAME|PATH] [--gate on|record|off] "task"\n       node cli.mjs --toolset NAME --dump-tools'); process.exit(2); }
+if (!task) { console.error('usage: node cli.mjs [--browser NAME] [--toolset NAME|PATH] [--gate on|record|off] "task"\n       node cli.mjs --toolset NAME --dump-tools'); process.exit(2); }
 
 // stdin lines are queued so a piped answer that arrives before the question is not lost.
 const rl = createInterface({ input: process.stdin, terminal: false });
@@ -56,7 +56,7 @@ const onEvent = (e) => {
 for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, () => cancelAll(`runner killed by ${sig}`).finally(() => process.exit(1)));
 
 const t0 = Date.now();
-let r = await runTask({ task, transport, browser, toolset, gate, holdMs: 3_600_000, onEvent }).catch(fail);
+let r = await runTask({ task, browser, toolset, gate, holdMs: 3_600_000, onEvent }).catch(fail);
 while (r.status === 'question') r = await answer(r.run_id, await ask(r.question), { holdMs: 3_600_000 });
 rl.close();
 console.log(JSON.stringify({ ...r, wallMs: Date.now() - t0 }, null, 2));

@@ -17,13 +17,16 @@ import { captureViewport, captureViaDebugger, getActiveTab } from '../util.js';
 //     drives a backgrounded tab while the user sits on claude.ai) — pass
 //     preferTarget:true to KEEP the pin-aware capture, so they still show the tab
 //     the action drove, not the user's foreground tab.
-//   • An explicit numeric `tabId` always targets that exact tab.
+//   • An explicit numeric `tabId` (the call's own tab, PIN-REDESIGN §3) always
+//     captures that exact tab — through CDP when it isn't the on-screen tab, never
+//     another tab's pixels and never by focusing it.
 export async function takeScreenshot(args = {}) {
   try {
-    // Companion screenshots stay pin-aware (show the tab the action actually drove).
-    if (args.preferTarget && typeof args.tabId !== 'number') {
+    // Companion screenshots stay pin-aware (show the tab the action actually drove);
+    // a call's own tabId is captured as that tab.
+    if (args.preferTarget || typeof args.tabId === 'number') {
       const shot = await captureViewport(args);
-      return await toCssPixels(shot, await getActiveTab(), args);
+      return await toCssPixels(shot, await getActiveTab(args.tabId), args);
     }
     const { tab, ...shot } = await captureForeground(args);
     return await toCssPixels(shot, tab, args);
@@ -59,7 +62,8 @@ async function toCssPixels(shot, tab, args = {}) {
   let zoom = 1;
   try { if (tab?.id != null) zoom = await chrome.tabs.getZoom(tab.id); } catch {}
   const f = cssFrame({ imgW: bmp.width, imgH: bmp.height, tabW: tab?.width, zoom });
-  const meta = { cssWidth: f.cssWidth, cssHeight: f.cssHeight, dpr: f.dpr, scale: 1 };
+  // tabId: the tab whose pixels these are (the result frame stamps it too).
+  const meta = { cssWidth: f.cssWidth, cssHeight: f.cssHeight, dpr: f.dpr, scale: 1, ...(typeof tab?.id === 'number' ? { tabId: tab.id } : {}) };
   if (bmp.width === f.cssWidth && bmp.height === f.cssHeight) { bmp.close?.(); return { ...shot, ...meta }; }
   const canvas = new OffscreenCanvas(f.cssWidth, f.cssHeight);
   const ctx = canvas.getContext('2d');
@@ -73,14 +77,11 @@ async function toCssPixels(shot, tab, args = {}) {
   return { ...shot, dataUrl: `data:image/${format};base64,${btoa(bin)}`, ...meta };
 }
 
-// Resolve the tab to capture: an explicit tabId override, else the user's REAL
-// foreground tab (active tab of the last-focused window). Mirrors getActiveTab()'s
-// MV3 cold-start fallback (a freshly-woken worker has no "last focused window" yet)
-// but DELIBERATELY does NOT consult the pinned target — that is the whole point.
-async function resolveForegroundTab(args) {
-  if (typeof args.tabId === 'number') {
-    try { return await chrome.tabs.get(args.tabId); } catch { /* fall through to foreground */ }
-  }
+// Resolve the user's REAL foreground tab (active tab of the last-focused window).
+// Mirrors getActiveTab()'s MV3 cold-start fallback (a freshly-woken worker has no
+// "last focused window" yet) but DELIBERATELY does NOT consult the pinned target —
+// that is the whole point.
+async function resolveForegroundTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (tab) return tab;
   const wins = await chrome.windows.getAll({ windowTypes: ['normal'], populate: true });
@@ -94,7 +95,7 @@ async function captureForeground(args = {}) {
   if (format === 'jpeg' && typeof args.quality === 'number') capOpts.quality = args.quality;
   const fresh = args.fresh === true || args.freshCapture === true;
 
-  const tab = await resolveForegroundTab(args);
+  const tab = await resolveForegroundTab();
   if (!tab || typeof tab.windowId !== 'number') {
     const err = new Error('no foreground tab to screenshot');
     err.hint = 'no active/last-focused window resolved; focus a Chrome window and retry.';

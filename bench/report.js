@@ -36,7 +36,7 @@ function flags(r) {
 
 export function render(rows, { validOnly = false } = {}) {
   const use = validOnly ? rows.filter((r) => r.valid !== false) : rows;
-  if (!use.length) return 'No results yet. Run a cell:  node bench/run.js --client claude --test multipage';
+  if (!use.length) return 'No results in bench/results.jsonl. (The cell runner was removed with the local broker on 2026-11-06; see bench/package.json.)';
 
   // Latest row wins per (client, transport, test) so a re-run supersedes a bad one.
   const cell = new Map();

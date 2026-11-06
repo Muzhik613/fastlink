@@ -1,8 +1,8 @@
 import { getInjectableTab, injectInTab } from '../util.js';
 import { cdp } from './input.js';
 
-export async function evaluate({ fn, args }) {
-  const got = await getInjectableTab();
+export async function evaluate({ fn, args, tabId }) {
+  const got = await getInjectableTab(tabId);
   if (got.error) return got;
   const userArgs = Array.isArray(args) ? args : [];
 
@@ -12,7 +12,7 @@ export async function evaluate({ fn, args }) {
   // CDP unavailable — fall back to an in-page eval. A page whose CSP forbids
   // 'unsafe-eval' (web.whatsapp.com, github.com) blocks that, so the CSP message
   // alone hides the real problem: report why CDP failed alongside it.
-  const r = await evaluateViaScripting(fn, userArgs);
+  const r = await evaluateViaScripting(fn, userArgs, got.tab.id);
   if (r && typeof r === 'object' && typeof r.error === 'string' && /unsafe-eval|Content Security Policy/i.test(r.error)) {
     return { error: `fast_evaluate: the debugger path failed (${cdp.reason}), and this page's Content Security Policy blocks the in-page fallback`, code: cdp.code || 'cdp_unavailable' };
   }
@@ -42,8 +42,8 @@ async function evaluateViaCDP(tabId, fnStr, userArgs) {
   }
 }
 
-async function evaluateViaScripting(fnStr, userArgs) {
-  const r = await injectInTab({ world: 'MAIN', func: runUserFn, args: [fnStr, userArgs] });
+async function evaluateViaScripting(fnStr, userArgs, tabId) {
+  const r = await injectInTab({ world: 'MAIN', func: runUserFn, args: [fnStr, userArgs], tabId });
   if (r.error) return r;
   if (r.result?.err) return { error: r.result.err };
   return r.result ? r.result.ok : null;

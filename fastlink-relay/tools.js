@@ -1,28 +1,40 @@
-// MCP tool definitions. Edit descriptions/schemas here only.
+// MCP tool definitions — THE one schema source (docs/PIN-REDESIGN.md §1). The
+// fast-dxt helper fetches tools/list from the relay and passes it through
+// (it fills `browser`/`tabId` itself and adds its local fast_profile).
 // Descriptions stay short: what the tool does, its key arguments, at most one gotcha (<= 300 chars).
-// fastlink-relay/tools.js carries the same set (minus the local-only fast_ext_reload).
+// Every browser-touching tool also takes `browser` and `tabId` (added by withTarget below).
 
-export const TOOLS = [
+const BROWSER_ARG = { type: 'string', description: 'Browser name to drive (see fast_status). Omitted: the account default browser.' };
+const TAB_ARG = { type: 'number', description: 'Tab id to act on, without changing the browser\'s target tab. Omitted: the target tab.' };
+
+const RELAY_TOOLS = [
   {
     name: 'fast_status',
-    description: 'Whether a browser is connected, which profiles are paired, and which one this connection drives. Call when other tools say the extension is not connected.',
+    description: 'Which browsers are paired and connected, the account default, and which browser a call is routed to. Call when other tools say a browser is not connected.',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        browser: { type: 'string', description: 'Report routing for this browser name instead of the default.' },
+      },
       required: [],
     },
   },
   {
-    name: 'fast_profile',
-    description: 'Pin this connection to one browser profile by name, or "auto" to release. Needed while several profiles are connected; a pinned profile that is offline errors, never redirects.',
+    name: 'fast_feedback',
+    description: 'Send a note to the FastLink developers: a bug, a missing feature, or something confusing. Works with no browser connected.',
     inputSchema: {
       type: 'object',
       properties: {
-        install: { type: 'string', description: 'Profile name (e.g. "primary", "work") or "auto".' },
+        text: { type: 'string', maxLength: 4000, description: 'What happened or what you need (up to 4000 characters).' },
+        kind: { type: 'string', enum: ['bug', 'idea', 'other'], description: 'Default "other".' },
+        browser: { type: 'string', description: 'Browser name the note is about. Omitted: the account default.' },
       },
-      required: ['install'],
+      required: ['text'],
     },
   },
+];
+
+const BROWSER_TOOLS = [
   {
     name: 'fast_snapshot',
     description: 'Read the page: `items` are controls as {i, tag, label, value} (offscreen:true when below the fold; an open dialog first) plus `content` text. Visible frames are under `frames`, their ids "f<frameId>:<i>". truncated:true means this read was cut: call again with full:true.',
@@ -82,7 +94,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         url: { type: 'string', description: 'URL to open.' },
-        background: { type: 'boolean', description: 'Default true: the tab opens without raising Chrome. false: bring it to the front (only when the user should see it).' },
+        background: { type: 'boolean', description: 'Default true: opens without raising Chrome. false: bring it to the front.' },
         waitMs: { type: 'number', description: 'Max load wait in ms (default 10000).' },
         noSnapshot: { type: 'boolean', description: 'Skip the page preview.' },
       },
@@ -119,7 +131,7 @@ export const TOOLS = [
       properties: {
         tabId: { type: 'number', description: 'Tab id from fast_list.' },
         match: { type: 'string', description: 'URL or title substring.' },
-        focus: { type: 'boolean', description: 'Default false: target the tab without raising Chrome (reads and actions work on background tabs). true: bring it to the front.' },
+        focus: { type: 'boolean', description: 'Default false: target it without raising Chrome. true: bring it to the front.' },
       },
     },
   },
@@ -306,3 +318,15 @@ export const TOOLS = [
     },
   },
 ];
+
+// fast_list and fast_tab act on the browser, not a tab, so they take no TAB_ARG;
+// fast_switch and fast_close keep their own `tabId` (the tab to target / close).
+const NO_TAB_ARG = new Set(['fast_list', 'fast_tab']);
+
+function withTarget(tool) {
+  const props = { ...tool.inputSchema.properties, browser: BROWSER_ARG };
+  if (!('tabId' in props) && !NO_TAB_ARG.has(tool.name)) props.tabId = TAB_ARG;
+  return { ...tool, inputSchema: { ...tool.inputSchema, properties: props } };
+}
+
+export const TOOLS = [...RELAY_TOOLS, ...BROWSER_TOOLS.map(withTarget)];

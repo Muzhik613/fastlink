@@ -1,8 +1,7 @@
 // node --test — fast_batch step semantics against a fake extension (no browser).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runBatch, isSelectorProbe, notVerified } from '../../fast-dxt/server/batch.js';
-import { readFileSync } from 'node:fs';
+import { runBatch, isSelectorProbe, notVerified } from '../../fastlink-relay/src/batch.js';
 
 const fake = (script) => {
   const calls = [];
@@ -97,10 +96,6 @@ test('a step is ok only when its own result is clean: verified:false / missed / 
   assert.equal(notVerified({ verified: true, filled: 2, missed: 0 }), null);
   assert.equal(notVerified({ clicked: 1 }), null, 'a result with no verified field is clean');
   assert.match(notVerified({ verified: false, checked: false, reason: 'the radio is still not selected' }), /radio is still not selected/);
-});
-
-test('relay mirror of batch.js is byte-identical', () => {
-  assert.equal(readFileSync(new URL('../../fast-dxt/server/batch.js', import.meta.url), 'utf8'), readFileSync(new URL('../../fastlink-relay/src/batch.js', import.meta.url), 'utf8'));
 });
 
 test('the summary shows what each step changed, compactly (ids included in the label); a quiet step still says it changed nothing', async () => {

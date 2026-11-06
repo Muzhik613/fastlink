@@ -116,6 +116,18 @@ wrangler secret put MAIL_API_KEY                              # Resend API key
 > `MAIL_API_KEY`. Until that's done, run in **shared mode** (Option A). (auth.js
 > reads `MAIL_API_KEY || RESEND_API_KEY` — standardize on `MAIL_API_KEY`.)
 
+### Feedback admin token (fast_feedback / `GET /admin/feedback`)
+
+```bash
+openssl rand -hex 32 | wrangler secret put FEEDBACK_ADMIN_TOKEN
+```
+
+Unset → `/admin/feedback` answers 404 (fast_feedback still stores rows). The
+reader sends `Authorization: Bearer <FEEDBACK_ADMIN_TOKEN>`. Migration
+`0007_agents_feedback.sql` (agent tokens + feedback) must be applied before the
+Worker that uses it is deployed. Local dev: put the value in `.dev.vars`
+(gitignored).
+
 ### Optional — operator eval (tasks #9/#10)
 
 Optional var `OPERATOR_EMAIL` (magic-link mode) marks one email `is_operator=1`,

@@ -1,18 +1,20 @@
 // relayClient.js — outbound WSS client to the FastLink cloud relay's /ext endpoint.
 //
-// This is the cloud counterpart to connection.js. Where connection.js dials the
-// localhost broker (ws://127.0.0.1:PORT) so a local MCP server can drive the
-// tab, this module dials OUT over WSS to the multi-tenant Cloudflare relay so
-// claude.ai on the web drives THIS user's browser. The relay's Durable Object
-// is the WebSocket *server*; the extension is the *client*.
+// The relay is FastLink's only transport: every client (claude.ai, Grok, the
+// per-session fastlink helper for Claude Code) reaches this browser through it.
+// The extension dials OUT over WSS to the relay's Durable Object, which is the
+// WebSocket *server*; the extension is the *client*.
 //
 // Auth: a long-lived deviceToken (minted once via POST /pair/claim — see
 // claimPairingCode below) is presented in the upgrade URL query string. Browsers
 // cannot set custom headers on a WebSocket handshake, so the token rides the URL.
 //
 // Wire protocol (fastlink-relay/SPEC.md §3d, §5a):
-//   inbound   {type:'call', id, action, args}   -> dispatchAction(action, args)
-//   outbound  {type:'result', id, ...reply}       (reply = {result} | {error, ...extras})
+//   inbound   {type:'call', id, action, args}   -> per-tab queue (tabQueue.js) -> dispatchAction
+//   outbound  {type:'queued', id, position}     the call waits behind another on its tab
+//             {type:'started', id}              the call left its queue and runs
+//             {type:'result', id, origin, tabId, ...reply}  (reply = {result} | {error, ...extras}),
+//             sent on the CURRENT live socket (replySender.js), held ≤10 s if none is open
 //   keepalive: the ext SENDS {"ping":true} every 20s; the DO auto-responds
 //              {"pong":true} WITHOUT waking from hibernation (exact string match
 //              via setWebSocketAutoResponse). So the ping must be EXACTLY
@@ -20,11 +22,14 @@
 //   on open:  {type:'hello', version} — diagnostics only; auth is the URL token.
 //   close 4401: device token rejected/revoked -> clear token, stop, prompt re-pair.
 //
-// Lifecycle mirrors connection.js: a 30s chrome.alarms tick survives MV3 service-
-// worker death, plus capped exponential backoff for fast reconnects while alive.
+// Lifecycle: a 30s chrome.alarms tick survives MV3 service-worker death, plus
+// capped exponential backoff for fast reconnects while alive.
 // background.js registers the alarm/window listeners synchronously and delegates
 // to the handlers returned by startRelayConnection (MV3 requires synchronous
 // listener registration so a fired alarm can revive a dead worker).
+
+import { createTabQueue } from './tabQueue.js';
+import { createReplySender } from './replySender.js';
 
 const RECONNECT_ALARM = 'fastlink-relay-reconnect';
 const PING_MS = 20_000;
@@ -52,12 +57,6 @@ const redact = (s) =>
   String(s).replace(/(token=)([^&\s]+)/gi, (_, k, v) => `${k}${v.slice(0, 4)}***`);
 const VERSION = (() => { try { return chrome.runtime.getManifest().version; } catch { return '0'; } })();
 
-const ICONS = {
-  green:  { 16: 'icons/icon-green-16.png',  32: 'icons/icon-green-32.png',  48: 'icons/icon-green-48.png',  128: 'icons/icon-green-128.png' },
-  yellow: { 16: 'icons/icon-yellow-16.png', 32: 'icons/icon-yellow-32.png', 48: 'icons/icon-yellow-48.png', 128: 'icons/icon-yellow-128.png' },
-  red:    { 16: 'icons/icon-red-16.png',    32: 'icons/icon-red-32.png',    48: 'icons/icon-red-48.png',    128: 'icons/icon-red-128.png' },
-};
-
 let socket = null;
 let pingTimer = null;
 let reconnectTimer = null;
@@ -65,13 +64,13 @@ let backoffMs = BACKOFF_MIN_MS;
 let connectStartedAt = 0;  // when the current socket entered CONNECTING
 let lastRxTs = 0;          // last inbound frame (proof the path is alive)
 let cfg = null;            // { wssUrl, deviceToken }
-let dispatch = null;       // dispatchAction
+let queue = null;          // per-tab FIFO in front of dispatchAction (tabQueue.js)
 let stopped = false;       // set on auth failure — no reconnect until the user re-pairs
-// State reporter injected by background.js. When two transports run at once,
-// background is the SOLE owner of the toolbar icon and `fastlinkConn` storage
-// (so local + relay don't clobber each other). Falls back to driving them
-// directly if no reporter is supplied (standalone use).
+// State reporter injected by background.js, the sole owner of the toolbar icon
+// and `fastlinkConn` storage.
 let report = null;         // (payload:{state}) => void
+// Results go out on the live socket, never only the one the call arrived on.
+const replies = createReplySender({ getCurrent: () => socket });
 
 // Mirror of the user "Stop" pause flag (chrome.storage.session). Re-asserted in
 // the hello frame on every (re)connect so the relay DO converges its DURABLE
@@ -86,10 +85,12 @@ try {
   });
 } catch {}
 
-// Start the relay transport. Returns handler hooks for background.js to wire to
-// the synchronously-registered alarm/window listeners.
-export function startRelayConnection(handle, { wssUrl, deviceToken, onState } = {}) {
-  dispatch = handle;
+// Start the relay transport. `handle(action, args)` runs one call;
+// `resolveTabId()` names the current target tab (the queue key for calls without
+// args.tabId). Returns handler hooks for background.js to wire to the
+// synchronously-registered alarm/window listeners.
+export function startRelayConnection(handle, { wssUrl, deviceToken, onState, resolveTabId } = {}) {
+  queue = createTabQueue({ run: handle, resolveTabId, send: (f) => replies.sendProgress(f) });
   cfg = { wssUrl, deviceToken };
   report = onState || null;
   stopped = false;
@@ -114,9 +115,9 @@ async function connect() {
   if (stopped) return;
   if (socket && socket.readyState === WebSocket.OPEN) return;
   if (socket && socket.readyState === WebSocket.CONNECTING && Date.now() - connectStartedAt < CONNECT_TIMEOUT_MS) return;
-  // Only hold the relay socket open when this profile actually has a window —
-  // mirrors connection.js so a windowless, alarm-kept-alive worker doesn't claim
-  // the user's relay slot with no tab to serve.
+  // Only hold the relay socket open when this profile actually has a window, so
+  // a windowless, alarm-kept-alive worker doesn't hold the relay connection with
+  // no tab to serve.
   if (!await hasAnyWindow()) return;
   if (!cfg?.wssUrl || !cfg?.deviceToken) return;
   recycle();   // drop any stale/zombie socket before dialing a fresh one
@@ -140,6 +141,7 @@ async function connect() {
     backoffMs = BACKOFF_MIN_MS;                       // healthy connection — reset backoff
     lastRxTs = Date.now();
     try { ws.send(JSON.stringify({ type: 'hello', version: VERSION, drivingPaused })); } catch {}
+    replies.flush();                                  // results finished while no socket was open
     startPingLoop(ws);
     setBadgeForState('connected');
   };
@@ -186,16 +188,10 @@ async function onMessage(ws, e) {
     } catch {}
     return;
   }
-  // Relay sends {type:'call', id, action, args}. Be lenient and also accept a
-  // broker-style {id, action} with no type, so the same handler is transport-agnostic.
-  const isCall = msg.type === 'call' || (msg.type == null && msg.action && msg.id != null);
-  if (!isCall) return;                               // events/hello/result-echo/etc. — ignore inbound
-  let reply;
-  try { reply = await dispatch(msg.action, msg.args || {}); }
-  catch (err) { reply = { error: err?.message || String(err) }; }
-  // Spread reply so {result} or {error, ...extras} reach the relay verbatim,
-  // exactly as the local broker router expects.
-  try { ws.send(JSON.stringify({ type: 'result', id: msg.id, ...reply })); } catch {}
+  if (msg.type !== 'call' || msg.id == null || !msg.action) return;   // events/hello/etc. — ignore inbound
+  const reply = await queue.submit({ id: msg.id, action: msg.action, args: msg.args || {} });
+  // Spread reply so {result} or {error, ...extras} (plus origin/tabId) reach the relay verbatim.
+  replies.sendResult({ type: 'result', id: msg.id, ...reply }, ws);
 }
 
 function scheduleReconnect() {
@@ -266,7 +262,7 @@ async function disconnectIfIdle() {
   if (await hasAnyWindow()) return;
   if (socket) try { socket.close(); } catch {}
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  // Drop the alarm so a windowless worker can die and free the relay slot;
+  // Drop the alarm so a windowless worker can die and free the relay connection;
   // chrome.windows.onCreated re-arms it when a window reappears.
   chrome.alarms.clear(RECONNECT_ALARM);
 }
@@ -302,32 +298,16 @@ function hasAnyWindow() {
   });
 }
 
-// Report this transport's state. Prefer the injected reporter (background owns
-// the shared icon + storage when both transports run); otherwise drive the icon
-// + storage directly so standalone use still works.
-// connecting → yellow, connected → green, disconnected/auth → red.
+// Report this transport's state to background.js (icon + `fastlinkConn` owner).
 function setBadgeForState(state) {
-  if (report) { report({ state }); return; }
-  const color = state === 'connected' ? 'green' : state === 'connecting' ? 'yellow' : 'red';
-  const titles = {
-    connected:    'FastLink — cloud relay connected',
-    connecting:   'FastLink — connecting to cloud relay…',
-    disconnected: 'FastLink — cloud relay disconnected (reconnecting)',
-    auth:         'FastLink — relay unpaired; re-pair in options',
-  };
-  try {
-    chrome.action.setIcon({ path: ICONS[color] });
-    chrome.action.setTitle({ title: titles[state] || titles.disconnected });
-  } catch {}
-  // Mirror state into storage so the toolbar popup can show live relay status.
-  try { chrome.storage.local.set({ fastlinkConn: { relay: { enabled: true, state } } }); } catch {}
+  report?.({ state });
 }
 
 // ---------------------------------------------------------------------------
 // Pairing (HTTPS, one-time): exchange a short human code for a durable device
 // token. Called from the options page. On success, stores the relay config in
-// chrome.storage.local and flips fastlinkMode to 'relay'. The caller should then
-// chrome.runtime.reload() so the worker re-reads config and dials the relay.
+// chrome.storage.local. The caller then messages background
+// ('fastlink:relay-paired') to dial the relay live.
 // ---------------------------------------------------------------------------
 export async function claimPairingCode(code, relayBase) {
   const base = (String(relayBase || '').trim() || DEFAULT_RELAY_BASE).replace(/\/+$/, '');
@@ -519,17 +499,14 @@ function randomPollId() {
 }
 
 // Shared storage-write tail for ALL pairing paths (manual code + web-auth + tab-poll).
-// Writes the relay config and flips BOTH transports on (local broker stays up
-// for the CLI; relay runs for claude.ai). Clears any stale auth-error banner.
+// Writes the relay config, enables the relay, and clears any stale auth-error banner.
 async function persistRelayPairing({ deviceToken, base, wssUrl, userId }) {
   await chrome.storage.local.set({
-    fastlinkMode: 'relay',
     deviceToken,
     relayBase: base,
     relayWssUrl: wssUrl,
     relayUserId: userId || null,
     relayAuthError: null,
-    localEnabled: true,
     relayEnabled: true,
   });
 }

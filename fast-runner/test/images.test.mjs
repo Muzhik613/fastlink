@@ -2,7 +2,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { keepNewestImage, DROPPED_IMAGE, buildTools, loadToolset } from '../runner.mjs';
-import { TOOLS } from '../../fast-dxt/server/tools.js';
+import { TOOLS as RELAY_TOOLS } from '../../fastlink-relay/tools.js';
+import { withoutBrowserArg } from '../relay-transport.mjs';
+
+const TOOLS = RELAY_TOOLS.map(withoutBrowserArg);   // the list the runner gets from the relay transport
 
 const img = (n) => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: `IMG${n}`.padEnd(64, 'x') } });
 const turn = (id, blocks) => ({ role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: blocks }] });

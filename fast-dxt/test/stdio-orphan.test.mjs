@@ -1,17 +1,15 @@
 // node --test — a stdio MCP server must die with its parent, however the parent dies.
 // Real processes, no mocks: a parent spawns server/index.js on a stdio pipe, the test
-// SIGKILLs the parent (no cleanup handler can run), and the orphaned server must be
+// SIGKILLs the parent (no cleanup handler can run), and the orphaned helper must be
 // gone within a few seconds. hvm 2026-09-16: 350 orphans, 10.5 GB, before this held.
-//
-// Isolation: FASTLINK_BROKER_PORT points at a throwaway WebSocket server this test
-// owns, so the child's startup getStatus() connects there — it never reaches the live
-// broker on 9870 and never spawns a detached broker of its own.
+// FASTLINK_AGENT_FILE points at a missing file, so the helper runs unpaired and never
+// touches a relay.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { WebSocketServer } from 'ws';
+import { tmpdir } from 'node:os';
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), '..', 'server', 'index.js');
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -21,22 +19,17 @@ const waitFor = async (pred, ms) => {
   return pred();
 };
 
-test('a stdio server exits when its parent is SIGKILLed', async (t) => {
-  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
-  await new Promise((r) => wss.on('listening', r));
-  let connected = false;
-  wss.on('connection', () => { connected = true; });   // accept, never answer: no broker needed
-  t.after(() => wss.close());
-
+test('a stdio helper exits when its parent is SIGKILLed', async (t) => {
   const parentSrc = `
     const { spawn } = require('node:child_process');
     const c = spawn(process.execPath, [${JSON.stringify(SERVER)}], { stdio: ['pipe', 'pipe', 'ignore'], env: process.env });
-    process.stdout.write(String(c.pid) + '\\n');
+    c.stdout.once('data', () => process.stdout.write(String(c.pid) + '\\n'));
+    c.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }) + '\\n');
     setInterval(() => {}, 1 << 30);
   `;
   const parent = spawn(process.execPath, ['-e', parentSrc], {
     stdio: ['ignore', 'pipe', 'inherit'],
-    env: { ...process.env, FASTLINK_BROKER_PORT: String(wss.address().port), FASTLINK_HTTP: '', FASTLINK_HOTRELOAD: '' },
+    env: { ...process.env, FASTLINK_AGENT_FILE: join(tmpdir(), `fastlink-orphan-test-${process.pid}-missing.json`) },
   });
   const childPid = await new Promise((resolve, reject) => {
     let buf = '';
@@ -45,9 +38,7 @@ test('a stdio server exits when its parent is SIGKILLed', async (t) => {
   });
   t.after(() => { if (alive(childPid)) process.kill(childPid, 'SIGKILL'); if (alive(parent.pid)) process.kill(parent.pid, 'SIGKILL'); });
 
-  assert.ok(await waitFor(() => connected, 10_000), 'server started and dialed the (fake) broker');
-  assert.ok(alive(childPid), 'server stays up while its parent lives');
-
+  assert.ok(alive(childPid), 'helper is up and answered ping while its parent lives');
   process.kill(parent.pid, 'SIGKILL');
-  assert.ok(await waitFor(() => !alive(childPid), 5_000), `server pid ${childPid} outlived its SIGKILLed parent`);
+  assert.ok(await waitFor(() => !alive(childPid), 5_000), `helper pid ${childPid} outlived its SIGKILLed parent`);
 });

@@ -1,12 +1,12 @@
 // node --test — every write reports what changed on the form (fast-ext/src/actions/page.js
-// formState / diffFormState, the REAL page.js in jsdom; batch summary via fast-dxt/server/batch.js).
+// formState / diffFormState, the REAL page.js in jsdom; batch summary via fastlink-relay/src/batch.js).
 // Live misses: a picked image discarded when its picker panel closed (Oracle), a resource group
 // typed but never applied (Azure) — every result said ok.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
-import { runBatch } from '../../fast-dxt/server/batch.js';
+import { runBatch } from '../../fastlink-relay/src/batch.js';
 
 const PAGE_JS = readFileSync(new URL('../../fast-ext/src/actions/page.js', import.meta.url), 'utf8');
 function page(extraRows = '') {

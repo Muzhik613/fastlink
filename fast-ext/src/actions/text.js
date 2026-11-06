@@ -3,6 +3,7 @@ import { injectInTab } from '../util.js';
 export async function getText(args = {}) {
   const r = await injectInTab({
     world: 'ISOLATED',
+    tabId: args.tabId,
     func: extractText,
     args: [args.selector || null, args.maxLen || null, !!args.html],
   });

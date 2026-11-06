@@ -8,6 +8,8 @@
 //   GET      /authorize/callback   — upstream IdP (Google) redirect target
 //   GET/POST /pair/new             — a logged-in human mints a one-time pairing code
 //   POST     /pair/claim           — the extension exchanges a code for a device token
+//   POST     /agent/pair           — the fast-dxt helper exchanges a code for an agent token (fla_…)
+//   GET      /admin/feedback       — operator read of fast_feedback rows (FEEDBACK_ADMIN_TOKEN)
 //   *        /ext                  — WSS upgrade; resolve device token -> user's DO
 //   GET      /  /health            — health check
 //
@@ -72,6 +74,10 @@ export function makeDefaultHandler() {
             return handlePairNew(request, env);
           case '/pair/claim':
             return handlePairClaim(request, env);
+          case '/agent/pair':
+            return handleAgentPair(request, env);
+          case '/admin/feedback':
+            return handleAdminFeedback(request, env);
           case '/ext/authorize':
             return handleExtAuthorize(request, env);
           case '/ext/authorize/wait':
@@ -349,11 +355,7 @@ async function completeOAuth(env, oauthReqInfo, userId) {
     userId: String(userId),
     scope: OAUTH_SCOPE,
     metadata: { ts: Date.now() },
-    // `cid` = the OAuth client (chat product) this grant belongs to. Props ride
-    // through token refreshes, so index.js can hand the DO a client identity that
-    // is STABLE across refreshes and across clients that re-`initialize` on every
-    // tool call — that's what keys a per-product browser selection (fast_profile).
-    props: { userId: String(userId), idm: identityMode(env), cid: String(oauthReqInfo?.clientId || '') },
+    props: { userId: String(userId), idm: identityMode(env) },
   });
   return Response.redirect(redirectTo, 302);
 }
@@ -512,6 +514,65 @@ async function handlePairClaim(request, env) {
 }
 
 // ===========================================================================
+// /agent/pair — the fast-dxt helper exchanges a pairing code for an agent token.
+// Same codes as /pair/claim (single-use, 10-min TTL) and the SAME rate-limit
+// bucket, so offering two claim endpoints doesn't double the brute-force budget.
+//   POST { code, name? } -> { agentToken: 'fla_…' }   (only its sha256 is stored)
+// The token authenticates /mcp only (index.js resolveAgentToken).
+// ===========================================================================
+const AGENT_LABEL_MAX = 64;
+
+async function handleAgentPair(request, env) {
+  if (request.method !== 'POST') return jsonResponse({ error: 'method_not_allowed' }, 405);
+
+  const rl = await ipRateLimit(env, request, 'claim', PAIR_CLAIM_IP_LIMIT, RL_WINDOW_SEC);
+  if (!rl.allowed) return jsonResponse({ error: 'rate_limited', retryAfter: rl.retryAfterSec }, 429);
+
+  let body;
+  try { body = await request.json(); } catch { return jsonResponse({ error: 'invalid_json' }, 400); }
+  const code = normalizeCode(body && body.code);
+  if (!code) return jsonResponse({ error: 'invalid_or_expired_code' }, 400);
+
+  const claim = await db.claimPairingCode(env.DB, code);
+  if (!claim) return jsonResponse({ error: 'invalid_or_expired_code' }, 400);
+
+  const label = String((body && body.name) || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, AGENT_LABEL_MAX) || null;
+  const agentToken = 'fla_' + randomToken();
+  await db.createAgent(env.DB, claim.userId, agentToken, label);
+  await db.logAudit(env.DB, claim.userId, 'agent_pair', { label });
+  return jsonResponse({ agentToken });
+}
+
+// ===========================================================================
+// /admin/feedback — operator read of fast_feedback rows. Read-only.
+//   GET ?after=<id>&limit=<≤100>  Authorization: Bearer <FEEDBACK_ADMIN_TOKEN>
+//   -> { items:[{id,user_id,email,browser,client,kind,text,ts}], last:<id> }
+// 404 when the secret is unset, so the endpoint doesn't exist until configured.
+// ===========================================================================
+const FEEDBACK_PAGE_MAX = 100;
+
+async function handleAdminFeedback(request, env) {
+  const secret = env.FEEDBACK_ADMIN_TOKEN;
+  if (!secret) return new Response('not found', { status: 404 });
+  if (request.method !== 'GET') return jsonResponse({ error: 'method_not_allowed' }, 405);
+  const auth = request.headers.get('Authorization') || '';
+  const presented = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (!timingSafeEqual(presented, secret)) {
+    return new Response(JSON.stringify({ error: 'unauthorized' }), {
+      status: 401, headers: { 'content-type': 'application/json', 'WWW-Authenticate': 'Bearer' },
+    });
+  }
+  const url = new URL(request.url);
+  const after = Math.max(0, parseInt(url.searchParams.get('after') || '0', 10) || 0);
+  const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || String(FEEDBACK_PAGE_MAX), 10) || FEEDBACK_PAGE_MAX, 1), FEEDBACK_PAGE_MAX);
+  const items = await db.listFeedback(env.DB, after, limit);
+  // Not CORS-open: the consumer is a server-side poller.
+  return new Response(JSON.stringify({ items, last: items.length ? items[items.length - 1].id : after }), {
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  });
+}
+
+// ===========================================================================
 // /consent — per-origin consent grant/revoke (SIGNUP-SPEC §4.2). relay-auth OWNS
 // this endpoint; hardening owns the ENFORCEMENT gate in mcp.js (which READS the
 // site_consent rows this writes). Device-token-authed (the extension already holds
@@ -606,7 +667,7 @@ async function handleTrace(request, env) {
 // parameter), so a device token can only read/rename devices on its own account.
 //   GET  ?deviceToken=...                -> { self, default, devices:[{name,connected,lastSeen,self,deviceToken(masked)}] }
 //   POST { deviceToken, name }           -> rename THIS browser (unique per user; a clash is an error)
-//   POST { deviceToken, makeDefault:bool}-> make THIS browser the account default (used by clients that never call fast_profile)
+//   POST { deviceToken, makeDefault:bool}-> make THIS browser the account default (where calls without `browser` go)
 // ===========================================================================
 async function handleDevices(request, env) {
   if (request.method === 'OPTIONS') return corsPreflight();

@@ -2,5 +2,5 @@
   "name": "fastlink-bench",
   "private": true,
   "type": "module",
-  "description": "FastLink chat-client benchmark harness. Runs from the repo checkout; resolves fast-dxt deps via fast-dxt/node_modules."
+  "description": "FastLink benchmark suite (test definitions + report over bench/results*.jsonl). The cell runner (run.js, score.js, fastlink.js, monitor.js, rig.js, drive-*.js, hvm-*.sh) drove Chrome in-process through the local broker and was deleted with it on 2026-11-06; a new runner would talk to the helper (fast-dxt/server/index.js) over MCP stdio."
 }

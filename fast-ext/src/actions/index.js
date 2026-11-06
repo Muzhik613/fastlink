@@ -5,7 +5,7 @@ import { evaluate }        from './evaluate.js';
 import { clickXY, typeText } from './input.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
-import { isInjectableUrl } from '../util.js';
+import { isInjectableUrl, missingTabError } from '../util.js';
 
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_list', 'fast_close', 'fast_switch']);
 const PAGE_ACTIONS = new Set([
@@ -92,8 +92,7 @@ function slimResult(r, depth = 0) {
 // ---------------------------------------------------------------------------
 // User "Stop" pause gate (SAFETY N2 kill-switch). The popup's Stop button sets
 // chrome.storage.session['fastlink.drivingPaused']; while true, EVERY action is
-// refused at this last line before the browser acts (covers BOTH transports —
-// local broker + relay — and is instant). Cached in a module var and kept fresh
+// refused at this last line before the browser acts (instant, every client). Cached in a module var and kept fresh
 // via storage.onChanged so the hot path never awaits a storage read.
 // ---------------------------------------------------------------------------
 const PAUSE_KEY = 'fastlink.drivingPaused';
@@ -104,27 +103,39 @@ try {
     if (area === 'session' && changes[PAUSE_KEY]) drivingPaused = !!changes[PAUSE_KEY].newValue;
   });
 } catch {}
-// Fire-and-forget overlay notification. Never blocks the action path: it routes
-// through getTargetTabId() (the single source of truth) without await and
-// swallows errors (overlay missing on chrome:// pages, etc.). The overlay must
-// render on the tab Claude is DRIVING, not whatever tab the user is looking at
-// — so it uses the same target resolution as the actions themselves.
-function notifyOverlay(payload) {
-  getTargetTabId().then((id) => {
-    if (id == null) return;
-    try { chrome.tabs.sendMessage(id, { fastlink: 'event', ...payload }, () => void chrome.runtime.lastError); } catch {}
-  }).catch(() => {});
+// Fire-and-forget overlay notification on the tab the call DRIVES (not whatever
+// tab the user is looking at). Never blocks the action path; swallows errors
+// (overlay missing on chrome:// pages, etc.).
+function notifyOverlay(tabId, payload) {
+  if (typeof tabId !== 'number') return;
+  try { chrome.tabs.sendMessage(tabId, { fastlink: 'event', ...payload }, () => void chrome.runtime.lastError); } catch {}
 }
 
-export async function dispatchAction(action, args) {
+// Actions that resolve their own tab: the tab actions (fast_tab opens one,
+// fast_switch/fast_close find one, fast_list reads all) and fast_screenshot,
+// which defaults to the user's FOREGROUND tab. Every other action acts on one page.
+const SELF_TARGETING = new Set([...TAB_ACTIONS, 'fast_screenshot']);
+
+export async function dispatchAction(action, rawArgs) {
+  let args = rawArgs || {};
   // Hard stop: the user paused driving from the popup. Refuse every action with
   // a clear, Claude-relayable message until they resume. Checked before the
   // action runs so nothing touches the page while paused.
   if (drivingPaused) {
-    return await withOrigin({ error: 'Paused by the user — driving is stopped. Resume it from the FastLink popup to continue.' });
+    return await stampTab({ error: 'Paused by the user — driving is stopped. Resume it from the FastLink popup to continue.' }, args.tabId);
+  }
+  // The page a call acts on is fixed ONCE here: the call's own `tabId`
+  // (PIN-REDESIGN §3 — the global target is left alone), else the current target
+  // tab. Every step of the call (frames, waits, companion screenshot) then reads
+  // args.tabId, so a parallel call that re-pins the target mid-flight can't
+  // divert it.
+  if (!SELF_TARGETING.has(action) && typeof args.tabId !== 'number') {
+    const id = await getTargetTabId();
+    if (typeof id === 'number') args = { ...args, tabId: id };
   }
   const evtId = ++__evtSeq;
-  notifyOverlay({ phase: 'start', id: evtId, action, args });
+  const overlayTab = typeof args.tabId === 'number' ? args.tabId : await getTargetTabId();
+  notifyOverlay(overlayTab, { phase: 'start', id: evtId, action, args });
   try {
     // card numbers are masked to their last 4 digits in every result (frames.js)
     const tRun = Date.now();
@@ -134,8 +145,8 @@ export async function dispatchAction(action, args) {
     if (r && typeof r === 'object' && r._debug && typeof r._debug === 'object') r._debug = { ...r._debug, swTotalMs: Date.now() - tRun };
     // Pass error payloads through whole — diagnostics/available/etc. must survive to the LLM.
     if (r && typeof r === 'object' && 'error' in r && r.error !== undefined) {
-      notifyOverlay({ phase: 'end', id: evtId, ok: false, error: r.error });
-      return await withOrigin(r);
+      notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: r.error });
+      return await stampTab(r, actedTabId(r, args));
     }
     let result = r;
     if (args?.screenshot && typeof result === 'object' && result !== null) {
@@ -144,36 +155,47 @@ export async function dispatchAction(action, args) {
         // the action DROVE (the pinned/driven tab — backgrounded in relay mode),
         // not the user's foreground tab. preferTarget keeps that pin-aware capture;
         // only the standalone fast_screenshot tool defaults to the foreground tab.
-        const shot = await takeScreenshot({ format: args.screenshotFormat, preferTarget: true });
+        const shot = await takeScreenshot({ format: args.screenshotFormat, preferTarget: true, tabId: args.tabId });
         if (shot?.dataUrl) result.screenshot = shot;
       } catch (e) {
         result.screenshotError = e?.message || String(e);
       }
     }
-    notifyOverlay({ phase: 'end', id: evtId, ok: true });
-    return await withOrigin({ result });
+    notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: true });
+    return await stampTab({ result }, actedTabId(result, args));
   } catch (e) {
     const msg = e?.message || String(e);
-    notifyOverlay({ phase: 'end', id: evtId, ok: false, error: msg });
-    return await withOrigin({ error: msg });
+    notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: msg });
+    return await stampTab({ error: msg }, args.tabId);
   }
 }
 
-// Stamp the authoritative active-tab origin onto every action-result envelope
-// (SIGNUP-SPEC §5.2). The relay caches this as `lastOrigin` and the per-origin
-// consent gate + audit log consult it; it also closes the eval-TOCTOU gap (the
-// origin is captured from the SAME target resolution the action ran against).
-// Best-effort: never let origin resolution fail an action — omit it on error.
-async function withOrigin(envelope) {
+// The tab a call actually acted on: the one its result names (fast_tab's new tab,
+// fast_switch's target, fast_close's closed tab, a screenshot's captured tab),
+// else the call's own tab.
+function actedTabId(r, args) {
+  if (r && typeof r === 'object' && typeof r.tabId === 'number') return r.tabId;
+  return args.tabId;
+}
+
+// Stamp `tabId` and `origin` of the tab ACTED ON onto every result envelope
+// (PIN-REDESIGN §2; SIGNUP-SPEC §5.2). The relay caches the origin per device for
+// the per-origin consent gate + audit log; reading it from the same tab the
+// action ran against closes the eval-TOCTOU gap. With no known tab (fast_list,
+// a released pin) the current target tab is stamped. Best-effort: never let
+// origin resolution fail an action — omit it on error (a closed tab has none).
+async function stampTab(envelope, tabId) {
   try {
-    const tab = await getTargetTab();
+    const tab = typeof tabId === 'number' ? await getTargetTab(tabId) : await getTargetTab();
+    const id = typeof tabId === 'number' ? tabId : tab?.id;
+    if (typeof id === 'number') envelope.tabId = id;
     if (tab?.url && /^https?:/.test(tab.url)) envelope.origin = new URL(tab.url).origin;
   } catch {}
   return envelope;
 }
 
 async function runOne(action, args) {
-  if (action === 'fast_tab' || action === 'fast_nav') return withLandedSnapshot(await handleTabAction(action, args), args || {});
+  if (action === 'fast_tab' || action === 'fast_nav') return withLandedSnapshot(await handleTabAction(action, args), args);
   if (TAB_ACTIONS.has(action))      return handleTabAction(action, args);
   if (action === 'fast_screenshot') return takeScreenshot(args);
   if (action === 'fast_text')       return getText(args);
@@ -185,13 +207,13 @@ async function runOne(action, args) {
   // inside them, results come back in top-page space
   if (action === 'fast_snapshot') {
     const a = args || {};
-    return capRead(await snapshotWithFrames(await frameCtx(), a), a.full ? READ_MAX_FULL : READ_MAX, { full: !!a.full });
+    return capRead(await snapshotWithFrames(await frameCtx(a.tabId), a), a.full ? READ_MAX_FULL : READ_MAX, { full: !!a.full });
   }
-  if (FRAME_AWARE.has(action)) { const ctx = await frameCtx(); return withAppeared(ctx, await actWithFrames(ctx, action, args || {})); }
+  if (FRAME_AWARE.has(action)) { const ctx = await frameCtx(args.tabId); return withAppeared(ctx, await actWithFrames(ctx, action, args)); }
   // fast_scroll {frame}: scroll inside one visible frame (its document or a scroller in it)
-  if (action === 'fast_scroll' && args?.frame) return inNamedFrame(await frameCtx(), 'fast_scroll', args);
+  if (action === 'fast_scroll' && args?.frame) return inNamedFrame(await frameCtx(args.tabId), 'fast_scroll', args);
   // fast_wait {frame}: a wait scoped to one visible frame (text or selector)
-  if (action === 'fast_wait' && args?.frame) { const ctx = await frameCtx(); return withAppeared(ctx, await inNamedFrame(ctx, 'fast_wait', args)); }
+  if (action === 'fast_wait' && args?.frame) { const ctx = await frameCtx(args.tabId); return withAppeared(ctx, await inNamedFrame(ctx, 'fast_wait', args)); }
   if (action === 'fast_wait' && args?.text && !args?.selector) {
     // A text wait searches the top document (page.js) AND every rendered
     // sub-frame, cross-origin included (frames.js). With networkIdle/domready
@@ -199,17 +221,17 @@ async function runOne(action, args) {
     // out forever): resolve on it and REPORT the network state.
     const idle = !!(args.networkIdle || args.domready);
     const a = { ...args, timeoutMs: args.timeoutMs || (idle ? 10000 : 5000) };
-    const ctx = await frameCtx();
-    let r = await waitTextAnyFrame(a, () => injectPageAction('fast_wait', a), { cancelTop: cancelPageWaits });
+    const ctx = await frameCtx(a.tabId);
+    let r = await waitTextAnyFrame(a, () => injectPageAction('fast_wait', a), { cancelTop: () => cancelPageWaits(ctx.tabId) });
     r = await withFrameHitSnapshot(ctx, r, a);   // a hit in a frame carries that frame's items
-    if (idle && r && typeof r === 'object' && !r.error) { const pending = await pendingNow(); r = { ...r, networkIdle: pending === 0, pending }; }
+    if (idle && r && typeof r === 'object' && !r.error) { const pending = await pendingNow(ctx.tabId); r = { ...r, networkIdle: pending === 0, pending }; }
     return withAppeared(ctx, r);
   }
   if (action === 'fast_wait' && (args?.networkIdle || args?.domready)) {
     // selector + networkIdle: the selector is the signal, the network state is reported
     if (args.selector) {
       const r = await injectPageAction('fast_wait', { ...args, timeoutMs: args.timeoutMs || 10000 });
-      if (r && typeof r === 'object' && !r.error) { const pending = await pendingNow(); return { ...r, networkIdle: pending === 0, pending }; }
+      if (r && typeof r === 'object' && !r.error) { const pending = await pendingNow(args.tabId); return { ...r, networkIdle: pending === 0, pending }; }
       return r;
     }
     return waitForNetworkIdle(args);
@@ -221,9 +243,10 @@ async function runOne(action, args) {
 const FRAME_AWARE = new Set(['fast_click', 'fast_fill', 'fast_select_option']);
 // fast_tab / fast_nav return the page they landed on: the same bounded preview an
 // action carries, visible frames' items included, so the first read is not a separate call.
+// The snapshot reads the tab the action landed on (r.tabId), not the global target.
 async function withLandedSnapshot(r, args) {
   if (!r || typeof r !== 'object' || r.error || args.noSnapshot === true || args.noSnapshot === 'true') return r;
-  const snap = await snapshotWithFrames(await frameCtx(), { autoCap: true, ...(args.full ? { full: true } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) });
+  const snap = await snapshotWithFrames(await frameCtx(r.tabId), { autoCap: true, ...(args.full ? { full: true } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) });
   if (!snap || snap.error) return r;
   return { ...r, ...(snap.url ? { url: snap.url } : {}), snapshot: snap };
 }
@@ -234,20 +257,21 @@ async function withAppeared(ctx, r) {
   try { line = await framesAppeared(ctx); } catch {}
   return line ? { framesAppeared: line, ...r } : r;
 }
-// The page.js bridge addressed by frame (0 = the top document) on the target tab.
-async function frameCtx() {
-  const target = await getTargetTab();
-  return { tabId: target?.id, topUrl: target?.url || '', run: (frameId, action, a) => injectPageAction(action, a, frameId) };
+// The page.js bridge addressed by frame (0 = the top document) on the call's tab
+// (`tabId`, else the target tab), bound once so every frame step hits that tab.
+async function frameCtx(tabId) {
+  const target = await getTargetTab(tabId);
+  const id = target?.id ?? tabId;
+  return { tabId: id, topUrl: target?.url || '', run: (frameId, action, a) => injectPageAction(action, { ...a, tabId: id }, frameId) };
 }
 
-// Stop page.js's still-running fast_wait polls in the target tab (a sub-frame
-// answered first). Best-effort: a tab that navigated has nothing to stop.
-async function cancelPageWaits() {
-  const target = await getTargetTab();
-  if (!target?.id) return;
+// Stop page.js's still-running fast_wait polls in the tab (a sub-frame answered
+// first). Best-effort: a tab that navigated has nothing to stop.
+async function cancelPageWaits(tabId) {
+  if (typeof tabId !== 'number') return;
   try {
     await chrome.scripting.executeScript({
-      target: { tabId: target.id }, world: 'MAIN',
+      target: { tabId }, world: 'MAIN',
       func: () => (window.__fastlink && window.__fastlink.cancelWaits ? window.__fastlink.cancelWaits() : 0),
     });
   } catch {}
@@ -282,10 +306,10 @@ const MAIN_WORLD_FILES = ['src/actions/page.js'];
 // value, OR a {__injectError} sentinel when executeScript itself throws (tab
 // closed / navigated to a restricted URL mid-flight).
 // Wall-clock deadline on the in-page script: a stuck page action must not
-// outlive the broker/relay's 30s call timeout, or the NEXT call queues behind
-// it. A deadline, not a retry — the caller gets a structured "page busy".
+// outlive the relay's 30s call timeout, or the NEXT call on the tab's queue waits
+// behind it. A deadline, not a retry — the caller gets a structured "page busy".
 const BRIDGE_DEADLINE_MS = 20000;
-const BRIDGE_DEADLINE_MAX_MS = 28000;   // under the broker/relay 30s call limit
+const BRIDGE_DEADLINE_MAX_MS = 28000;   // under the relay's 30s call limit
 async function runBridge(tabId, action, args, frameId = 0) {
   const t0 = Date.now();
   // fast_wait answers at its own timeoutMs; the bridge backstop sits just past it
@@ -342,12 +366,12 @@ async function probePageState(tabId, frameId = 0) {
 }
 
 async function injectPageAction(action, args, frameId = 0) {
-  // Resolve the tab to act on through the single source of truth (pinned target
-  // if set & alive, else the active tab) and inject by explicit id, so
-  // snapshots/clicks/fills land on the tab Claude is driving even when the
-  // user's focus has snapped back to another tab.
-  const target = await getTargetTab();
-  if (!target?.id) return { error: 'No tab to act on (no pinned target and no active tab).' };
+  // Resolve the tab to act on through the single source of truth (the call's own
+  // tabId, else the pinned target if set & alive, else the active tab) and inject
+  // by explicit id, so snapshots/clicks/fills land on the tab Claude is driving
+  // even when the user's focus has snapped back to another tab.
+  const target = await getTargetTab(args?.tabId);
+  if (!target?.id) return { error: typeof args?.tabId === 'number' ? missingTabError(args.tabId) : 'No tab to act on (no pinned target and no active tab).' };
   if (!isInjectableUrl(target.url)) return { error: `Restricted URL: ${target.url}` };
 
   const beforeUrl = target.url;
@@ -355,7 +379,7 @@ async function injectPageAction(action, args, frameId = 0) {
 
   // HEALTH-CHECK / AUTO-REINJECT. After an extension reload the MAIN-world
   // page.js is gone from already-open tabs (window.__fastlink undefined) while
-  // the broker/relay control channel stays UP — so fast_status reads "connected"
+  // the relay control channel stays UP — so fast_status reads "connected"
   // and the tab looks healthy, but page actions would silently no-op (empty
   // snapshot, indexing:true, no error). The bridge reports that as
   // {__fastlinkMissing}; re-inject page.js and retry ONCE so the tab self-heals.

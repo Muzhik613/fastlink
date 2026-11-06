@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMessage, ensureModel, MODEL } from './xai.mjs';
-import { connect } from './fastlink-client.mjs';
+import { connectRelay } from './relay-transport.mjs';
 import { startVisualCheck, startLookCheck, settleShots, takeNotes } from './visual-check.mjs';
 import { startRecording, stopRecording } from './recorder.mjs';
 
@@ -768,20 +768,17 @@ export function loadToolset(spec = process.env.FASTRUN_TOOLSET || 'default') {
 // Server tools that are NEVER model-facing, whatever a toolset says ("*" or an explicit allow).
 // Applied here, after the toolset's own allow-filter, and nowhere else. fast_frame_read is the
 // bench scorer's read of fields inside cross-origin frames (f7f3925); the scorer calls it through
-// its own handler (bench/fastlink.js), never through a runner toolset. fast_ext_reload is an operator
-// tool: a model reloading the extension mid-run tears down its own content scripts and can drop the
-// broker link under its own run; scripts/ship-ext.sh calls it through fastlink-client.mjs callTool,
-// not a toolset. Not fast_evaluate: that is
-// also a scorer instrument, but toolset.phase2-eval.json passes it to the model on purpose (the
-// owner's A/B, bench/hvm-queue-feedback.sh), and phase2/no-cdp already leave it out.
+// its own call, never through a runner toolset. Not fast_evaluate: that is also a scorer instrument,
+// but toolset.phase2-eval.json passes it to the model on purpose (the owner's A/B), and phase2/no-cdp
+// already leave it out.
 // fast_batch: Grok batches by making several tool calls in one response (the loop runs them in order and
 // stops at the first failure). In 129 logged runs Grok called fast_batch 35 times, 2 with ifFound, and ran
 // known chains one call per turn anyway (70d0f59f: Next x3 as three turns). The server keeps fast_batch for
 // other callers; the gate still reads fast_batch rows in older run logs.
-export const HIDDEN_TOOLS = new Set(['fast_frame_read', 'fast_ext_reload', 'fast_batch']);
+export const HIDDEN_TOOLS = new Set(['fast_frame_read', 'fast_batch']);
 
 // The toolset's allow-filter, then HIDDEN_TOOLS. Descriptions come from the server only (one short
-// set in fast-dxt/server/tools.js); a toolset chooses tools, never rewrites them.
+// set in fastlink-relay/tools.js); a toolset chooses tools, never rewrites them.
 export function buildTools(mcpTools, toolset) {
   const allowAll = toolset.allow.includes('*');
   const back = new Map();
@@ -990,9 +987,9 @@ function finish(run, status, fields = {}) {
   Object.assign(run, fields, { status, endedAt: Date.now() });
   closeVisualChecks(run);   // what the model did with each visual check
   // Every terminal path (done/budget/error/cancelled/loop crash) comes through here, so this is where
-  // the MCP client is closed (the local fast-dxt/server child exits with it) and the recording is
+  // the relay MCP session is closed and the recording is
   // stopped and verified. The row, the caller and cancelAll wait for BOTH, so a process that exits
-  // right after never leaves a server behind, and the row carries `video`.
+  // right after never leaves a session open, and the row carries `video`.
   const closed = run.client?.close().catch(() => {});
   return (run.finished = Promise.all([stopRecording(run.id, run.video), closed]).then(([video]) => { run.video = video; writeRow(run, status); notify(run); }));
 }
@@ -1001,7 +998,7 @@ function writeRow(run, status) {
   try {
     mkdirSync(STATE_DIR, { recursive: true });
     appendFileSync(RUNS_FILE, JSON.stringify({
-      run_id: run.id, task: run.task, transport: run.transport, browser: run.browser, model: MODEL,
+      run_id: run.id, task: run.task, browser: run.browser, model: MODEL,
       toolset: run.toolset.name, status, startedAt: new Date(run.startedAt).toISOString(), wallMs: run.endedAt - run.startedAt,
       toolCalls: run.toolLog.length, histogram: histogram(run), toolLog: run.toolLog, turns: run.turns,
       result: run.result, evidence: run.evidence, error: run.error, usage: run.usage, urlTrail: run.urlTrail,
@@ -1158,7 +1155,7 @@ async function loop(run) {
   }
 }
 
-export async function runTask({ task, transport = 'relay', browser, toolset: toolsetSpec, gate: gateSpec, budgets = {}, holdMs = 240_000, onEvent } = {}) {
+export async function runTask({ task, browser, toolset: toolsetSpec, gate: gateSpec, budgets = {}, holdMs = 240_000, onEvent } = {}) {
   if (!task) throw new Error('task required');
   const toolset = loadToolset(toolsetSpec); // throws before any connect on a bad name/path
   const gate = gateMode(gateSpec);
@@ -1170,7 +1167,7 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
   let client, tools, back;
   try {
     await ensureModel();
-    client = await connect({ transport, browser });
+    client = await connectRelay({ browser });
     ({ tools, back } = buildTools(await client.listTools(), toolset));
   } catch (e) {
     await Promise.all([client?.close().catch(() => {}), stopRecording(id, await recording)]);
@@ -1179,7 +1176,7 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
   const video = await recording;
   onEvent?.({ type: 'recording', video });
   const run = {
-    id, video, task, transport, browser, toolset, gate, status: 'running',
+    id, video, task, browser, toolset, gate, status: 'running',
     messages: [{ role: 'user', content: [{ type: 'text', text: `TASK: ${task}` }] }],
     system: buildSystem(),
     tools, back, client, toolLog: [], turns: [], corpus: [], urlTrail: [], gateRefusals: [], gateOverridden: null, gateWouldRefuse: null, unresolvedFailures: null, visualChecks: [], pendingChecks: [], question: null, waiters: [], pendingAnswer: null,
@@ -1193,15 +1190,15 @@ export async function runTask({ task, transport = 'relay', browser, toolset: too
 
 // ONE entry for every caller (caller-mcp.mjs's MCP tools, http.mjs's routes): an operation and its JSON
 // arguments in, a JSON-serializable result out, never a throw. Defaults that are not per call come from
-// env, so a deployment (e.g. a browser container) sets them once: FASTRUN_TRANSPORT (default "relay"),
-// FASTRUN_BROWSER, FASTRUN_TOOLSET, FASTRUN_GATE. `hold_ms` (optional, 0-3,600,000) overrides the 240 s
-// hold of run / answer.
+// env, so a deployment sets them once: FASTRUN_BROWSER (relay browser name; unset = the account
+// default), FASTRUN_TOOLSET, FASTRUN_GATE. `hold_ms` (optional, 0-3,600,000) overrides the 240 s hold
+// of run / answer.
 export async function dispatch(op, a = {}, env = process.env) {
   const holdMs = Number.isFinite(a.hold_ms) ? Math.max(0, Math.min(3_600_000, a.hold_ms)) : undefined;
   const hold = holdMs === undefined ? {} : { holdMs };
   try {
     switch (op) {
-      case 'run': return await runTask({ task: a.task, transport: a.transport || env.FASTRUN_TRANSPORT || 'relay', browser: a.browser || env.FASTRUN_BROWSER || undefined, toolset: a.toolset, gate: a.gate, ...hold });
+      case 'run': return await runTask({ task: a.task, browser: a.browser || env.FASTRUN_BROWSER || undefined, toolset: a.toolset, gate: a.gate, ...hold });
       case 'answer': return await answer(a.run_id, a.answer, hold);
       case 'status': return status(a.run_id);
       case 'cancel': return cancel(a.run_id);

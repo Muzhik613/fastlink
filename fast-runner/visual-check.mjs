@@ -110,18 +110,10 @@ export async function describeWithGrok({ base64, targets, askSeen = false, model
   return { observations: plainObservations(parsed.observations), ...(askSeen ? { seen: seenMap(parsed.seen, targets) } : {}), checkerMs: res?._timing?.latencyMs };
 }
 
-// ONE screenshot, whichever transport: the local server may return {path} or a
-// dataUrl, the relay an MCP image block.
+// ONE screenshot: the relay returns it as an MCP image block.
 export async function screenshotBase64(client) {
   const res = await client.callTool('fast_screenshot', {});
-  for (const c of res?.content || []) {
-    if (c.type === 'image' && c.data) return c.data;
-    if (c.type !== 'text') continue;
-    let o = null;
-    try { o = JSON.parse(c.text); } catch { continue; }
-    if (typeof o?.dataUrl === 'string') return o.dataUrl.replace(/^data:image\/\w+;base64,/, '');
-  }
-  return null;
+  return (res?.content || []).find((c) => c.type === 'image' && c.data)?.data ?? null;
 }
 
 const quoteList = (xs) => xs.map(x => JSON.stringify(x)).join(', ');

@@ -24,7 +24,7 @@ test('no tab size known: the image is left as it is, never guessed', () => {
   assert.deepEqual(cssFrame({ imgW: 2880, imgH: 1530, tabW: undefined, tabH: undefined, zoom: 1 }), { cssWidth: 2880, cssHeight: 1530, dpr: 1 });
 });
 test('both capture paths go through the one resize; no device-pixel helpers remain', () => {
-  assert.match(src, /return await toCssPixels\(shot, await getActiveTab\(\), args\);/);
+  assert.match(src, /return await toCssPixels\(shot, await getActiveTab\(args\.tabId\), args\);/);
   assert.match(src, /return await toCssPixels\(shot, tab, args\);/);
   const util = readFileSync(new URL('../../fast-ext/src/util.js', import.meta.url), 'utf8');
   assert.doesNotMatch(util, /captureVisibleRetry|captureVisiblePinAware/);

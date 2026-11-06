@@ -71,9 +71,9 @@ Manifest reference: `manifest.json` → `permissions`, `host_permissions`.
 
 ### `alarms`
 - **Why:** MV3 service workers are killed aggressively. A periodic alarm
-  (30s) revives the worker to keep the localhost-broker and cloud-relay
-  WebSocket connections alive and to reconnect after the worker is recycled.
-- **Code:** `src/connection.js`, `src/relayClient.js`, `background.js`
+  (30s) revives the worker to keep the cloud-relay WebSocket connection alive
+  and to reconnect after the worker is recycled.
+- **Code:** `src/relayClient.js`, `background.js`
   (`chrome.alarms.create`/`onAlarm`).
 - **Fallback:** None — required for reliable MV3 reconnection.
 

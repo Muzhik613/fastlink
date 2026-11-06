@@ -1,10 +1,13 @@
 import { getTargetTab } from './tab.js';
 import { pendingNetCount } from '../buffers.js';
+import { missingTabError } from '../util.js';
+
+const noTab = (tabId) => (typeof tabId === 'number' ? missingTabError(tabId) : 'No active tab');
 
 // Absolute ceiling on ANY fast_wait, regardless of caller-supplied timeoutMs.
 // True network idle almost never happens on modern ad/tracker-heavy pages — a
 // long-lived analytics beacon / websocket / poll keeps pending > 0 forever — so
-// a wait must NEVER hang the broker. It caps out and resolves with a flag.
+// a wait must NEVER hang the call. It caps out and resolves with a flag.
 const HARD_CAP_MS = 15000;
 
 const capTimeout = (args) =>
@@ -16,8 +19,8 @@ const capTimeout = (args) =>
 // busy site frequently never does. Best-effort: resolves with a flag at the cap,
 // never throws / hangs.
 export async function waitForDomReady(args = {}) {
-  let tab = await getTargetTab();
-  if (!tab) return { error: 'No active tab' };
+  let tab = await getTargetTab(args.tabId);
+  if (!tab) return { error: noTab(args.tabId) };
   const timeoutMs = capTimeout(args);
   const pollMs = 100;
   const start = Date.now();
@@ -26,7 +29,7 @@ export async function waitForDomReady(args = {}) {
       return { ready: true, mode: 'domready', waitedMs: Date.now() - start };
     }
     await new Promise((r) => setTimeout(r, pollMs));
-    tab = await getTargetTab();           // re-read status each poll
+    tab = await getTargetTab(args.tabId); // re-read status each poll
     if (!tab) break;
   }
   return {
@@ -43,15 +46,15 @@ export async function waitForDomReady(args = {}) {
 // asked (so a single fast_wait entry point covers both modes).
 // In-flight request count on the target tab right now (for a text wait that
 // also asked about the network).
-export async function pendingNow() {
-  try { const tab = await getTargetTab(); return tab ? pendingNetCount(tab.id) : null; } catch { return null; }
+export async function pendingNow(tabId) {
+  try { const tab = await getTargetTab(tabId); return tab ? pendingNetCount(tab.id) : null; } catch { return null; }
 }
 
 export async function waitForNetworkIdle(args = {}) {
   if (args.domready && !args.networkIdle) return waitForDomReady(args);
 
-  const tab = await getTargetTab();
-  if (!tab) return { error: 'No active tab' };
+  const tab = await getTargetTab(args.tabId);
+  if (!tab) return { error: noTab(args.tabId) };
   const timeoutMs = capTimeout(args);
   const idleMs    = typeof args.idleMs === 'number' ? args.idleMs : 500;
   const pollMs    = 100;

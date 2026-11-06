@@ -7,8 +7,13 @@ import { resolveTargetTab } from './actions/targetTab.js';
 // captureViaDebugger (call time), after both modules finish initializing.
 import { cdp } from './actions/input.js';
 
-export const getActiveTab = async () => {
-  // Honor the designated target pin first, so every chokepoint that resolves a
+// The tab a call acts on. A call that names its own `tabId` (PIN-REDESIGN §3)
+// gets exactly that tab — undefined if it was closed, never another tab.
+export const getActiveTab = async (tabId) => {
+  if (typeof tabId === 'number') {
+    try { return await chrome.tabs.get(tabId); } catch { return undefined; }
+  }
+  // Without a tabId: honor the designated target pin first, so every chokepoint that resolves a
   // tab through getActiveTab (screenshot, CDP capture, network, waitIdle,
   // buffers, marks, vision) drives the tab Claude pinned — not whatever tab the
   // user's focus has snapped back to. resolveTargetTab returns null (and
@@ -32,15 +37,18 @@ export const getActiveTab = async () => {
 
 export const isInjectableUrl = (url) => /^https?:|^file:/.test(url || '');
 
-export async function getInjectableTab() {
-  const tab = await getActiveTab();
-  if (!tab) return { error: 'No active tab' };
+export const missingTabError = (tabId) =>
+  `No tab with id ${tabId} — it was closed. fast_list shows the open tabs.`;
+
+export async function getInjectableTab(tabId) {
+  const tab = await getActiveTab(tabId);
+  if (!tab) return { error: typeof tabId === 'number' ? missingTabError(tabId) : 'No active tab' };
   if (!isInjectableUrl(tab.url)) return { error: `Restricted URL: ${tab.url}` };
   return { tab };
 }
 
-export async function injectInTab({ world = 'MAIN', func, args = [] }) {
-  const got = await getInjectableTab();
+export async function injectInTab({ world = 'MAIN', func, args = [], tabId }) {
+  const got = await getInjectableTab(tabId);
   if (got.error) return got;
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId: got.tab.id }, world, func, args,
@@ -58,9 +66,9 @@ export async function injectInTab({ world = 'MAIN', func, args = [] }) {
 // banner, shifting the viewport and breaking coordinate clicks. The shared
 // session is already attached during any automation session, so this adds no
 // new banner and no quota cost.
-export async function captureViaDebugger(capOpts = { format: 'png' }) {
-  const tab = await getActiveTab();
-  if (!tab?.id) throw new Error('no active tab for debugger capture');
+export async function captureViaDebugger(capOpts = { format: 'png' }, tabId) {
+  const tab = await getActiveTab(tabId);
+  if (!tab?.id) throw new Error(typeof tabId === 'number' ? missingTabError(tabId) : 'no active tab for debugger capture');
   const format = capOpts.format === 'jpeg' ? 'jpeg' : 'png';
   const base = { format, captureBeyondViewport: false };
   if (format === 'jpeg' && typeof capOpts.quality === 'number') base.quality = capOpts.quality;
@@ -79,17 +87,22 @@ export async function captureViaDebugger(capOpts = { format: 'png' }) {
   throw lastErr || new Error('Page.captureScreenshot failed');
 }
 
-// Is a pinned target tab currently OFF-SCREEN? chrome.tabs.captureVisibleTab
-// only ever grabs the active tab of the focused window — so in the cloud-relay
-// case (user sits on the claude.ai tab while Claude drives a pinned tab in the
-// background) it returns the WRONG tab's pixels. CDP Page.captureScreenshot
-// targets a concrete tabId and reads a non-focused tab, so capture must route
-// through it whenever the pin isn't the on-screen tab. Returns the pinned Tab in
-// that case, else null (no pin, or the pinned tab IS the visible one → the fast
-// captureVisibleTab path is correct).
-export async function pinnedBackgroundTab() {
+// Is the tab to capture OFF-SCREEN? chrome.tabs.captureVisibleTab only ever
+// grabs the active tab of the focused window — so when Claude drives a tab in
+// the background (the call's own tabId, or the pinned target) it returns the
+// WRONG tab's pixels. CDP Page.captureScreenshot targets a concrete tabId and
+// reads a non-focused tab, so capture must route through it whenever that tab
+// isn't the on-screen one. Returns the Tab in that case, else null (no tabId and
+// no pin, or the tab IS the visible one → the fast captureVisibleTab path is
+// correct). A call's own tabId that no longer exists throws.
+export async function backgroundCaptureTab(tabId) {
   let pinned;
-  try { pinned = await resolveTargetTab(); } catch { pinned = null; }
+  if (typeof tabId === 'number') {
+    pinned = await getActiveTab(tabId);
+    if (!pinned) throw new Error(missingTabError(tabId));
+  } else {
+    try { pinned = await resolveTargetTab(); } catch { pinned = null; }
+  }
   if (!pinned) return null;
   // The tab captureVisibleTab(undefined) would actually grab: active tab of the
   // last-focused window. Compare by id so a pinned tab that is "active" in its
@@ -115,21 +128,21 @@ export async function captureViewport(opts = {}) {
   const capOpts = { format };
   if (format === 'jpeg' && typeof opts.quality === 'number') capOpts.quality = opts.quality;
 
-  // 0. Pinned-tab-backgrounded path. captureVisibleTab would grab the wrong
-  //    (on-screen) tab, so go straight to CDP — which targets the pin by id and
-  //    can read a non-focused tab — and do NOT fall back to a visible-tab
-  //    capture that would return the WRONG page's pixels.
-  const bg = await pinnedBackgroundTab().catch(() => null);
+  // 0. Backgrounded-tab path. captureVisibleTab would grab the wrong (on-screen)
+  //    tab, so go straight to CDP — which targets the tab by id and can read a
+  //    non-focused tab — and do NOT fall back to a visible-tab capture that
+  //    would return the WRONG page's pixels.
+  const bg = await backgroundCaptureTab(opts.tabId);
   if (bg) {
     try {
-      return { dataUrl: await captureViaDebugger(capOpts), format };
+      return { dataUrl: await captureViaDebugger(capOpts, bg.id), format };
     } catch (e) {
       const err = new Error(
-        `capture of the pinned background tab via CDP failed (${e?.message || e}). ` +
-        `The pinned tab isn't the on-screen tab, so a visible-tab capture would grab the ` +
+        `capture of the background tab ${bg.id} via CDP failed (${e?.message || e}). ` +
+        `That tab isn't the on-screen tab, so a visible-tab capture would grab the ` +
         `wrong page — retry in a moment, or fast_switch focus onto the tab.`
       );
-      err.hint = 'pinned tab is backgrounded and CDP capture failed; retry or bring the tab to the foreground.';
+      err.hint = 'the driven tab is backgrounded and CDP capture failed; retry or bring the tab to the foreground.';
       throw err;
     }
   }
@@ -143,7 +156,7 @@ export async function captureViewport(opts = {}) {
   // 2. CDP path (quota-free, shared debugger session).
   let cdpErr;
   try {
-    return { dataUrl: await captureViaDebugger(capOpts), format };
+    return { dataUrl: await captureViaDebugger(capOpts, opts.tabId), format };
   } catch (e) {
     cdpErr = e;
   }

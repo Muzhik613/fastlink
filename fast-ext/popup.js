@@ -1,9 +1,7 @@
-// popup.js — toolbar popup. FastLink runs up to TWO transports at once (local
-// broker + cloud relay); this renders one status row per ENABLED transport from
-// the combined `fastlinkConn` object that background.js writes:
-//   { local: {enabled,state,clients}|null, relay: {enabled,state}|null }
-// (null = that transport is disabled/not configured). Plus shortcuts to the
-// pairing settings and an extension reload.
+// popup.js — toolbar popup. Renders the cloud relay status row from the
+// `fastlinkConn` object that background.js writes:
+//   { relay: {enabled,state}|null }   (null = relay disabled / not paired)
+// Plus shortcuts to the pairing settings and an extension reload.
 
 const $ = (id) => document.getElementById(id);
 
@@ -52,14 +50,6 @@ async function render() {
   const rows = $('rows');
   rows.replaceChildren();
 
-  if (conn.local) {
-    const n = typeof conn.local.clients === 'number' ? conn.local.clients : null;
-    const detail = conn.local.state === 'connected' && n != null
-      ? `${n} MCP client${n === 1 ? '' : 's'} connected`
-      : 'Claude Code / Desktop';
-    rows.append(row('Local broker', conn.local.state, detail));
-  }
-
   if (conn.relay) {
     const state = c.relayAuthError ? 'auth' : conn.relay.state;
     const detail = c.relayAuthError
@@ -68,11 +58,9 @@ async function render() {
         ? 'claude.ai web chat'
         : `Cloud relay${c.relayBase ? ' (' + c.relayBase + ')' : ''}`;
     rows.append(row('Cloud relay', state, detail));
-  }
-
-  if (!conn.local && !conn.relay) {
-    rows.append(row('No transport enabled', 'disconnected',
-      'Enable the local broker or pair a cloud relay in settings.'));
+  } else {
+    rows.append(row('Cloud relay', 'disconnected',
+      'Not connected — pair or reconnect the cloud relay in settings.'));
   }
 }
 
@@ -322,7 +310,7 @@ async function renderDriving() {
 // N2 kill-switch controls: Stop/Resume driving (pause gate) + Disconnect/
 // Reconnect the cloud relay. Both go through background message handlers.
 async function renderControls() {
-  const c = await chrome.storage.local.get(['deviceToken', 'relayEnabled', 'fastlinkMode']);
+  const c = await chrome.storage.local.get(['deviceToken', 'relayEnabled']);
   const paused = await isPaused();
 
   const pb = $('pause-btn');
@@ -331,7 +319,7 @@ async function renderControls() {
 
   const db = $('disconnect-btn');
   if (c.deviceToken) {
-    const relayDisabled = c.relayEnabled === false || c.fastlinkMode === 'local';
+    const relayDisabled = c.relayEnabled === false;
     db.style.display = '';
     db.textContent = relayDisabled ? 'Reconnect relay' : 'Disconnect relay';
     db.dataset.act = relayDisabled ? 'reconnect' : 'disconnect';
@@ -448,7 +436,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local') {
     if (changes.fastlinkConn || changes.relayAuthError) render();
     if (changes.fastlinkConn || changes.fastlinkPendingConsent || changes.deviceToken || changes[DECISIONS_KEY]) renderConsent();
-    if (changes.deviceToken || changes.relayEnabled || changes.fastlinkMode) renderControls();
+    if (changes.deviceToken || changes.relayEnabled) renderControls();
   }
   if (area === 'session' && (changes[TARGET_PIN_KEY] || changes[PAUSE_KEY])) {
     renderDriving();

@@ -13,8 +13,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         task: { type: 'string', description: 'The task, in plain language.' },
-        transport: { type: 'string', enum: ['relay', 'local'], description: 'relay (relay.ytx.app) or local (spawn fast-dxt server on this machine). Default: FASTRUN_TRANSPORT env or relay.' },
-        browser: { type: 'string', description: 'Relay browser name to pin (fast_profile), e.g. browser-1.' },
+        browser: { type: 'string', description: 'Relay browser name to drive, e.g. browser-1; sent as `browser` on every call. Default: FASTRUN_BROWSER env, else the account default browser.' },
         toolset: { type: 'string', description: 'Which tool list Grok sees: "default" (all tools, baseline), a name like "phase2" or "no-cdp" (fast-runner/toolset.<name>.json), or a path to a toolset JSON. Default: FASTRUN_TOOLSET env or "default". Recorded per run in runs.jsonl.' },
         gate: { type: 'string', enum: ['on', 'record', 'off'], description: 'report_done evidence gate: "on" (refuse until the report is backed, the default), "record" (never refuse; the row gets gateWouldRefuse when "on" would have refused), "off" (no checks). Default: FASTRUN_GATE env or "on". Recorded per run.' },
       },

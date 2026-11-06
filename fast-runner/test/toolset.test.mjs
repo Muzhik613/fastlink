@@ -1,12 +1,14 @@
-// node --test fast-runner/test/  — toolset selection and the ONE concise description set, no browser, no server.
+// node --test fast-runner/test/  — toolset selection and the ONE concise description set (fastlink-relay/tools.js), no browser, no relay.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadToolset, buildTools, buildSystem, HIDDEN_TOOLS, SHORT_NAMES, shortName, canonicalName, toModelText, MODEL_SCHEMA, fromModel } from '../runner.mjs';
-import { TOOLS } from '../../fast-dxt/server/tools.js';
 import { TOOLS as RELAY_TOOLS } from '../../fastlink-relay/tools.js';
+import { withoutBrowserArg } from '../relay-transport.mjs';
+
+const TOOLS = RELAY_TOOLS.map(withoutBrowserArg);   // the list the runner gets from the relay transport
 
 // Tools that attach chrome.debugger (fast-ext/src/actions/input.js tier + its importers).
 const CDP = ['fast_click_xy', 'fast_type', 'fast_evaluate', 'fast_screenshot'];
@@ -15,13 +17,11 @@ const names = (tools) => tools.map(t => t.name);
 const tool = (n) => TOOLS.find(t => t.name === n);
 const param = (n, p) => tool(n).inputSchema.properties[p]?.description || '';
 
-test('one concise description set: every tool <= 300 chars, every param one short line, relay identical', () => {
-  for (const t of TOOLS) {
+test('one concise description set: every tool <= 300 chars, every param one short line', () => {
+  for (const t of RELAY_TOOLS) {
     assert.ok(t.description.length <= 300, `${t.name}: ${t.description.length} chars`);
     for (const [p, v] of Object.entries(t.inputSchema.properties || {})) assert.ok((v.description || '').length <= 100, `${t.name}.${p}: ${(v.description || '').length} chars`);
   }
-  const local = TOOLS.filter(t => t.name !== 'fast_ext_reload');
-  assert.deepEqual(RELAY_TOOLS, local, 'fastlink-relay/tools.js carries the same set, minus the local-only fast_ext_reload');
 });
 
 test('the must-knows survive the cut (Azure-shaped flows depend on each)', () => {
@@ -68,13 +68,11 @@ test('default toolset = every server tool except hidden + native', () => {
   assert.equal(ts.name, 'default');
   const { tools, back } = buildTools(TOOLS, ts);
   assert.equal(tools.length, TOOLS.length - HIDDEN_TOOLS.size + NATIVE.length);
-  assert.ok(TOOLS.some(t => t.name === 'fast_ext_reload'), 'ops tool fast_ext_reload is on the server');
-  assert.ok(!names(tools).includes('fast_ext_reload') && !back.has('fast_ext_reload'), 'default "*" does not offer the operator reload');
   for (const t of tools.filter(t => !NATIVE.includes(t.name))) { assert.equal(back.get(t.name), canonicalName(t.name)); assert.equal(t.name, shortName(canonicalName(t.name))); }
 });
 
-test('hidden tools (scorer fast_frame_read, operator fast_ext_reload, fast_batch) are never model-facing, even when allowed', () => {
-  assert.deepEqual([...HIDDEN_TOOLS].sort(), ['fast_batch', 'fast_ext_reload', 'fast_frame_read']);
+test('hidden tools (scorer fast_frame_read, fast_batch) are never model-facing, even when allowed', () => {
+  assert.deepEqual([...HIDDEN_TOOLS].sort(), ['fast_batch', 'fast_frame_read']);
   assert.ok(!HIDDEN_TOOLS.has('fast_evaluate'), 'phase2-eval offers fast_evaluate on purpose');
   for (const name of ['default', 'phase2', 'phase2-eval', 'no-cdp']) {
     const { tools, back } = buildTools(TOOLS, loadToolset(name));

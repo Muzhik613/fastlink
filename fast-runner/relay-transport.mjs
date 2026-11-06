@@ -2,7 +2,9 @@
 // authenticated exactly like claude.ai / grok.com: OAuth 2.1 dynamic client
 // ("fastrun") + authorization_code/PKCE. Tokens cached in ~/.config/fastrun/
 // relay-token.json (mode 600), refreshed silently by the SDK. ONE MCP session
-// per connect. Browser pinning = fast_profile on this client's own OAuth cid.
+// per connect. Browser choice is client-side (docs/PIN-REDESIGN.md): connect
+// checks the named browser once via fast_status, then every call carries it as
+// the `browser` argument, which this transport owns (hidden from listTools).
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
@@ -102,6 +104,14 @@ async function openSession(provider) {
   return { client, transport };
 }
 
+export function withoutBrowserArg(t) {
+  const props = t.inputSchema?.properties;
+  if (!props || !('browser' in props)) return t;
+  const { browser: _, ...rest } = props;
+  const required = t.inputSchema.required?.filter((k) => k !== 'browser');
+  return { ...t, inputSchema: { ...t.inputSchema, properties: rest, ...(required && { required }) } };
+}
+
 /**
  * connectRelay({ browser, onAuthUrl }) → { listTools, callTool, close, client }
  * First run: prints (and hands to onAuthUrl) the relay authorize URL; the human
@@ -135,18 +145,24 @@ export async function connectRelay({ browser = null, onAuthUrl = null } = {}) {
   }
   const { client, transport } = session;
 
-  // 120s > the relay/broker 30s request ceiling, so a slow call errors from the
+  // 120s > the relay's 30s request ceiling, so a slow call errors from the
   // server side (visible to the model), never from the SDK's 60s default.
   const callTool = async (name, args = {}) =>
-    client.callTool({ name, arguments: args || {} }, undefined, { timeout: 120_000 });
+    client.callTool({ name, arguments: browser ? { ...args, browser } : (args || {}) }, undefined, { timeout: 120_000 });
   if (browser) {
-    const r = await callTool('fast_profile', { install: browser });
-    const txt = r?.content?.[0]?.text || '';
-    if (r?.isError || /"error"/.test(txt)) throw new Error(`fast_profile ${browser}: ${txt}`);
+    const r = await callTool('fast_status');
+    let st = {};
+    try { st = JSON.parse(r?.content?.[0]?.text || '{}'); } catch { /* reported below */ }
+    if (r?.isError || !st.connected) {
+      await transport.close();
+      const seen = (st.browsers || []).map((b) => `${b.name}${b.connected ? '' : ' (offline)'}`).join(', ') || 'none';
+      throw new Error(`browser "${browser}" is not connected: ${st.targetError || r?.content?.[0]?.text || 'no status'} (browsers: ${seen})`);
+    }
   }
   return {
     client,
-    listTools: async () => (await client.listTools()).tools,
+    // `browser` is filled by callTool, so the model never sees it.
+    listTools: async () => (await client.listTools()).tools.map(withoutBrowserArg),
     callTool,
     close: () => transport.close(),
   };

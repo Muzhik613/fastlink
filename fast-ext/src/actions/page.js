@@ -1237,7 +1237,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
   // pre-action matching snapshots (serializeSnapshot(false) in fast_click/fill/
   // etc.), so the per-element time guard below was dead code and the loop walked
   // the ENTIRE index — tens of thousands of nodes on a heavy SPA like GCP — until
-  // the 30s broker timeout wedged the renderer. Default to a hard budget so a
+  // the 30s relay call timeout wedged the renderer. Default to a hard budget so a
   // match snapshot can never hang the page.
   const budgetMs = (opts && opts.budgetMs) || 2500;
   const drainMs = (opts && opts.drainMs) || 40;
@@ -1321,7 +1321,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
     // so a coarse 64-item cadence could run ~300 layouts between checks and blow
     // a whole frame before yielding. Two bounds:
     //   • overall budget → bail with a partial-but-rich snapshot flagged
-    //     snapshotTimedOut, never hang the whole call to the broker timeout.
+    //     snapshotTimedOut, never hang the whole call to the relay call timeout.
     //   • per-slice SNAP_SLICE_MS → YIELD the main thread so even a 10k-entry
     //     serialize can't freeze the page into "unresponsive" (issue #7).
     if ((++seen & 15) === 0) {
@@ -1976,7 +1976,7 @@ async function runPageAction(action, args) {
     // backgrounded / occluded tab (the relay drives exactly such tabs: the
     // claude.ai tab is foreground while the target tab is hidden), so the rAF
     // callback may never fire and the bare `await requestAnimationFrame` would
-    // stall withSnap — and therefore the whole action — until the 30s broker/
+    // stall withSnap — and therefore the whole action — until the 30s relay/
     // relay timeout, even though the action (e.g. a fill) already completed.
     // Race the frame against a wall-clock cap so a foreground tab still waits a
     // real frame while a hidden tab falls through promptly. (BUG-4)
@@ -2041,7 +2041,7 @@ async function runPageAction(action, args) {
     };
     // The auto-snapshot is a convenience, never the point of the call. Bound it
     // and swallow failures so a slow/huge serialize can NEVER turn a successful
-    // action into a broker timeout. On overrun whatever partial was gathered is
+    // action into a relay call timeout. On overrun whatever partial was gathered is
     // returned with snapshotTimedOut:true so the agent still has rich text.
     try {
       // Time-boxed + abortable: serialize yields the main thread every SLICE_MS

@@ -15,37 +15,40 @@
 // wakes it (the runtime delivers the frame to webSocketMessage), it does its
 // work, then goes idle again.
 //
-// Protocol on the ext WS (mirrors fast-dxt/broker/router.js):
-//   relay → ext :  { type:'call',   id, action, args }
-//   ext → relay :  { type:'result', id, ...reply }   reply = {result} | {error,...extras}
+// Protocol on the ext WS (docs/PIN-REDESIGN.md §2):
+//   relay → ext :  { type:'call',    id, action, args }   (args.tabId passed through; `browser` stripped)
+//   ext → relay :  { type:'queued',  id, position }       optional: waiting behind another call on that tab
+//                  { type:'started', id }                 the call left the queue and runs
+//                  { type:'result',  id, origin, tabId, ...reply }   reply = {result} | {error,...extras}
 //   keepalive   :  ext sends {"ping":true} → DO auto-responds {"pong":true}
+// A result is matched by id on ANY live socket of the device the call went to
+// (the extension answers on its current socket, which may be a redial).
 //
 // See SPEC.md §3d.
 
 import { DurableObject } from 'cloudflare:workers';
 import { handleMcpRequest } from './mcp.js';
-import { readTrace, fingerprint, tokenKey } from './timing.js';
-import { getUserDevices, renameDevice, maskToken } from './db.js';
+import { readTrace } from './timing.js';
+import { getUserDevices, renameDevice, maskToken, sanitizeDeviceName, RESERVED_DEVICE_NAMES } from './db.js';
 
+// Call deadlines: 30 s from send; a {type:'queued'} frame extends the deadline to
+// QUEUE_MAX_MS after send; {type:'started'} resets it to 30 s from that moment.
+// An extension that sends neither frame gets the plain 30 s.
 const REQUEST_TIMEOUT_MS = 30_000;
+const QUEUE_MAX_MS = 120_000;
+// After a socket closes, its in-flight calls wait this long for the redialed
+// socket to deliver their result before failing.
+const CLOSE_GRACE_MS = 10_000;
 // D1 device rows are cached in memory between calls so named routing costs no
 // extra round-trip on the hot path. Explicitly invalidated on rename and whenever
 // a live socket presents a token the cache doesn't know (a browser paired since
 // the last read), so the TTL is only a backstop against out-of-band D1 edits.
 const DEVICE_CACHE_TTL_MS = 60_000;
-// Storage sentinel for "this client explicitly chose auto" — distinct from "this
-// client has never chosen", which falls through to the per-user default.
-// 'auto' can never be a device NAME (db.RESERVED_DEVICE_NAMES), so no ambiguity.
-const AUTO = 'auto';
-const SESSION_PIN_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Shown when the account has no live browser at all (nothing to target).
 const NO_DEVICE_ERROR =
-  'No browser is paired to this relay account, so the cloud relay cannot reach a tab. '
-  + 'If you are running Claude Code on your own machine, you are probably on the WRONG connector: '
-  + 'use the LOCAL "fastlink" connector instead — it drives the browser directly through the local broker with no pairing, token, or OAuth. '
-  + 'Only if you intend to use the cloud relay: open the FastLink extension, set it to "relay" mode, and pair it (paste your code from the relay site). '
-  + 'Note: FASTLINK_TOKEN is unrelated and is NOT the fix.';
+  'No browser is paired to this FastLink account, so there is no tab to drive. '
+  + 'Open the FastLink extension and pair it (paste a code from https://relay.ytx.app/pair/new), then retry.';
 
 // Never raise Chrome unless the caller asks (owner, 2026-10-08: "my cursor always ends up in
 // chrome"). fast_tab opens in the background and fast_switch only pins, unless the call says
@@ -63,7 +66,8 @@ export class UserRelay extends DurableObject {
     super(ctx, env);
     this.ctx = ctx;
     this.env = env;
-    // mcpCallId -> { resolve, timer, ws }. In-memory and short-lived: an entry
+    // mcpCallId -> { resolve, timer, grace, ws, deviceToken, sentAt, timeoutMs }.
+    // In-memory and short-lived: an entry
     // only exists while an MCP tools/call is awaiting the browser. See the
     // "Hibernation × pending map" note in SPEC.md §3d — the DO cannot hibernate
     // while a call is in flight (the /__mcp fetch promise is awaiting), so the
@@ -72,12 +76,12 @@ export class UserRelay extends DurableObject {
     // Best-effort identity label for status/audit (set from the forwarded
     // X-Fastlink-User-Id header on /__mcp). NOT used for isolation.
     this.userId = null;
-    // Active-tab origin of the most recent extension result (SIGNUP-SPEC §5.2).
-    // The extension stamps `origin` on each result frame; we cache it here so the
-    // per-origin consent gate (M4), the eval allowlist, and audit can read the
-    // current origin WITHOUT an extra fast_list round-trip. Falls back to a
-    // fast_list probe (activeOrigin) until the extension stamping lands.
-    this.lastOrigin = null;
+    // deviceToken -> origin of the tab that device last acted on (SIGNUP-SPEC §5.2).
+    // The extension stamps `origin` on each result frame; caching it PER DEVICE
+    // lets the consent gate (M4), the eval allowlist, and audit read the TARGET
+    // browser's origin without an extra fast_list round-trip — one browser's page
+    // never stands in for another's. Falls back to a fast_list probe on a miss.
+    this.origins = new Map();
     // N2 kill-switch (SAFETY): "Stop driving" pause state. Lazy in-memory cache of
     // the DURABLE flag in ctx.storage — it MUST be durable because the DO hibernates
     // between tool calls and would otherwise forget a pause. undefined = not yet read.
@@ -193,8 +197,8 @@ export class UserRelay extends DurableObject {
   }
 
   // THE view of this account's browsers: every non-revoked device with its name
-  // and whether it has a live socket right now. fast_status, fast_profile, the
-  // options page and the routing resolver all read this one function.
+  // and whether it has a live socket right now. fast_status, the options page and
+  // the routing resolver all read this one function.
   async deviceList() {
     let rows = await this.#deviceRows();
     const live = this.#liveSockets();
@@ -217,84 +221,15 @@ export class UserRelay extends DurableObject {
     }));
   }
 
-  // --- browser SELECTION (which browser a chat product drives) --------------
+  // --- browser ROUTING (stateless) -------------------------------------------
   //
-  // WHY NOT PER-MCP-SESSION: measured on the live relay, Grok's connector opens a
-  // BRAND-NEW MCP session (full `initialize`) for EVERY tool call — 11 sessions
-  // for 11 calls. A session-scoped pin would evaporate before the next call and
-  // the feature would appear to work with Claude while silently failing with Grok.
-  // So the selection is DURABLE, lives in this user's DO storage (survives
-  // hibernation), and is keyed by the CHAT PRODUCT — see clientKey().
+  // Which browser a call drives is decided by the CALLER on every request: the
+  // optional `browser` tool argument (a name), else the account default
+  // (`dev:default`). The relay keeps NO per-client or per-session selection
+  // (docs/PIN-REDESIGN.md): the fast-dxt helper holds a session's pin locally and
+  // stamps `browser` on each call; claude.ai / Grok rely on the account default.
 
-  // Stable id for the chat product driving this DO. It must survive BOTH (a) a
-  // fresh MCP session per call and (b) the hourly access-token refresh, so it
-  // prefers the OAuth CLIENT id carried in the grant props (stamped at
-  // completeAuthorization, forwarded by index.js as X-Fastlink-Client-Id) — that
-  // is per-connector and constant across refreshes. Grants minted before the
-  // stamp landed fall back to the bearer-token fingerprint (same primitive,
-  // src/timing.js), which is still per-product, just shorter-lived.
-  async clientKey(request) {
-    const cid = request.headers.get('X-Fastlink-Client-Id');
-    if (cid) return `c${await fingerprint(`client:${cid}`)}`;
-    return `t${await tokenKey(request)}`;
-  }
-
-  #pinKey(clientKey) { return `dev:pin:${clientKey}`; }
-
-  // SESSION PINS (2026-11-02): a client that echoes Mcp-Session-Id (Claude Code
-  // does, one MCP session per process) also gets a pin of its OWN. Every Claude
-  // Code session on a machine shares one OAuth client, so the chat-product pin
-  // alone let one session's fast_profile re-route another's calls mid-task: a
-  // WhatsApp send pinned to mac2 had its tab reads answered by mac1 after a
-  // parallel Gmail session pinned mac1. The session pin wins when present; the
-  // chat-product pin stays as the fallback for clients like Grok that open a new
-  // session per call. Session pins expire after SESSION_PIN_TTL_MS.
-  #sessionPinKey(sessionKey) { return `dev:spin:${sessionKey}`; }
-
-  // Stable per-MCP-session id from the request, or null (client did not echo one).
-  sessionKey(request) {
-    const sid = request.headers.get('mcp-session-id') || '';
-    return /^[0-9a-f-]{36}$/i.test(sid) ? sid.toLowerCase() : null;
-  }
-
-  // Resolve what this client should drive:
-  //   { mode:'pinned', name, source:'pin'|'default' } | { mode:'auto', source }
-  async getSelection(clientKey, sessionKey = null) {
-    let pin;
-    if (sessionKey) {
-      let sp;
-      try { sp = await this.ctx.storage.get(this.#sessionPinKey(sessionKey)); } catch { sp = undefined; }
-      if (sp && Date.now() - (sp.at || 0) < SESSION_PIN_TTL_MS) pin = sp.name;
-    }
-    if (pin === undefined) {
-      try { pin = await this.ctx.storage.get(this.#pinKey(clientKey)); } catch { pin = undefined; }
-    }
-    if (pin === AUTO) return { mode: 'auto', source: 'pin' };
-    if (pin) return { mode: 'pinned', name: pin, source: 'pin' };
-    let def;
-    try { def = await this.ctx.storage.get('dev:default'); } catch { def = undefined; }
-    if (def) return { mode: 'pinned', name: def, source: 'default' };
-    return { mode: 'auto', source: 'unset' };
-  }
-
-  // Pin this client to a browser name, or to AUTO (null/'' → auto). With a
-  // sessionKey the pin is also kept for that session alone (see SESSION PINS).
-  async setSelection(clientKey, name, sessionKey = null) {
-    await this.ctx.storage.put(this.#pinKey(clientKey), name || AUTO);
-    if (!sessionKey) return;
-    await this.ctx.storage.put(this.#sessionPinKey(sessionKey), { name: name || AUTO, at: Date.now() });
-    await this.#pruneSessionPins();
-  }
-
-  async #pruneSessionPins() {
-    let entries;
-    try { entries = await this.ctx.storage.list({ prefix: 'dev:spin:' }); } catch { return; }
-    const stale = [...entries].filter(([, v]) => Date.now() - (v?.at || 0) >= SESSION_PIN_TTL_MS).map(([k]) => k);
-    if (stale.length) { try { await this.ctx.storage.delete(stale.slice(0, 128)); } catch { /* best-effort */ } }
-  }
-
-  // The account-wide default browser — used by any chat product that never calls
-  // fast_profile. null clears it (back to most-recent-wins).
+  // The account-wide default browser (set from a browser's options page). null = unset.
   async getDefaultDevice() {
     try { return (await this.ctx.storage.get('dev:default')) || null; } catch { return null; }
   }
@@ -304,63 +239,65 @@ export class UserRelay extends DurableObject {
     else await this.ctx.storage.delete('dev:default');
   }
 
-  // RESOLVE THE TARGET SOCKET for one MCP request. This REPLACES the old
-  // most-recent-wins extSocket(): with several browsers on one account,
-  // most-recent-wins silently flipped which browser got driven every time an MV3
-  // service worker redialled. There is therefore NO fallback — a pin that cannot
-  // be honoured is a hard, named error, not a redirect to some other browser.
-  // Most-recent-wins survives ONLY as the explicit "auto" mode.
-  // Returns { ws, name, mode } | { error, ...diagnostics }.
-  async resolveTarget(clientKey, sessionKey = null) {
+  // RESOLVE THE TARGET for one MCP request: the named browser, else the account
+  // default. There is NO fallback — an unset default, an unknown name or an
+  // offline browser is a hard error naming the connected browsers, never a
+  // redirect to some other browser.
+  // Returns { ws, name, deviceToken } | { error, ...diagnostics }.
+  async resolveTarget(browser) {
     const devices = await this.deviceList();
-    const connected = devices.filter((d) => d.connected);
     const names = devices.map((d) => d.name);
-    const connectedNames = connected.map((d) => d.name);
-    const sel = await this.getSelection(clientKey, sessionKey);
+    const connectedNames = devices.filter((d) => d.connected).map((d) => d.name);
+    const diag = { browsers: names, connected: connectedNames };
+    if (!devices.length) return { error: NO_DEVICE_ERROR, noDeviceConnected: true, ...diag };
 
-    if (sel.mode === 'auto') {
-      if (!connected.length) return { error: NO_DEVICE_ERROR, noDeviceConnected: true, browsers: names };
-      const best = connected.reduce((a, b) => ((b.connectedAt || 0) >= (a.connectedAt || 0) ? b : a));
-      return { ws: this.#socketForToken(best.deviceToken), name: best.name, mode: 'auto' };
+    const given = browser !== undefined && browser !== null && browser !== '';
+    let want;
+    let via;
+    if (given) {
+      want = sanitizeDeviceName(String(browser));
+      via = 'requested by this call';
+      if (!want || RESERVED_DEVICE_NAMES.has(want)) {
+        return {
+          error: `Invalid browser name "${browser}". Connected browsers: ${connectedNames.join(', ') || '(none)'}. Pass one of those as \`browser\`.`,
+          invalidBrowser: true, ...diag,
+        };
+      }
+    } else {
+      want = await this.getDefaultDevice();
+      via = 'the account default browser';
+      if (!want) {
+        return {
+          error: `No browser was named and this account has no default browser, so nothing was done. `
+            + `Connected browsers: ${connectedNames.join(', ') || '(none)'}. `
+            + `Pass \`browser\` with one of those names, or set a default on that browser's FastLink options page.`,
+          noDefaultBrowser: true, ...diag,
+        };
+      }
     }
-
-    const want = sel.name;
     const dev = devices.find((d) => d.name === want);
-    const via = sel.source === 'default' ? 'the account default browser' : 'this connection\'s fast_profile pin';
     if (!dev) {
       return {
-        error: `No browser named "${want}" is paired to this account (${via} points at it). `
-          + `Paired browsers: ${names.join(', ') || '(none)'}. `
-          + `Rename a browser on its FastLink options page, or call fast_profile with a listed name (or "auto").`,
-        wrongBrowser: true, selected: want, browsers: names, connected: connectedNames,
+        error: `No browser named "${want}" is paired to this account (${via}). `
+          + `Paired browsers: ${names.join(', ') || '(none)'}; connected: ${connectedNames.join(', ') || '(none)'}.`,
+        wrongBrowser: true, selected: want, ...diag,
       };
     }
     if (!dev.connected) {
       return {
-        error: `Browser "${want}" is not connected right now (${via} targets it), so nothing was done. `
+        error: `Browser "${want}" is not connected right now (${via}), so nothing was done. `
           + `Connected now: ${connectedNames.join(', ') || '(none)'}. `
-          + `Open Chrome in that profile so FastLink reconnects, or call fast_profile install:"<one of the connected names>" — or install:"auto" for whichever connected last.`,
-        deviceNotConnected: true, selected: want, browsers: names, connected: connectedNames,
+          + `Open Chrome in that profile so FastLink reconnects, or pass \`browser\` with a connected name.`,
+        deviceNotConnected: true, selected: want, ...diag,
       };
     }
-    return { ws: this.#socketForToken(dev.deviceToken), name: want, mode: 'pinned', source: sel.source };
+    return { ws: this.#socketForToken(dev.deviceToken), name: want, deviceToken: dev.deviceToken };
   }
 
-  // Selections are stored BY NAME, so a rename must carry them over — the account
-  // default AND every chat product pinned to the old name. Without this, renaming
-  // a browser would break live pins with "no browser named …" for no reason the
-  // user could connect to what they just did.
+  // The account default is stored BY NAME, so a rename must carry it over —
+  // otherwise it would dangle at a name nothing owns.
   async #followRename(oldName, newName) {
     if (await this.getDefaultDevice() === oldName) await this.setDefaultDevice(newName);
-    let entries;
-    try { entries = await this.ctx.storage.list({ prefix: 'dev:pin:' }); } catch { return; }
-    for (const [k, v] of entries) {
-      if (v === oldName) { try { await this.ctx.storage.put(k, newName); } catch { /* best-effort */ } }
-    }
-    try { entries = await this.ctx.storage.list({ prefix: 'dev:spin:' }); } catch { return; }
-    for (const [k, v] of entries) {
-      if (v?.name === oldName) { try { await this.ctx.storage.put(k, { ...v, name: newName }); } catch { /* best-effort */ } }
-    }
   }
 
   // --- device management (options page, via auth.js /devices) ---------------
@@ -439,19 +376,31 @@ export class UserRelay extends DurableObject {
       return; // ignore non-JSON
     }
 
-    if (msg.type === 'result') {
+    if (msg.type === 'result' || msg.type === 'queued' || msg.type === 'started') {
       const entry = this.pending.get(msg.id);
-      if (!entry) return; // unknown/late id — timed out already
-      clearTimeout(entry.timer);
-      this.pending.delete(msg.id);
-      // SIGNUP-SPEC §5.2: the extension stamps the active-tab origin on each
-      // result. Cache it for the consent gate / eval check / audit (fixes T3/T4).
-      if (typeof msg.origin === 'string' && msg.origin) this.lastOrigin = msg.origin;
-      // Strip the routing envelope (incl. origin); hand the reply ({result} |
-      // {error,...extras}) back to the awaiting callExtension — same fields
-      // handlers.js relies on.
+      if (!entry) return; // unknown/late id — settled already
+      // Matched by id on ANY socket of the device the call went to (the extension
+      // answers on its current live socket, which may be a redial). A frame from a
+      // different browser can never settle this call.
+      if (this.#tokenOf(ws) !== entry.deviceToken) return;
+
+      if (msg.type === 'queued') {
+        this.#arm(msg.id, entry, entry.sentAt + Math.max(QUEUE_MAX_MS, entry.timeoutMs));
+        return;
+      }
+      if (msg.type === 'started') {
+        this.#arm(msg.id, entry, Date.now() + entry.timeoutMs);
+        return;
+      }
+      // SIGNUP-SPEC §5.2: the extension stamps the acted-on tab's origin on each
+      // result. Cache it for THAT device (consent gate / eval check / audit).
+      if (typeof msg.origin === 'string' && msg.origin && entry.deviceToken) {
+        this.origins.set(entry.deviceToken, msg.origin);
+      }
+      // Strip the routing envelope (origin too); `tabId` stays in the reply so the
+      // MCP layer can surface which tab was acted on.
       const { type, id, origin, ...reply } = msg;
-      entry.resolve(reply);
+      this.#settle(msg.id, reply);
       return;
     }
 
@@ -486,56 +435,70 @@ export class UserRelay extends DurableObject {
   }
 
   async webSocketClose(ws) {
-    this.#failPending(ws, 'Extension disconnected before response');
+    this.#graceOnClose(ws);
   }
 
   async webSocketError(ws) {
-    this.#failPending(ws, 'Extension socket error');
+    this.#graceOnClose(ws);
   }
 
-  // Fail (only) the pending requests that were sent on `ws`. Requests already
-  // re-issued on a fresh socket are tagged with that socket and untouched.
-  #failPending(ws, message) {
+  // The socket a call went out on died. Its result may still arrive on the
+  // device's redialed socket, so give each such call CLOSE_GRACE_MS before failing it.
+  #graceOnClose(ws) {
     for (const [id, entry] of this.pending) {
-      if (entry.ws !== ws) continue;
-      clearTimeout(entry.timer);
-      this.pending.delete(id);
-      entry.resolve({ error: message });
+      if (entry.ws !== ws || entry.grace) continue;
+      entry.grace = setTimeout(() => this.#settle(id, { error: 'Extension disconnected before response' }), CLOSE_GRACE_MS);
     }
+  }
+
+  // (Re)arm a pending call's deadline to the absolute time `at`.
+  #arm(id, entry, at) {
+    clearTimeout(entry.timer);
+    const ms = Math.max(0, at - Date.now());
+    entry.timer = setTimeout(() => this.#settle(id, { error: `Timeout waiting for browser response (${ms}ms)` }), ms);
+  }
+
+  // Resolve a pending call exactly once and drop its timers.
+  #settle(id, reply) {
+    const entry = this.pending.get(id);
+    if (!entry) return;
+    this.pending.delete(id);
+    clearTimeout(entry.timer);
+    clearTimeout(entry.grace);
+    entry.resolve(reply);
+  }
+
+  #tokenOf(ws) {
+    try { return (ws.deserializeAttachment() || {}).deviceToken || null; } catch { return null; }
   }
 
   // --- the call primitive mcp.js builds on ----------------------------------
 
-  // Push {type:'call'} to the ext WS and await the matching {type:'result'}.
-  // Mirrors fast-dxt/broker/router.js dispatchCall: UUID-keyed pending map, 30s
-  // timeout, never rejects — failures resolve to an {error} payload so the MCP
-  // layer can surface them as a tool result.
+  // Push {type:'call'} to the target browser and await the matching
+  // {type:'result'}. UUID-keyed pending map; deadline 30 s, extended by
+  // queued/started frames (see #arm). Never rejects — failures resolve to an
+  // {error} payload so the MCP layer can surface them as a tool result.
   //
-  // `ws` is REQUIRED and names WHICH browser to drive. It is resolved ONCE per
-  // MCP request by resolveTarget() and threaded down, so every sub-step of a
-  // multi-step tool (batch, nav settle) lands on the SAME browser
-  // even if another browser redials mid-call. There is deliberately no "pick a
-  // socket here" fallback: that was the most-recent-wins bug.
-  callExtension(action, args, timeoutMs = REQUEST_TIMEOUT_MS, ws = null) {
-    args = quietFocus(action, args);
+  // `target` ({ws, deviceToken} from resolveTarget) is REQUIRED and is resolved
+  // ONCE per MCP request, so every sub-step of a multi-step tool (batch, nav
+  // settle) lands on the SAME browser. `browser` is routing-only and is stripped;
+  // `tabId` passes through to the extension.
+  callExtension(action, args, timeoutMs = REQUEST_TIMEOUT_MS, target = null) {
+    const { browser, ...rest } = quietFocus(action, args) || {};
+    const ws = target && target.ws;
     if (!ws || ws.readyState !== 1) return Promise.resolve({
       error: NO_DEVICE_ERROR,
       noDeviceConnected: true,
     });
     const id = crypto.randomUUID();
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        if (this.pending.delete(id)) {
-          resolve({ error: `Timeout waiting for browser response (${timeoutMs}ms)` });
-        }
-      }, timeoutMs);
-      this.pending.set(id, { resolve, timer, ws });
+      const entry = { resolve, timer: null, grace: null, ws, deviceToken: target.deviceToken || null, sentAt: Date.now(), timeoutMs };
+      this.pending.set(id, entry);
+      this.#arm(id, entry, entry.sentAt + timeoutMs);
       try {
-        ws.send(JSON.stringify({ type: 'call', id, action, args: args || {} }));
+        ws.send(JSON.stringify({ type: 'call', id, action, args: rest }));
       } catch (e) {
-        this.pending.delete(id);
-        clearTimeout(timer);
-        resolve({ error: `Send to extension failed: ${e.message}` });
+        this.#settle(id, { error: `Send to extension failed: ${e.message}` });
       }
     });
   }
@@ -567,35 +530,41 @@ export class UserRelay extends DurableObject {
   // Resolve {ok} | {ok:false,error} for a fast_evaluate attempt. Reads the active
   // tab's origin (cheap fast_list, no debugger attach) only when needed to check
   // the allowlist.
-  async checkEvalAllowed(ws) {
+  async checkEvalAllowed(target) {
     const p = await this.evalPolicy();
     if (!p.allowEvaluate) {
       return { ok: false, error: 'fast_evaluate is disabled for this account — enable it in relay settings (high-risk: it runs arbitrary JavaScript in your page).' };
     }
     if (p.allowAll) return { ok: true };
-    const origin = await this.currentOrigin(ws);
+    const origin = await this.currentOrigin(target);
     if (origin && p.origins.includes(origin)) return { ok: true };
     return { ok: false, error: `fast_evaluate is disabled for this site — enable it and allowlist this origin (${origin || 'unknown'}) in relay settings.` };
   }
 
-  // The active tab's origin. Prefers the cheap stamped cache (this.lastOrigin,
-  // set from each result frame per SIGNUP-SPEC §5.2); falls back to a fast_list
-  // probe on the TARGET browser. '' if it truly can't be determined.
-  async currentOrigin(ws) {
-    if (this.lastOrigin) return this.lastOrigin;
-    const o = await this.activeOrigin(ws);
-    if (o) this.lastOrigin = o;
+  // The TARGET browser's last-known origin (per-device cache, set from each
+  // result frame per SIGNUP-SPEC §5.2). '' when nothing is cached yet.
+  cachedOrigin(target) {
+    return (target && target.deviceToken && this.origins.get(target.deviceToken)) || '';
+  }
+
+  // The target browser's origin: the cache, else a fast_list probe on THAT
+  // browser. '' if it truly can't be determined.
+  async currentOrigin(target) {
+    const cached = this.cachedOrigin(target);
+    if (cached) return cached;
+    const o = await this.activeOrigin(target);
+    if (o && target?.deviceToken) this.origins.set(target.deviceToken, o);
     return o;
   }
 
-  // The active tab's origin via a cheap fast_list (no CDP/debugger attach → no
-  // banner flicker). '' if it can't be determined.
-  async activeOrigin(ws) {
+  // The target tab's origin via a cheap fast_list (no CDP/debugger attach → no
+  // banner flicker): the extension's target tab, else the active one.
+  async activeOrigin(target) {
     try {
-      const r = await this.callExtension('fast_list', {}, REQUEST_TIMEOUT_MS, ws);
+      const r = await this.callExtension('fast_list', {}, REQUEST_TIMEOUT_MS, target);
       const tabs = r?.result;
-      const active = Array.isArray(tabs) ? tabs.find((t) => t.active) : null;
-      if (active?.url) { try { return new URL(active.url).origin; } catch {} }
+      const t = Array.isArray(tabs) ? (tabs.find((x) => x.targetTab) || tabs.find((x) => x.active)) : null;
+      if (t?.url) { try { return new URL(t.url).origin; } catch {} }
     } catch { /* ignore */ }
     return '';
   }
@@ -652,7 +621,8 @@ export class UserRelay extends DurableObject {
   // / Read-only / Block without waiting for the user to look at Claude). The
   // prompt must land in the browser the call was aimed at — not "whichever
   // connected last". Never throws into the call path.
-  notifyExtension(obj, ws) {
+  notifyExtension(obj, target) {
+    const ws = target && target.ws;
     try {
       if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
     } catch { /* non-fatal */ }
@@ -668,13 +638,13 @@ export class UserRelay extends DurableObject {
   // Append-only audit of every tool call. Best-effort: a no-op until oauth's
   // db.js + the DB binding exist, so the v1 test loop runs without D1. Never
   // throws into the call path.
-  async audit(action, args, ok) {
+  async audit(action, args, ok, target = null) {
     try {
       if (!this.env.DB || !this.userId) return;
       const { logAudit } = await import('./db.js');
       // Log argument KEYS only, never their values (could carry secrets/PII).
       // Include the active-tab origin (T4) so the log answers "what, and where".
-      const detail = JSON.stringify({ args: Object.keys(args || {}), origin: this.lastOrigin || null, ok: !!ok });
+      const detail = JSON.stringify({ args: Object.keys(args || {}), browser: target?.name || null, origin: this.cachedOrigin(target) || null, ok: !!ok });
       await logAudit(this.env.DB, this.userId, action, detail);
     } catch { /* auditing must never break a tool call */ }
   }

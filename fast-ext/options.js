@@ -1,9 +1,7 @@
-// options.js — the FastLink Settings hub. FastLink runs the local broker AND the
-// cloud relay AT THE SAME TIME (both drive the same browser), so this page pairs/
-// unpairs the relay, shows live status of BOTH transports, and centralizes every
-// setting: advanced control, the
-// broker slot, desktop notifications, and per-origin site permissions.
-// Applying a transport change reloads the extension so background.js re-reads config.
+// options.js — the FastLink Settings hub. FastLink reaches this browser through
+// the cloud relay, so this page pairs/unpairs the relay, shows its live status,
+// and centralizes every setting: this browser's name, advanced control, desktop
+// notifications, and per-origin site permissions.
 
 import { claimPairingCode, authorizeViaWebAuthFlow, authorizeViaTabPoll } from './src/relayClient.js';
 import { RELAY_NAME_ERRORS, devicesFetch, slugifyName, suggestName, isAutoName } from './src/browserName.js';
@@ -47,8 +45,7 @@ function syncGenCodeLink() {
   a.textContent = url.replace(/^https?:\/\//, '');
 }
 const STORAGE_KEYS = [
-  'fastlinkMode', 'localEnabled', 'relayEnabled', 'deviceToken',
-  'relayBase', 'relayWssUrl', 'relayUserId', 'relayAuthError', 'fastlinkConn',
+  'relayEnabled', 'deviceToken', 'relayBase', 'relayWssUrl', 'relayUserId', 'relayAuthError', 'fastlinkConn',
 ];
 
 // state -> [pill class, label]
@@ -96,22 +93,8 @@ async function render() {
   const c = await chrome.storage.local.get(STORAGE_KEYS);
   const conn = c.fastlinkConn || {};
 
-  const localDisabled   = c.localEnabled === false;
   const relayConfigured = !!c.deviceToken;
-  // Relay is disabled either explicitly or via the legacy fastlinkMode==='local'.
-  const relayDisabled   = c.relayEnabled === false || c.fastlinkMode === 'local';
-
-  // Local transport pill + dot.
-  setPill('local-pill', 'local-dot', localDisabled ? 'disabled' : (conn.local?.state || 'disconnected'));
-  const localDetail = $('local-detail');
-  if (localDisabled) {
-    localDetail.textContent = 'Disabled — the local broker is off.';
-  } else if (conn.local?.state === 'connected' && typeof conn.local.clients === 'number') {
-    const n = conn.local.clients;
-    localDetail.textContent = `Localhost broker — ${n} MCP client${n === 1 ? '' : 's'} connected.`;
-  } else {
-    localDetail.textContent = 'Localhost broker (Claude Code / Desktop).';
-  }
+  const relayDisabled   = c.relayEnabled === false;
 
   // Relay transport pill + dot: auth error > not paired > disabled > live state.
   let relayState;
@@ -126,16 +109,13 @@ async function render() {
   if (relayConfigured && !relayDisabled) {
     detail.replaceChildren('Paired to ', codeEl(c.relayBase || '?'));
     if (c.relayUserId) detail.append(' as user ', codeEl(c.relayUserId));
-    detail.append('. Device token ', codeEl(mask(c.deviceToken)), '. ');
-    detail.append(localDisabled
-      ? 'Local broker is disabled.'
-      : 'Local broker also active (Claude Code / Desktop).');
+    detail.append('. Device token ', codeEl(mask(c.deviceToken)), '.');
   } else if (c.relayAuthError) {
     detail.textContent = c.relayAuthError;
   } else if (relayConfigured && relayDisabled) {
-    detail.textContent = 'Paired, but the cloud relay is disabled — only the local broker is active.';
+    detail.textContent = 'Paired, but the cloud relay is disconnected — Reconnect relay to drive this browser again.';
   } else {
-    detail.textContent = 'Using the localhost broker (Claude Code / Desktop). Not paired with a cloud relay.';
+    detail.textContent = 'Not paired with the cloud relay yet — pair below.';
   }
 
   // Pairing card: show the "✓ Paired as <user>" confirmation once this browser
@@ -159,14 +139,6 @@ async function render() {
   // Pre-fill the relay base from the last-used value so the user rarely re-types it.
   if (c.relayBase) $('relayBase').value = c.relayBase;
   syncGenCodeLink();
-
-  // Toggle the local/relay control button label to match what it will do.
-  const localBtn = $('local-btn');
-  if (localBtn) {
-    localBtn.textContent = relayConfigured && !relayDisabled
-      ? 'Disable cloud relay (keep local broker)'
-      : 'Use local broker only';
-  }
 
   if (c.relayAuthError && relayDisabled) showMsg(c.relayAuthError, 'err');
 }
@@ -244,7 +216,7 @@ async function isPaused() {
 }
 
 async function renderControls() {
-  const c = await chrome.storage.local.get(['deviceToken', 'relayEnabled', 'fastlinkMode']);
+  const c = await chrome.storage.local.get(['deviceToken', 'relayEnabled']);
   const paused = await isPaused();
 
   const pb = $('pause-btn');
@@ -253,7 +225,7 @@ async function renderControls() {
 
   const db = $('disconnect-btn');
   if (c.deviceToken) {
-    const relayDisabled = c.relayEnabled === false || c.fastlinkMode === 'local';
+    const relayDisabled = c.relayEnabled === false;
     db.style.display = '';
     db.textContent = relayDisabled ? 'Reconnect relay' : 'Disconnect relay';
     db.dataset.act = relayDisabled ? 'reconnect' : 'disconnect';
@@ -324,10 +296,8 @@ async function onToggleDebugger() {
 }
 
 // ---------------------------------------------------------------------------
-// THIS BROWSER'S NAME (cloud relay). The relay twin of the Broker-slot card
-// below: one unique NAME per browser so a chat can say which browser to drive
-// (fast_profile install:"<name>"). Same sanitizing rule as the broker slot, so a
-// name means the same thing on both transports.
+// THIS BROWSER'S NAME (cloud relay): one unique NAME per browser so a chat can
+// say which browser to drive (fast_profile install:"<name>").
 //
 // The relay is authoritative; reads/writes go through src/browserName.js
 // (shared with the onboarding page's post-pair naming step).
@@ -458,109 +428,6 @@ async function onRelayDefaultToggle(e) {
     relayNameMsg(err?.message || String(err), 'err');
     renderRelayDevices();
   }
-}
-
-// Broker slot LABEL (chrome.storage.local 'fastlinkInstallId', default 'primary').
-// Mirrors connection.js. Presets have a dedicated <option>; any other stored
-// value is a custom label shown via the "Custom label…" option.
-const INSTALL_ID_KEY = 'fastlinkInstallId';
-const PRESET_INSTALL_IDS = ['primary', 'secondary'];
-const CUSTOM_OPTION = '__custom__';
-
-// Slot key, mirrors broker/server/connection.js: lowercase [a-z0-9_-], alnum first, ≤32.
-function sanitizeInstallId(raw) {
-  if (typeof raw !== 'string') return '';
-  return raw.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').replace(/^[-_]+/, '').slice(0, 32);
-}
-
-async function renderInstallSlot() {
-  const sel = $('install-select');
-  if (!sel) return;
-  let id = 'primary';
-  try { const o = await chrome.storage.local.get(INSTALL_ID_KEY); id = sanitizeInstallId(o[INSTALL_ID_KEY]) || 'primary'; }
-  catch {}
-  const customRow = $('install-custom-row');
-  const customInput = $('install-custom');
-  if (PRESET_INSTALL_IDS.includes(id)) {
-    sel.value = id;
-    if (customRow) customRow.hidden = true;
-  } else {
-    // Stored custom label → Custom option + show it in the input.
-    sel.value = CUSTOM_OPTION;
-    if (customInput) customInput.value = id;
-    if (customRow) customRow.hidden = false;
-  }
-  renderSlotBusy();
-}
-
-// The broker rejects a profile whose slot is already held by another live
-// profile (connection.js writes `fastlinkSlotBusy` on that signal). Surface it
-// here, pointing at a free slot, so the user knows exactly which knob to turn.
-async function renderSlotBusy() {
-  const el = $('slot-busy-warn');
-  if (!el) return;
-  let info = null;
-  try { const o = await chrome.storage.local.get('fastlinkSlotBusy'); info = o?.fastlinkSlotBusy || null; }
-  catch {}
-  if (!info) { el.hidden = true; return; }
-  const busy = info.install || 'primary';
-  const free = (Array.isArray(info.knownInstalls) ? info.knownInstalls : PRESET_INSTALL_IDS).find((s) => s !== busy)
-    || (busy === 'primary' ? 'secondary' : 'primary');
-  el.innerHTML = `⚠️ <strong>This slot (“${busy}”) is already in use by another Chrome profile.</strong> `
-    + `FastLink can't connect here until you move this profile to a free slot — switch it to <strong>${free === 'secondary' ? 'Secondary' : 'Primary'}</strong> below.`;
-  el.hidden = false;
-}
-
-// Persist slot label + reload so background.js reconnects on it.
-async function commitInstallSlot(id, humanLabel) {
-  try {
-    await chrome.storage.local.set({ [INSTALL_ID_KEY]: id });
-    showMsg(`Broker slot set to ${humanLabel}. Reloading FastLink to reconnect…`, 'ok');
-    setTimeout(() => chrome.runtime.reload(), 600);
-  } catch (e) {
-    showMsg(e?.message || String(e), 'err');
-  }
-}
-
-function onInstallSlotChange() {
-  const sel = $('install-select');
-  const customRow = $('install-custom-row');
-  if (sel.value === CUSTOM_OPTION) {
-    // Reveal input, wait for Apply — don't store/reload yet.
-    if (customRow) customRow.hidden = false;
-    const input = $('install-custom');
-    if (input) input.focus();
-    return;
-  }
-  if (customRow) customRow.hidden = true;
-  const id = PRESET_INSTALL_IDS.includes(sel.value) ? sel.value : 'primary';
-  commitInstallSlot(id, id === 'secondary' ? 'Secondary (port 9877)' : 'Primary (port 9876)');
-}
-
-// Launch-time slot: options.html?slot=<label> sets this browser's slot with no click. It exists for
-// a Chrome nobody can click on: bench/hvm-rig.sh hands this URL to the headless rig Chrome it
-// launched. Web pages cannot navigate here (options.html is not web_accessible), so only whoever
-// starts this Chrome can pass it. Narrow on purpose: the label must ALREADY be canonical
-// ([a-z0-9_-], alnum first, ≤32); anything else is refused, never rewritten. Writes and reloads only
-// when it differs from the stored slot, so opening the URL again is a no-op.
-async function applyLaunchSlot() {
-  let raw = null;
-  try { raw = new URLSearchParams(location.search).get('slot'); } catch {}
-  if (raw == null) return;
-  const id = sanitizeInstallId(raw);
-  if (!id || id !== raw) { showMsg(`Ignored ?slot="${raw}": a slot label is [a-z0-9_-], starting with a letter or digit, at most 32 characters.`, 'err'); return; }
-  let current = 'primary';
-  try { current = sanitizeInstallId((await chrome.storage.local.get(INSTALL_ID_KEY))?.[INSTALL_ID_KEY]) || 'primary'; } catch {}
-  if (current === id) return;
-  await commitInstallSlot(id, `“${id}” (from the launch URL)`);
-}
-
-function onApplyCustomInstall() {
-  const input = $('install-custom');
-  const id = sanitizeInstallId(input?.value);
-  if (!id) { showMsg('Enter a label using letters, digits, "-" or "_" (e.g. "work").', 'err'); return; }
-  if (PRESET_INSTALL_IDS.includes(id)) { showMsg(`"${id}" is a preset slot — pick it from the dropdown instead.`, 'err'); return; }
-  commitInstallSlot(id, `“${id}” (custom · shares port 9876)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -706,16 +573,6 @@ async function onAddPermission() {
   renderPermissions();
 }
 
-async function onUseLocal() {
-  // Disable the cloud relay, keep the local broker. Writes the explicit flags
-  // (and the legacy fastlinkMode for back-compat). Does not server-revoke the
-  // device — the token simply stops being dialed.
-  await chrome.storage.local.set({ fastlinkMode: 'local', localEnabled: true, relayEnabled: false });
-  await chrome.storage.local.remove(['relayAuthError']);
-  showMsg('Cloud relay disabled — using the local broker. Reloading FastLink…', 'ok');
-  setTimeout(() => chrome.runtime.reload(), 600);
-}
-
 // Deep-link handoff: the relay's pairing page (or its copyable link) can open
 // this page with ?relay=<url>&code=<code> to pre-fill both fields. Returns true
 // when a code was supplied so the caller can auto-run the pairing.
@@ -738,16 +595,12 @@ $('relayBase').addEventListener('change', () => {
 
 $('signin-btn').addEventListener('click', onSignIn);
 $('pair-btn').addEventListener('click', onPair);
-$('local-btn').addEventListener('click', onUseLocal);
 $('pause-btn').addEventListener('click', onPauseToggle);
 $('disconnect-btn').addEventListener('click', onDisconnectToggle);
 $('dbg-btn').addEventListener('click', onToggleDebugger);
 $('relay-name-btn').addEventListener('click', onSaveRelayName);
 $('relay-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') onSaveRelayName(); });
 $('relay-default-toggle').addEventListener('change', onRelayDefaultToggle);
-$('install-select').addEventListener('change', onInstallSlotChange);
-$('install-custom-apply').addEventListener('click', onApplyCustomInstall);
-$('install-custom').addEventListener('keydown', (e) => { if (e.key === 'Enter') onApplyCustomInstall(); });
 $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') onPair(); });
 
 $('notify-toggle').addEventListener('change', (e) => {
@@ -764,10 +617,9 @@ $('reload-btn').addEventListener('click', () => chrome.runtime.reload());
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local') {
     if (changes.fastlinkConn || changes.relayAuthError) render();
-    if (changes.deviceToken || changes.relayEnabled || changes.fastlinkMode) { render(); renderControls(); renderRelayDevices(); }
+    if (changes.deviceToken || changes.relayEnabled) { render(); renderControls(); renderRelayDevices(); }
     if (changes[ADVANCED_CONTROL_KEY]) renderDebugger();
     if (changes.fastlinkNotify) renderNotifyToggle();
-    if (changes.fastlinkSlotBusy) renderSlotBusy();
     if (changes[DECISIONS_KEY] || changes.deviceToken) renderPermissions();
   }
   if (area === 'session' && changes[PAUSE_KEY]) renderControls();
@@ -781,11 +633,9 @@ try {
 } catch {}
 
 async function init() {
-  await applyLaunchSlot(); // first, so a rig's slot lands even if a later render throws
   await render();
   renderControls();
   renderDebugger();
-  renderInstallSlot();
   renderNotifyToggle();
   renderPermissions();
   renderRelayDevices();
@@ -796,8 +646,8 @@ async function init() {
   // re-mint a device token over the existing one).
   if (applyDeepLinkParams() && !autoPairRan) {
     autoPairRan = true;
-    const c = await chrome.storage.local.get(['deviceToken', 'relayEnabled', 'fastlinkMode']);
-    const alreadyPaired = !!c.deviceToken && !(c.relayEnabled === false || c.fastlinkMode === 'local');
+    const c = await chrome.storage.local.get(['deviceToken', 'relayEnabled']);
+    const alreadyPaired = !!c.deviceToken && c.relayEnabled !== false;
     if (alreadyPaired) {
       $('pair-btn').focus();
       showMsg('Pairing code loaded — this browser is already paired; click "Pair with code" to re-pair anyway.', 'ok');

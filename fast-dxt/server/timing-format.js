@@ -1,14 +1,12 @@
 // timing-format.js — the ONE summarizer for FastLink per-tool-call timing rows.
 //
-// A "row" is exactly what handlers.js logTiming writes (local MCP server) and what
-// fastlink-relay/src/timing.js stores per session (cloud relay):
+// A "row" is what fastlink-relay/src/timing.js stores per session:
 //   { t, name, gapMs, durMs }
 //     gapMs = startTs - previous call's return  → the MODEL's think/round-trip time
 //     durMs = time spent inside the call         → action execution time
 //
-// Both `timing-report.js` (local JSONL) and `fastlink-relay/relay-timing-report.js`
-// (relay trace) render through this, so a local run and a relay run — and a Claude
-// run vs a Grok/GPT run — are directly comparable line for line.
+// fastlink-relay/relay-timing-report.js renders through this, so a Claude run and a
+// Grok/GPT run are directly comparable line for line.
 
 // Render rows to a report string. `label` names the driver in the headline
 // ("Opus", "grok-4", …) so traces from different models are self-describing.

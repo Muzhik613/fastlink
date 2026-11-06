@@ -1,6 +1,6 @@
 # FastLink — Privacy Policy
 
-_Last updated: 2026-06-08_
+_Last updated: 2026-11-06_
 
 FastLink is a browser extension that lets **your own** Claude assistant (Claude
 Code, Claude Desktop, or claude.ai on the web) read and operate the browser tab
@@ -15,15 +15,12 @@ have connected, so Claude can do what you asked it to do.
 ---
 
 ## Who operates FastLink
-FastLink is an independent developer tool. The extension connects to one or both
-of these back ends, which you choose:
-
-1. **Local broker (default).** A WebSocket server on your own machine
-   (`ws://127.0.0.1`) used by Claude Code / Claude Desktop. Data sent this way
-   **never leaves your computer** except as part of your normal Claude session.
-2. **Cloud relay (optional, only if you pair it).** A Cloudflare-hosted relay
-   that lets claude.ai on the web drive your browser. Data sent this way transits
-   the relay. See "Cloud relay" below.
+FastLink is an independent developer tool. The extension connects to one back
+end: the **cloud relay**, a Cloudflare-hosted relay you pair your browser to.
+Every Claude assistant you connect (claude.ai on the web, or Claude Code /
+Claude Desktop through the FastLink helper) drives your browser through it, so
+data sent this way transits the relay. Until you pair, FastLink connects to
+nothing. See "Cloud relay" below.
 
 ---
 
@@ -46,7 +43,7 @@ Claude. FastLink does not continuously record your browsing.
 ### Credentials and configuration (stored locally on your device)
 Stored in `chrome.storage.local` / `chrome.storage.session` on your machine:
 - A **device token** — a bearer credential identifying this browser to your own
-  relay account (only if you pair the cloud relay).
+  relay account (once you pair).
 - Relay configuration (relay base URL, your relay user id).
 - **Macros** you save.
 - The pinned target-tab id and connection status for the toolbar UI.
@@ -56,12 +53,14 @@ No page content is persisted in extension storage.
 ---
 
 ## Cloud relay: what it stores
-If — and only if — you pair the optional cloud relay, the relay (Cloudflare D1
-database) stores the following account/operational data:
+Once you pair a browser, the relay (Cloudflare D1 database) stores the
+following account/operational data:
 - **Account:** a user id (derived as a hash of your sign-in email),
   your email, and account flags.
-- **Devices:** your device token(s), an optional device label, and last-seen
+- **Devices:** your device token(s), each browser's name, and last-seen
   time, so paired browsers can connect and so you can revoke them.
+- **Paired machines:** a hash (never the plaintext) of each FastLink helper
+  token you create for Claude Code / Claude Desktop, so you can revoke it.
 - **Pairing / sign-in:** short-lived one-time pairing codes and magic-link
   records (consumed on use).
 - **Per-origin consent:** your `allow` / `readonly` / `block` choice per website
@@ -69,7 +68,7 @@ database) stores the following account/operational data:
 - **Audit log:** an append-only record of actions taken (tool name, origin, a
   short argument summary, success/failure) so you can see what was done.
 
-The relay routes live commands and page data between claude.ai and your browser
+The relay routes live commands and page data between your Claude assistant and your browser
 **in transit**; it does not store your page snapshots, screenshots, or page
 content as part of normal operation.
 
@@ -95,14 +94,12 @@ No other third parties receive your data.
 ---
 
 ## Your controls
-- **Use local only:** keep using just the localhost broker and never pair the
-  relay — nothing leaves your machine via FastLink.
 - **Per-origin consent:** set any site to `readonly` (reads only, no actions) or
   `block`.
 - **Revoke devices:** revoke a paired browser's device token at any time; the
   relay closes its connection.
-- **Unpair / disable:** turn off the cloud relay in the extension options to
-  return to local-only operation.
+- **Unpair / disable:** turn off the cloud relay in the extension options; no
+  Claude assistant can drive your browser until you turn it back on.
 - **Arbitrary-JS execution (`fast_evaluate`) is OFF by default** and must be
   explicitly enabled per origin.
 

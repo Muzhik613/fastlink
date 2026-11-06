@@ -1,4 +1,4 @@
-import { getActiveTab } from '../util.js';
+import { getActiveTab, missingTabError } from '../util.js';
 import { setTargetTab, clearTargetTab, resolveTargetTab } from './targetTab.js';
 import { trailOf } from './trail.js';
 
@@ -10,15 +10,16 @@ import { trailOf } from './trail.js';
 // cloud-relay case: the user sits on the claude.ai tab while Claude drives
 // another, so target tab ≠ active tab.
 
-// Resolve the full tab OBJECT Claude should act on (pinned-if-alive, else
-// active). Returns null if neither exists.
-export async function getTargetTab() {
-  return (await resolveTargetTab()) || (await getActiveTab()) || null;
+// Resolve the full tab OBJECT Claude should act on: the call's own `tabId` when
+// it names one (null if that tab is gone — never another tab), else the pinned
+// target if alive, else the active tab. Returns null if none exists.
+export async function getTargetTab(tabId) {
+  return (await getActiveTab(tabId)) || null;
 }
 
 // Resolve just the tab id Claude should act on. Returns undefined if none.
-export async function getTargetTabId() {
-  return (await getTargetTab())?.id;
+export async function getTargetTabId(tabId) {
+  return (await getTargetTab(tabId))?.id;
 }
 
 // Fallback re-injection list for when the pre-injected page.js went stale or
@@ -110,7 +111,18 @@ async function settleLoaded(tabId, waitMs, askedUrl) {
   }
 }
 
-async function openTab({ url, background, waitMs }) {
+// A call carrying its own `tabId` (a per-session client that tracks "my tab",
+// PIN-REDESIGN §3) is scoped: the new tab opens in that tab's window, the global
+// target pin is left alone and no window is focused — the caller learns the new
+// tab from the result's `tabId`. Unscoped calls pin the new tab and focus it.
+async function openTab({ url, background, waitMs, tabId: callTabId }) {
+  if (typeof callTabId === 'number') {
+    let windowId;
+    try { windowId = (await chrome.tabs.get(callTabId)).windowId; } catch {}
+    const tab = await chrome.tabs.create({ url, active: !background, ...(windowId !== undefined ? { windowId } : {}) });
+    const landed = await settleLoaded(tab.id, waitMs, url);
+    return { id: tab.id, tabId: tab.id, url: landed.url || tab.pendingUrl || tab.url, ...(landed.redirected.length ? { redirected: landed.redirected } : {}) };
+  }
   // active:true → foreground-within-window (the parameter default); we ALSO
   // focus the owning window below so "foreground" actually holds on-screen.
   const opts = { url, active: !background };
@@ -125,7 +137,7 @@ async function openTab({ url, background, waitMs }) {
     // background:true we deliberately leave focus alone (active:false above).
     if (!background) await focusTabWindow(tab);
     const landed = await settleLoaded(tab.id, waitMs, url);
-    return { id: tab.id, url: landed.url || tab.pendingUrl || tab.url, ...(landed.redirected.length ? { redirected: landed.redirected } : {}), targetTab: tab.id };
+    return { id: tab.id, tabId: tab.id, url: landed.url || tab.pendingUrl || tab.url, ...(landed.redirected.length ? { redirected: landed.redirected } : {}), targetTab: tab.id };
   } catch (e) {
     if (!/no current window/i.test(e?.message || '')) throw e;
     // Cold-started SW with no current window: pick any normal window, else
@@ -136,13 +148,13 @@ async function openTab({ url, background, waitMs }) {
       await setTargetTab(tab.id);
       if (!background) await focusTabWindow(tab);
       const landed = await settleLoaded(tab.id, waitMs, url);
-      return { id: tab.id, url: landed.url || tab.pendingUrl || tab.url, ...(landed.redirected.length ? { redirected: landed.redirected } : {}), targetTab: tab.id };
+      return { id: tab.id, tabId: tab.id, url: landed.url || tab.pendingUrl || tab.url, ...(landed.redirected.length ? { redirected: landed.redirected } : {}), targetTab: tab.id };
     }
     const created = await chrome.windows.create({ url, focused: !background });
     const tab = created.tabs?.[0];
     if (tab?.id !== undefined) await setTargetTab(tab.id);
     const landed = tab?.id !== undefined ? await settleLoaded(tab.id, waitMs, url) : { url: null, redirected: [] };
-    return { id: tab?.id, url: landed.url || url, ...(landed.redirected.length ? { redirected: landed.redirected } : {}), targetTab: tab?.id };
+    return { id: tab?.id, tabId: tab?.id, url: landed.url || url, ...(landed.redirected.length ? { redirected: landed.redirected } : {}), targetTab: tab?.id };
   }
 }
 
@@ -178,9 +190,9 @@ async function probeUntilLive(tabId, tries = 3, gapMs = 150) {
   return false;
 }
 
-async function navigateTab({ url, waitMs }) {
-  const tab = await getTargetTab();
-  if (!tab) return { error: 'No active tab' };
+async function navigateTab({ url, waitMs, tabId: callTabId }) {
+  const tab = await getTargetTab(callTabId);
+  if (!tab) return { error: typeof callTabId === 'number' ? missingTabError(callTabId) : 'No active tab' };
   await chrome.tabs.update(tab.id, { url });
   // Wait for the navigation to actually finish (and any redirect hop after it) —
   // without this, a subsequent step in fast_batch lands while Chrome is mid-tear-down
@@ -207,11 +219,11 @@ async function navigateTab({ url, waitMs }) {
   // doesn't silently chase empty snapshots; re-navigating is the recovery path.
   if (contentScript === 'stale') {
     return {
-      id: tab.id, url: landed.url || url, ...hops, contentScript,
+      id: tab.id, tabId: tab.id, url: landed.url || url, ...hops, contentScript,
       hint: 'FastLink\'s content script is not live in the navigated tab — snapshot/click/wait may return empty or falsely idle. fast_nav to the same URL to recover. (Restricted chrome:// / extension-gallery URLs cannot be driven.)',
     };
   }
-  return { id: tab.id, url: landed.url || url, ...hops, contentScript };
+  return { id: tab.id, tabId: tab.id, url: landed.url || url, ...hops, contentScript };
 }
 
 // EVERY window, not just the current one. A currentWindow-only list hid every tab in any other
@@ -239,14 +251,16 @@ async function listTabs() {
   }));
 }
 
+// `match` wins over `tabId`: a per-session client fills tabId with its own tab on
+// every call, so an explicit match is what the model actually asked for.
 async function findTab({ tabId, match }) {
-  if (tabId) {
-    try { return await chrome.tabs.get(tabId); } catch {}
-  }
   if (match) {
     const m = String(match).toLowerCase();
     const tabs = await chrome.tabs.query({});
     return tabs.find(t => (t.url || '').toLowerCase().includes(m) || (t.title || '').toLowerCase().includes(m));
+  }
+  if (typeof tabId === 'number') {
+    try { return await chrome.tabs.get(tabId); } catch {}
   }
   return null;
 }
@@ -255,7 +269,7 @@ async function closeTab(args) {
   const target = await findTab(args);
   if (!target) return { error: 'No matching tab to close' };
   await chrome.tabs.remove(target.id);
-  return { closed: { id: target.id, url: target.url, title: target.title } };
+  return { closed: { id: target.id, url: target.url, title: target.title }, tabId: target.id };
 }
 
 async function switchTab(args = {}) {
@@ -276,7 +290,7 @@ async function switchTab(args = {}) {
   // A script polling a tab (WhatsApp Web) then never raises Chrome. Mirrors
   // fast_tab background:true — the tab is neither activated nor its window focused.
   if (args.focus === false) {
-    return { id: target.id, url: target.url, title: target.title, targetTab: target.id, focused: false };
+    return { id: target.id, tabId: target.id, url: target.url, title: target.title, targetTab: target.id, focused: false };
   }
   // Bringing the tab to the foreground is best-effort — if the user clicks
   // away, the pin (not focus) is what routes subsequent actions.
@@ -284,5 +298,5 @@ async function switchTab(args = {}) {
     await chrome.tabs.update(target.id, { active: true });
     if (target.windowId !== undefined) await chrome.windows.update(target.windowId, { focused: true });
   } catch {}
-  return { id: target.id, url: target.url, title: target.title, targetTab: target.id };
+  return { id: target.id, tabId: target.id, url: target.url, title: target.title, targetTab: target.id };
 }

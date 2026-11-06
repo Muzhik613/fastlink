@@ -35,9 +35,8 @@
   // click them. Cleared whenever no prompt is detected.
   let permButtons = { allow: null, deny: null };
 
-  // Relay-driving gate. The transcript must surface ONLY while claude.ai-web (the
-  // cloud relay) is actively driving this browser — not when idle or when only the
-  // local broker drives. Background is the authoritative gate, but we also suppress
+  // Relay-driving gate. The transcript must surface ONLY while the cloud relay is
+  // actively driving this browser — not when idle. Background is the authoritative gate, but we also suppress
   // sends here when known-inactive (cheaper) and force a fresh push when it resumes.
   // Default false until background answers the gate-query below, so we don't leak
   // scraped text before we know the relay is driving.

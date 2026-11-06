@@ -242,11 +242,10 @@ export class UserRelay extends DurableObject {
   // ext sockets attach to THIS one DO (tag 'ext'). Each socket is stamped with
   // {connectedAt, deviceToken} via serializeAttachment (survives hibernation);
   // deviceToken → devices.label in D1 is the browser's NAME. resolveTarget()
-  // picks the socket for the name this MCP client selected (fast_profile), or
-  // the account default, or — only in explicit 'auto' mode — the most recently
-  // connected one. A selected-but-offline browser is a hard error, never a
-  // silent redirect to a different browser.
-  async resolveTarget(clientKey) { /* → { ws, name, mode } | { error, browsers, connected } */ }
+  // picks the socket for the call's `browser` argument, else the account default
+  // (dev:default). Stateless: no per-client selection is stored. An unset
+  // default, unknown name or offline browser is a hard error, never a redirect.
+  async resolveTarget(browser) { /* → { ws, name, deviceToken } | { error, browsers, connected } */ }
   extSocketCount() { return this.ctx.getWebSockets('ext').filter((w) => w.readyState === 1).length; }
 
   // Called by mcp.js for a tools/call. Mirrors broker/router.js dispatchCall:
@@ -270,7 +269,7 @@ export class UserRelay extends DurableObject {
 
 > **Hibernation × pending map.** The in-memory `pending` map is safe because a `tools/call` keeps the DO's `/__mcp` `fetch` promise **awaiting** — an in-flight request prevents eviction, so `pending` survives send→receive. The DO only hibernates when **fully idle** (no awaiting MCP request), and at that point there is nothing pending to lose. The ext WS stays open across hibernation; auto-response keeps pings answered without waking.
 
-> **Multi-device, NAMED targeting.** A user may pair MULTIPLE browsers — every one of their extensions dials `/ext` and all attach to this same DO (tag `'ext'`). Each browser has a NAME (`devices.label`, unique per user, set on that browser's FastLink options page) and each socket carries its `deviceToken`, so a name resolves to exactly one live socket. An MCP client picks one with **`fast_profile install:"<name>"`**; the selection is stored durably in this DO keyed by the CHAT PRODUCT (the OAuth client id, falling back to the bearer fingerprint) — *not* by MCP session, because some clients open a fresh MCP session for every single tool call. A per-user default (`dev:default`) covers clients that never call `fast_profile`; `install:"auto"` restores most-recently-connected routing. A selected browser that is offline produces a clear error naming the connected browsers — commands are **never** silently redirected to another browser. Likewise claude.ai may be signed in on several devices — all those grants carry the same `userId` and hit the same DO. This is intentional fan-IN to one DO, not a violation of per-user isolation (the boundary is the *user*, not the device).
+> **Multi-device, NAMED targeting.** A user may pair MULTIPLE browsers — every one of their extensions dials `/ext` and all attach to this same DO (tag `'ext'`). Each browser has a NAME (`devices.label`, unique per user, set on that browser's FastLink options page) and each socket carries its `deviceToken`, so a name resolves to exactly one live socket. Routing is STATELESS (docs/PIN-REDESIGN.md): every browser tool takes an optional **`browser`** name (and `tabId`); without it the call goes to the per-user default (`dev:default`). The relay stores no per-client or per-session selection — the fast-dxt helper keeps a session's pin locally and stamps `browser` on each call. A named or default browser that is unset or offline produces a clear error naming the connected browsers — commands are **never** silently redirected to another browser. Likewise claude.ai may be signed in on several devices — all those grants carry the same `userId` and hit the same DO. This is intentional fan-IN to one DO, not a violation of per-user isolation (the boundary is the *user*, not the device).
 
 ### 3e. `src/mcp.js` — MCP JSON-RPC (relay-core)
 
@@ -335,7 +334,7 @@ Selected by env var `IDENTITY_MODE` (canonical `shared` | `magiclink`; the code 
 3. `auth.js` `handlePairClaim`: `db.claimPairingCode(code)` (single-use) → `userId`; mint a long-lived random `deviceToken` (≥128-bit); `db.createDevice(userId, deviceToken, label)`; return `{ deviceToken, userId, wssUrl: 'wss://relay.ytx.app/ext' }`. **Each paired browser gets its OWN `deviceToken` row** — N devices per `userId` is expected.
 4. Each extension stores its `deviceToken` in `chrome.storage.local`, dials `wss://relay.ytx.app/ext?token=<deviceToken>`.
 5. `handleExtUpgrade` validates the token → `userId` → forwards the upgrade to `idFromName(userId)`'s DO. **All of a user's browsers attach to the same DO** (tag `'ext'`).
-6. **Routing across devices (named targeting):** the DO's `resolveTarget()` maps this MCP client's selection → device name → `device_token` → the live socket carrying it. Selection order: the client's `fast_profile` pin → the account default → `auto` (most-recently-connected). An offline selection errors out naming the connected browsers instead of falling back. Names are managed from the extension options page via the device-token-authed `GET/POST /devices`.
+6. **Routing across devices (named targeting):** the DO's `resolveTarget()` maps this MCP client's selection → device name → `device_token` → the live socket carrying it. Selection order: the call's `browser` argument → the account default. No default, or an offline browser, errors out naming the connected browsers instead of falling back. Names are managed from the extension options page via the device-token-authed `GET/POST /devices`.
 
 Now `userId` is the join key: **all** of a user's claude.ai grants **and all** their extension sockets resolve to the **same DO**.
 

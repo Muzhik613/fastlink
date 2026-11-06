@@ -44,11 +44,10 @@ debugging.
 - 📸 **Screenshots** — for elements outside the DOM (canvas, cross-origin frames),
   Claude reads a screenshot and clicks by coordinate.
 
-**Two ways to connect**
-1. **Local (default):** pairs with Claude Code / Claude Desktop over a localhost
-   connection — page data stays on your machine.
-2. **Cloud relay (optional):** pair your browser to your relay account so
-   claude.ai on the web can drive it from anywhere.
+**One sign-in, every assistant**
+Pair your browser to your FastLink relay account once. claude.ai on the web,
+and Claude Code / Claude Desktop through the FastLink helper, can then drive it,
+each on its own tab.
 
 **Privacy-first**
 FastLink captures page data only when you have Claude act — it doesn't record
@@ -84,7 +83,7 @@ Paste the matching one-liners (full detail in `PERMISSIONS-JUSTIFICATION.md`):
 | `scripting` | Inject the in-page bridge that builds DOM/accessibility snapshots and runs user-requested page reads. |
 | `activeTab` | Capture/script the currently focused tab on user action. |
 | `storage` | Store the user's relay device token, relay config, saved macros, and connection state locally. |
-| `alarms` | Revive the MV3 service worker to keep the broker/relay connections alive and reconnect. |
+| `alarms` | Revive the MV3 service worker to keep the relay connection alive and reconnect. |
 | `webRequest` | Observe (read-only) network request URLs/timing to show network logs and detect page idle. No blocking/modification. |
 | `debugger` *(OPTIONAL — `optional_permissions`, requested at runtime)* | Power-user feature: trusted input (CDP) for strict sites + screenshots of non-foreground tabs. Not granted at install; requested on explicit user opt-in. Falls back to captureVisibleTab + synthetic events without it. |
 | `identity` | One-click sign-in to the user's own relay account (`launchWebAuthFlow`) to pair this browser without copy-pasting a code. Manual code paste is the fallback. |
@@ -120,7 +119,7 @@ Host `PRIVACY-POLICY.md` at a public URL and paste it here (e.g. the relay site
       larger source is needed).
 - [ ] **Screenshots** — 1280×800 (or 640×400), PNG/JPEG, **at least 1**, up to 5.
       Suggested shots:
-  1. The toolbar popup showing "Local broker — Connected" / "Cloud relay — Connected".
+  1. The toolbar popup showing "Cloud relay — Connected".
   2. The options page (pair-a-relay screen).
   3. Claude driving a real page (e.g. a form being filled) with the FastLink
      activity overlay visible.

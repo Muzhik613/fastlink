@@ -1,91 +1,65 @@
-import { startConnection }                      from './src/connection.js';
 import { startRelayConnection, sendRelayEvent, stopRelay }  from './src/relayClient.js';
 import { startBufferListeners }                  from './src/buffers.js';
 import { dispatchAction }                         from './src/actions/index.js';
+import { getTargetTabId }                         from './src/actions/tab.js';
 import { installTrail }                           from './src/actions/trail.js';
 import { isInjectableUrl }                        from './src/util.js';
 import { reloadSelf }                             from './src/reloadSelf.js';
 
 startBufferListeners();
 
-// FastLink runs TWO independent transports at once, both driving the SAME tab:
-//   • local broker (connection.js)  — ws://127.0.0.1 broker; how Claude Code /
-//     Desktop drive the tab. Default ON.
-//   • cloud relay  (relayClient.js) — outbound WSS to the multi-tenant relay;
-//     how claude.ai on the web drives the tab. ON when paired.
-// They were previously mutually exclusive, so switching to the relay killed the
-// CLI's broker. Now both run together: a command from EITHER transport executes
-// via the shared dispatchAction, and each transport replies on its own socket,
-// so the right caller gets the result. Each can still be disabled individually.
+// FastLink has ONE transport: the cloud relay (relayClient.js), an outbound WSS
+// to the multi-tenant relay. Every client — claude.ai, Grok, and the per-session
+// fastlink helper for Claude Code — drives this browser through it. ON when paired.
 
 // ---------------------------------------------------------------------------
-// Shared toolbar icon + popup-state reconciliation.
-// With two transports live, neither may own the icon or the `fastlinkConn`
-// storage key directly (they'd clobber each other). Instead each REPORTS its
-// state here; background reconciles a single combined icon and a single
-// fastlinkConn object: { local, relay } (each null when that transport is off).
+// Toolbar icon + popup state. The relay REPORTS its state here; background owns
+// the icon and the `fastlinkConn` storage object: { relay } (null when the relay
+// is off or unpaired).
 // ---------------------------------------------------------------------------
 const ICONS = {
   green:  { 16: 'icons/icon-green-16.png',  32: 'icons/icon-green-32.png',  48: 'icons/icon-green-48.png',  128: 'icons/icon-green-128.png' },
   yellow: { 16: 'icons/icon-yellow-16.png', 32: 'icons/icon-yellow-32.png', 48: 'icons/icon-yellow-48.png', 128: 'icons/icon-yellow-128.png' },
   red:    { 16: 'icons/icon-red-16.png',    32: 'icons/icon-red-32.png',    48: 'icons/icon-red-48.png',    128: 'icons/icon-red-128.png' },
 };
-const RANK = { red: 0, yellow: 1, green: 2 };
 
-// Latest reported state per transport; null = that transport is not enabled.
-const connState = { local: null, relay: null };
+// Latest reported relay state; null = the relay is not enabled.
+const connState = { relay: null };
 
-function reportLocal(payload) { connState.local = { enabled: true, ...payload }; reconcile(); }
 // Relay state changes (connect/disconnect) move the transcript gate, so recompute
 // after reconciling the icon. A relay drop immediately flips the gate to inactive.
 function reportRelay(payload) { connState.relay = { enabled: true, ...payload }; reconcile(); recomputeRelayActive(); }
 
-// Map a transport's state to an icon color. Local keeps its 2+→green / 1→yellow
-// MCP-client rule; relay is green when the WSS is up.
-function colorFor(kind, s) {
-  if (!s) return null;
-  if (s.state === 'connecting') return 'yellow';
-  if (kind === 'local') {
-    if (s.state === 'connected') return s.clients >= 2 ? 'green' : 'yellow';
-    return 'red';
-  }
-  return s.state === 'connected' ? 'green' : 'red';   // relay: disconnected/auth → red
+// connecting → yellow, connected → green, disconnected/auth/off → red.
+function iconColor() {
+  const st = connState.relay?.state;
+  return st === 'connected' ? 'green' : st === 'connecting' ? 'yellow' : 'red';
 }
 
 function buildTitle() {
-  const parts = [];
-  if (connState.local) {
-    const s = connState.local;
-    parts.push('broker: ' + (s.state === 'connected' ? `${s.clients} client${s.clients === 1 ? '' : 's'}` : s.state));
-  }
-  if (connState.relay) parts.push(`relay: ${connState.relay.state}`);
-  return parts.length ? `FastLink — ${parts.join(' · ')}` : 'FastLink — no transport enabled';
+  return connState.relay ? `FastLink — relay: ${connState.relay.state}` : 'FastLink — not paired';
 }
 
-// Combined icon = the best (greenest) state across enabled transports, so if
-// EITHER transport is healthy the icon is green. The ICON reflects CONNECTION
-// state only; live command ACTIVITY is shown via the BADGE + a title suffix
-// (see the activity section below), so the two never clobber each other.
+// The ICON reflects CONNECTION state only; live command ACTIVITY is shown via the
+// BADGE + a title suffix (see the activity section below), so the two never
+// clobber each other.
 function reconcile() {
-  const colors = [colorFor('local', connState.local), colorFor('relay', connState.relay)].filter(Boolean);
-  const best = colors.length ? colors.reduce((a, b) => (RANK[b] > RANK[a] ? b : a)) : 'red';
-  try { chrome.action.setIcon({ path: ICONS[best] }); } catch {}
+  try { chrome.action.setIcon({ path: ICONS[iconColor()] }); } catch {}
   renderTitle();   // connection title + live-activity suffix, composed
-  try { chrome.storage.local.set({ fastlinkConn: { local: connState.local, relay: connState.relay } }); } catch {}
+  try { chrome.storage.local.set({ fastlinkConn: { relay: connState.relay } }); } catch {}
 }
 
 // ===========================================================================
 // GLOBAL ACTIVITY INDICATOR
 // ---------------------------------------------------------------------------
-// claude.ai (web, via relay) or Claude Code (local broker) can be driving a tab
-// the user isn't looking at. The in-page overlay (src/overlay.js) only renders
+// claude.ai, Grok or a Claude Code session (all via the relay) can be driving a
+// tab the user isn't looking at. The in-page overlay (src/overlay.js) only renders
 // on the DRIVEN tab, so it's invisible from any other tab. This makes "is Claude
 // working / idle / stuck?" visible GLOBALLY on the toolbar (badge + title) and in
 // the popup.
 //
-// Single chokepoint: trackedDispatch() wraps the SAME dispatchAction both
-// transports already call, so EVERY inbound command (relay + broker) is recorded
-// without touching src/actions/index.js. State lives in chrome.storage.session so
+// Single chokepoint: trackedDispatch() wraps the dispatchAction the relay calls,
+// so EVERY inbound command is recorded without touching src/actions/index.js. State lives in chrome.storage.session so
 // a revived MV3 worker can rebuild the badge; in-flight entries from a dead worker
 // are cleared on restart (their promises died with it).
 // ===========================================================================
@@ -118,15 +92,13 @@ const BADGE_STUCK  = '#e07b27';             // brand orange = possibly stuck
 
 // ---- Relay-driving gate (transcript surfaces only) ------------------------
 // The transcript pipeline (claude.ai scraper → side panel + active-tab overlay)
-// must surface ONLY while claude.ai-web (the cloud RELAY transport) is actively
-// driving THIS browser — not when only the local broker (Claude Code/Desktop)
-// drives, and not when idle. We tag every tracked command with its transport
-// (see trackedDispatch) and define "relay driving active" =
-//   relay socket connected  AND  (a relay command is in flight  OR
-//                                 a relay command finished within RECENCY).
+// must surface ONLY while the relay is actively driving THIS browser, not when
+// idle. "Relay driving active" =
+//   relay socket connected  AND  (a command is in flight  OR
+//                                 a command finished within RECENCY).
 // The gate boolean is persisted to storage.session so the side panel can read
 // it and so a revived MV3 worker can rebuild it from the last relay timestamp.
-const RELAY_RECENCY_MS = 25000;             // relay "driving" lingers this long after the last relay command
+const RELAY_RECENCY_MS = 25000;             // relay "driving" lingers this long after the last command
 const RELAY_GATE_KEY   = 'fastlink.relayActive';   // chrome.storage.session — transcript gate
 
 let __actSeq = 0;
@@ -141,8 +113,7 @@ const notifiedStuck = new Set();
 let notifyEnabled = false;
 
 // Relay-gate state (see RELAY_GATE_KEY above).
-let lastRelayTs      = 0;       // ms of the last relay command start/finish
-let lastTransport    = null;    // transport of the most recent command ('relay'|'local')
+let lastRelayTs      = 0;       // ms of the last command start/finish
 let relayActiveState = false;   // current gate value (relay is driving this browser)
 let relayExpiryTimer = null;    // fires when the recency window closes → recompute
 
@@ -196,11 +167,10 @@ function persistActivity() {
   try {
     chrome.storage.session.set({
       [ACTIVITY_KEY]: {
-        running: [...inflight.values()].map((e) => ({ action: e.action, start: e.start, tabId: e.tabId, transport: e.transport })),
+        running: [...inflight.values()].map((e) => ({ action: e.action, start: e.start, tabId: e.tabId })),
         inFlight: inflight.size,
         stuck: stuckActive,
         last: lastDone,
-        transport: lastTransport,   // transport of the most recent command ('relay'|'local')
         ts: Date.now(),
       },
     });
@@ -224,12 +194,10 @@ function tick() {
   // maybeNotifyDone() once the map drains.
   const now = Date.now();
   let evicted = null;          // latest-started evicted entry → lastDone
-  let evictedRelay = false;
   for (const [id, e] of inflight) {
     if (now - e.start >= STUCK_HARD_CAP_MS) {
       inflight.delete(id);
       notifiedStuck.delete(id);
-      if (e.transport === 'relay') evictedRelay = true;
       if (!evicted || e.start > evicted.start) evicted = e;
     }
   }
@@ -237,7 +205,7 @@ function tick() {
     lastDone = { action: evicted.action, ok: false, endedAt: now, duration: now - evicted.start, timedOut: true };
     // No lastRelayTs bump (nothing finished) — recompute so the gate sees the
     // entry gone; the start-time recency window has long expired by the cap.
-    if (evictedRelay) recomputeRelayActive();
+    recomputeRelayActive();
     onActivityChange();
     if (inflight.size === 0) { maybeNotifyDone(); return; }
   }
@@ -279,32 +247,30 @@ function onActivityChange() {
   persistActivity();
 }
 
-// THE CHOKEPOINT. Both transports are started with this wrapper instead of the
-// bare dispatchAction, so relay (claude.ai-web) AND broker (Claude Code) commands
-// are tracked. It calls dispatchAction IMMEDIATELY (zero added dispatch latency)
-// and resolves the driven tab in the background. `transport` ('relay'|'local')
-// is supplied by the per-transport wrappers in startLocal/startRelay; it tags the
-// in-flight entry and drives the transcript relay-gate (relay commands only).
-function trackedDispatch(action, args, transport) {
+// THE CHOKEPOINT. The relay is started with this wrapper instead of the bare
+// dispatchAction, so every command is tracked. It calls dispatchAction
+// IMMEDIATELY (zero added dispatch latency); the driven tab is the call's own
+// `tabId`, else the pinned target, resolved in the background.
+function trackedDispatch(action, args) {
   const id = ++__actSeq;
   const start = Date.now();
-  const tport = transport === 'relay' ? 'relay' : 'local';
   let p;
   try { p = Promise.resolve(dispatchAction(action, args)); } catch (e) { p = Promise.reject(e); }
 
-  const entry = { action, start, tabId: null, transport: tport };
-  lastTransport = tport;
+  const entry = { action, start, tabId: typeof args?.tabId === 'number' ? args.tabId : null };
   if (inflight.size === 0) { burstStart = start; burstCount = 0; }
   burstCount++;
   inflight.set(id, entry);
-  // A relay command starting (re)opens the relay-driving window.
-  if (tport === 'relay') { lastRelayTs = start; recomputeRelayActive(); }
+  // A command starting (re)opens the relay-driving window.
+  lastRelayTs = start; recomputeRelayActive();
 
-  // Discover the pinned/driven tab without blocking the command.
-  chrome.storage.session.get('fastlink.targetTabId').then((o) => {
-    const t = o?.['fastlink.targetTabId'];
-    if (typeof t === 'number' && inflight.has(id)) { entry.tabId = t; persistActivity(); }
-  }).catch(() => {});
+  // No tabId on the call: discover the pinned/driven tab without blocking the command.
+  if (entry.tabId == null) {
+    chrome.storage.session.get('fastlink.targetTabId').then((o) => {
+      const t = o?.['fastlink.targetTabId'];
+      if (typeof t === 'number' && inflight.has(id)) { entry.tabId = t; persistActivity(); }
+    }).catch(() => {});
+  }
 
   onActivityChange();
 
@@ -312,8 +278,8 @@ function trackedDispatch(action, args, transport) {
     inflight.delete(id);
     notifiedStuck.delete(id);
     lastDone = { action, ok, endedAt: Date.now(), duration: Date.now() - start };
-    // A relay command finishing extends the relay-driving window by RECENCY.
-    if (tport === 'relay') { lastRelayTs = Date.now(); recomputeRelayActive(); }
+    // A command finishing extends the relay-driving window by RECENCY.
+    lastRelayTs = Date.now(); recomputeRelayActive();
     onActivityChange();
     if (inflight.size === 0) maybeNotifyDone();
   };
@@ -324,14 +290,10 @@ function trackedDispatch(action, args, transport) {
 }
 
 // ---- Relay-driving gate computation ---------------------------------------
-// Single source of truth for "is claude.ai-web currently driving this browser?"
-// Recomputed on: relay command start/finish, relay connection state change,
-// the recency-window expiry timer, and SW startup. When the value flips it is
+// Single source of truth for "is the relay currently driving this browser?"
+// Recomputed on: command start/finish, relay connection state change, the
+// recency-window expiry timer, and SW startup. When the value flips it is
 // persisted (storage.session) and the transcript surfaces are pushed/cleared.
-function relayInflight() {
-  for (const e of inflight.values()) if (e.transport === 'relay') return true;
-  return false;
-}
 function persistRelayGate() {
   try {
     chrome.storage.session.set({
@@ -346,7 +308,7 @@ function persistRelayGate() {
 // the worker dies first, the startup recompute reads the (now-expired) timestamp.
 function scheduleRelayExpiry(connected, now) {
   if (relayExpiryTimer) { clearTimeout(relayExpiryTimer); relayExpiryTimer = null; }
-  if (!connected || relayInflight()) return;
+  if (!connected || inflight.size > 0) return;
   const remaining = (lastRelayTs + RELAY_RECENCY_MS) - now;
   if (remaining > 0) relayExpiryTimer = setTimeout(() => { relayExpiryTimer = null; recomputeRelayActive(); }, remaining + 50);
 }
@@ -354,7 +316,7 @@ function recomputeRelayActive() {
   const connected = connState.relay?.state === 'connected';
   const now = Date.now();
   const recent = (now - lastRelayTs) <= RELAY_RECENCY_MS;
-  const desired = !!connected && (relayInflight() || recent);
+  const desired = !!connected && (inflight.size > 0 || recent);
   scheduleRelayExpiry(connected, now);
   if (desired !== relayActiveState) {
     relayActiveState = desired;
@@ -423,10 +385,10 @@ chrome.storage.session.get(ACTIVITY_KEY).then((o) => {
 }).catch(() => {});
 
 // Relay-gate revival: restore the last relay timestamp so the recency window can
-// survive a worker restart, then recompute. In-flight relay commands died with
-// the old worker (inflight was cleared above), and the relay socket re-dials
-// async — so the gate seeds inactive here and re-activates when the relay
-// reconnects (reportRelay) or the next relay command arrives.
+// survive a worker restart, then recompute. In-flight commands died with the
+// old worker (inflight was cleared above), and the relay socket re-dials async —
+// so the gate seeds inactive here and re-activates when the relay reconnects
+// (reportRelay) or the next command arrives.
 chrome.storage.session.get(RELAY_GATE_KEY).then((o) => {
   const g = o?.[RELAY_GATE_KEY];
   if (g && typeof g.lastRelayTs === 'number') lastRelayTs = g.lastRelayTs;
@@ -434,74 +396,54 @@ chrome.storage.session.get(RELAY_GATE_KEY).then((o) => {
 }).catch(() => { recomputeRelayActive(); });
 
 // ---------------------------------------------------------------------------
-// Transports + persistent event wiring.
+// Relay transport + persistent event wiring.
 // ---------------------------------------------------------------------------
-const transports = [];          // active transport hook objects (onAlarm/wake/…)
-let localStarted = false;
-let relayStarted = false;
-
-// Start the local broker transport once. Idempotent.
-function startLocal() {
-  if (localStarted) return;
-  localStarted = true;
-  transports.push(startConnection((a, ar) => trackedDispatch(a, ar, 'local'), { onState: reportLocal }));
-}
+let relay = null;               // hook object from startRelayConnection (onAlarm/wake/…)
 
 // Start the cloud-relay transport once, from the given config. Idempotent —
 // safe to call again after a fresh pairing (onboarding) to bring the relay up
 // LIVE without an extension reload. No-op if not configured.
 function startRelay(c) {
-  if (relayStarted) return;
+  if (relay) return;
   if (!(c?.deviceToken && (c.relayWssUrl || c.relayBase))) return;
-  relayStarted = true;
   const wssUrl = c.relayWssUrl || `${String(c.relayBase).replace(/^http/, 'ws')}/ext`;
-  transports.push(startRelayConnection((a, ar) => trackedDispatch(a, ar, 'relay'), { wssUrl, deviceToken: c.deviceToken, onState: reportRelay }));
+  relay = startRelayConnection(trackedDispatch, {
+    wssUrl, deviceToken: c.deviceToken, onState: reportRelay,
+    resolveTabId: () => getTargetTabId(),   // queue key for calls without args.tabId
+  });
 }
 
 // Persistent event listeners MUST be registered synchronously at the top level
 // so a fired alarm / window event can revive the service worker after MV3 kills
-// it. They fan out to EVERY active transport. They no-op until the async config
-// read below populates `transports`; each transport also attempts an immediate
-// connect on start, so no wake is lost.
-chrome.alarms.onAlarm.addListener((a)       => transports.forEach((t) => t.onAlarm?.(a)));
-chrome.windows.onCreated.addListener(()     => transports.forEach((t) => t.onWindowCreated?.()));
-chrome.windows.onRemoved.addListener(()     => transports.forEach((t) => t.onWindowRemoved?.()));
+// it. They no-op until the async config read below starts the relay, which also
+// attempts an immediate connect on start, so no wake is lost.
+chrome.alarms.onAlarm.addListener((a)       => relay?.onAlarm(a));
+chrome.windows.onCreated.addListener(()     => relay?.onWindowCreated());
+chrome.windows.onRemoved.addListener(()     => relay?.onWindowRemoved());
 
 // MV3 service workers are ephemeral — Chrome kills them after ~30s idle and
-// revives them on events. Whenever the worker (re)starts, each transport re-arms
-// its keepalive alarm and reconnects. onStartup fires on browser launch;
-// onInstalled on install/update/reload. The top-level config read below also
-// reconnects on every fresh evaluation — defense-in-depth that also covers a
-// transport chosen on a prior, now-dead worker.
-chrome.runtime.onStartup.addListener(()   => transports.forEach((t) => t.wake?.()));
-chrome.runtime.onInstalled.addListener(() => transports.forEach((t) => t.wake?.()));
+// revives them on events. Whenever the worker (re)starts, the relay re-arms its
+// keepalive alarm and reconnects. onStartup fires on browser launch; onInstalled
+// on install/update/reload. The top-level config read below also reconnects on
+// every fresh evaluation.
+chrome.runtime.onStartup.addListener(()   => relay?.wake());
+chrome.runtime.onInstalled.addListener(() => relay?.wake());
 
 installTrail();   // per-tab URL trail for fast_list (trail.js)
 
 // The toolbar action now opens popup.html (manifest action.default_popup), which
-// shows per-transport status and a "Reload extension" button. This onClicked
+// shows relay status and a "Reload extension" button. This onClicked
 // listener does NOT fire while a default_popup is set; it stays only as a
-// fallback in case the popup is ever removed. Reloading picks up code edits and
-// a transport toggle made in the options page; content scripts in already-open
+// fallback in case the popup is ever removed. Reloading picks up code edits;
+// content scripts in already-open
 // tabs still need a tab refresh to pick up the new injection.
 chrome.action.onClicked.addListener(() => reloadSelf('toolbar-click'));
 
-// Choose transports from stored config. BOTH run by default once configured:
-//   • local  — on unless localEnabled === false.
-//   • relay  — on when paired (deviceToken + relay URL) unless relayEnabled ===
-//              false, or the legacy fastlinkMode === 'local' (back-compat with
-//              the old "Use local broker" button, which only flipped that flag).
-chrome.storage.local.get(
-  ['fastlinkMode', 'localEnabled', 'relayEnabled', 'deviceToken', 'relayWssUrl', 'relayBase'],
-).then((c) => {
-  const localEnabled    = c.localEnabled !== false;
-  const relayConfigured = !!(c.deviceToken && (c.relayWssUrl || c.relayBase));
-  const relayEnabled    = relayConfigured && c.relayEnabled !== false && c.fastlinkMode !== 'local';
-
-  if (localEnabled) startLocal();
-  if (relayEnabled) startRelay(c);
-
-  reconcile();   // write the initial combined state (covers the both-disabled case)
+// Start the relay from stored config: on when paired (deviceToken + relay URL)
+// unless the user disconnected it (relayEnabled === false).
+chrome.storage.local.get(['relayEnabled', 'deviceToken', 'relayWssUrl', 'relayBase']).then((c) => {
+  if (c.relayEnabled !== false) startRelay(c);
+  reconcile();   // write the initial state (covers the unpaired / disabled case)
 });
 
 // ---------------------------------------------------------------------------
@@ -511,6 +453,11 @@ chrome.storage.local.get(
 // so a brand-new user lands on the one-click "Sign in & connect" flow. Gated to
 // reason 'install' so reloads during development don't spawn tabs.
 chrome.runtime.onInstalled.addListener((details) => {
+  // The local broker transport and its install slots are gone (PIN-REDESIGN §6):
+  // drop their stored settings so nothing reads a stale value.
+  if (details?.reason === 'update') {
+    chrome.storage.local.remove(['fastlinkMode', 'localEnabled', 'fastlinkInstallId', 'fastlinkSlotBusy']).catch(() => {});
+  }
   if (details?.reason !== 'install') return;
   try { chrome.tabs.create({ url: chrome.runtime.getURL('onboarding.html') }); } catch {}
 });
@@ -521,16 +468,14 @@ chrome.runtime.onInstalled.addListener((details) => {
 // steps. Registered synchronously at top level (MV3) so it can wake a dead worker.
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'fastlink:relay-paired') {
-    chrome.storage.local.get(
-      ['deviceToken', 'relayWssUrl', 'relayBase', 'relayEnabled', 'fastlinkMode'],
-    ).then((c) => {
+    chrome.storage.local.get(['deviceToken', 'relayWssUrl', 'relayBase', 'relayEnabled']).then((c) => {
       // A RE-pair: the live transport captured the old token at start, so drop
       // it and dial again with the new one — still no extension reload, so the
       // page that paired survives to prompt for this browser's name.
-      if (relayStarted) { stopRelay(); relayStarted = false; }
-      if (c.relayEnabled !== false && c.fastlinkMode !== 'local') startRelay(c);
+      if (relay) { stopRelay(); relay = null; }
+      if (c.relayEnabled !== false) startRelay(c);
       reconcile();
-      sendResponse({ ok: true, relayStarted });
+      sendResponse({ ok: true, relayStarted: !!relay });
     });
     return true;   // async sendResponse
   }
@@ -546,12 +491,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  // N2 kill-switch: "Disconnect relay" hard stop. claude.ai can't drive until
-  // the user reconnects. Keeps the local broker (CLI) running.
+  // N2 kill-switch: "Disconnect relay" hard stop. No client can drive this
+  // browser until the user reconnects.
   if (msg?.type === 'fastlink:relay-stop') {
     stopRelay();
     connState.relay = null;
-    relayStarted = false;   // allow a later reconnect to re-dial
+    relay = null;           // allow a later reconnect to re-dial
     chrome.storage.local.set({ relayEnabled: false }).catch(() => {});
     reconcile();
     sendResponse({ ok: true });
@@ -562,7 +507,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // relayClient (clearing its `stopped` flag) and re-reads config — the clean
   // way back from stopRelay(). Acceptable here since it's an explicit user action.
   if (msg?.type === 'fastlink:relay-reconnect') {
-    chrome.storage.local.set({ relayEnabled: true, fastlinkMode: 'relay' })
+    chrome.storage.local.set({ relayEnabled: true })
       .then(() => reloadSelf('relay-reconnect'));
     sendResponse({ ok: true });
     return true;
@@ -613,12 +558,7 @@ function tVerb(a) { return TVERB[a] || String(a || '').replace(/^fast_/, '').rep
 // stuckThreshold() as the tracker so the two never disagree.
 function buildActivitySummary() {
   const a = latestActivity;
-  // The transcript overlay represents the claude.ai-WEB (relay) session — so only
-  // RELAY-transport commands count as "driving." A local Claude Code command must
-  // NOT flip this to running and surface the relay card on the user's tabs.
-  // (Older persisted entries lacked `transport`; they filter out → idle, which
-  // self-corrects on the next relay command.)
-  const running = Array.isArray(a?.running) ? a.running.filter((r) => r.transport === 'relay') : [];
+  const running = Array.isArray(a?.running) ? a.running : [];
   if (!running.length) return { state: 'idle', last: a?.last || null };
   let oldest = running[0];
   for (const r of running) if (r.start < oldest.start) oldest = r;

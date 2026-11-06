@@ -74,17 +74,17 @@ export async function claimPairingCode(db, code) {
 // 0006), so "rename to a name that already exists" is an ERROR, never a silent
 // overwrite, and a name always resolves to exactly one browser.
 
-// Sanitize a device name. IDENTICAL rule to the local broker's install-slot label
-// (fast-dxt/broker/extBridge.js sanitizeInstallId, fast-ext/options.js
-// sanitizeInstallId): lowercase, [a-z0-9_-], must start alphanumeric, ≤32 chars.
-// Same rule on all sides so a name means the same thing locally and on the relay.
+// Sanitize a device name: lowercase, [a-z0-9_-], must start alphanumeric, ≤32
+// chars. The helper (fast-dxt/server) validates names against fast_status, so
+// this is the one rule.
 export function sanitizeDeviceName(raw) {
   if (typeof raw !== 'string') return '';
   return raw.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').replace(/^[-_]+/, '').slice(0, 32);
 }
 
-// Words fast_profile interprets as "release the pin" — reserving them means a
-// browser can never be named something the targeting tool cannot address.
+// Words the helper's local fast_profile reads as "release the pin" (→ account
+// default) — reserving them means a browser can never be named something the
+// `browser` argument cannot address.
 export const RESERVED_DEVICE_NAMES = new Set(['auto', 'default', 'none']);
 
 // Base of the auto-assigned name for a freshly-paired browser. Always numbered
@@ -558,4 +558,78 @@ export async function removeEvalOrigin(db, userId, origin) {
     .prepare(`DELETE FROM eval_allowed_origins WHERE user_id = ? AND origin = ?`)
     .bind(String(userId), String(origin))
     .run();
+}
+
+// --- agent tokens (migration 0007) ------------------------------------------
+//
+// One `fla_…` bearer per paired machine (the fast-dxt helper). Only the sha256
+// hex is stored; lookups hash the presented token. No expiry; revocable.
+
+export async function sha256Hex(input) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(input)));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function createAgent(db, userId, agentToken, label) {
+  await db
+    .prepare(
+      `INSERT INTO agents (token_hash, user_id, label, created_at, last_seen, revoked)
+       VALUES (?, ?, ?, ?, NULL, 0)`
+    )
+    .bind(await sha256Hex(agentToken), String(userId), label == null ? null : String(label), now())
+    .run();
+}
+
+// Resolve an agent token → { userId, label, revoked } | null. Bumps last_seen
+// (best-effort) on a live hit.
+export async function lookupAgent(db, agentToken) {
+  if (!agentToken) return null;
+  const hash = await sha256Hex(agentToken);
+  const row = await db
+    .prepare(`SELECT user_id, label, revoked FROM agents WHERE token_hash = ?`)
+    .bind(hash)
+    .first();
+  if (!row) return null;
+  if (!row.revoked) {
+    try { await db.prepare(`UPDATE agents SET last_seen = ? WHERE token_hash = ?`).bind(now(), hash).run(); } catch { /* non-fatal */ }
+  }
+  return { userId: row.user_id, label: row.label, revoked: !!row.revoked };
+}
+
+export async function revokeAgent(db, agentToken) {
+  await db
+    .prepare(`UPDATE agents SET revoked = 1 WHERE token_hash = ?`)
+    .bind(await sha256Hex(agentToken))
+    .run();
+}
+
+// --- feedback (migration 0007) ----------------------------------------------
+
+export async function getUserEmail(db, userId) {
+  const row = await db.prepare(`SELECT email FROM users WHERE user_id = ?`).bind(String(userId)).first();
+  return (row && row.email) || null;
+}
+
+// Insert one fast_feedback row; returns its id.
+export async function insertFeedback(db, { userId, email, browser, client, kind, text }) {
+  const r = await db
+    .prepare(
+      `INSERT INTO feedback (user_id, email, browser, client, kind, text, ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(String(userId), email ?? null, browser ?? null, client ?? null, kind ?? null, String(text), now())
+    .run();
+  return r && r.meta ? r.meta.last_row_id : null;
+}
+
+// Operator read: rows with id > after, oldest first, at most `limit`.
+export async function listFeedback(db, after, limit) {
+  const res = await db
+    .prepare(
+      `SELECT id, user_id, email, browser, client, kind, text, ts
+         FROM feedback WHERE id > ? ORDER BY id ASC LIMIT ?`
+    )
+    .bind(Number(after) || 0, Number(limit))
+    .all();
+  return (res && res.results) || [];
 }

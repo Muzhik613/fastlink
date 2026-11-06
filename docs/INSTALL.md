@@ -1,61 +1,42 @@
 # FastLink — Install Guide
 
 > **This guide is written to be executed by Claude (an AI agent) installing FastLink for a user.**
-> It is deterministic and per-platform. Follow it top-to-bottom. Where a step branches by OS,
-> do **only** the branch that matches the detected environment. Commands are copy-pasteable.
-
-Data path for a local install:
+> Follow it top-to-bottom. Where a step branches by OS, do **only** the matching branch.
 
 ```
-Claude  ⇄  MCP server  ⇄  broker (WebSocket)  ⇄  Chrome extension  ⇄  page
+Claude Code / Desktop ⇄ stdio ⇄ FastLink helper (fast-dxt/server) ⇄ HTTPS ⇄ relay.ytx.app ⇄ Chrome extension ⇄ tab
 ```
 
-Two things get installed: **(A)** the Node **MCP server** (which auto-spawns the broker) so
-Claude gets the `fast_*` tools, and **(B)** the **Chrome extension** that actually drives the
-page. Both must be present and talking to each other.
+Three things get set up: **(A)** the **Chrome extension**, paired to the user's relay account;
+**(B)** the machine's **pairing** (one token per machine, shared by every session); **(C)** the
+**helper** registered with Claude. claude.ai web / Grok need only (A) plus a connector — see the
+README.
 
 ---
 
 ## Step 0 — Detect the environment
 
-Run these and record the answers; later steps branch on them.
-
 ```bash
-# OS family
-uname -s            # Darwin = macOS, Linux = Linux/WSL
-# Distinguish native-Linux from Windows+WSL:
-grep -qi microsoft /proc/version 2>/dev/null && echo "WSL" || echo "not-WSL"
+uname -s                                                          # Darwin = macOS, Linux = Linux/WSL
+grep -qi microsoft /proc/version 2>/dev/null && echo WSL || echo not-WSL
 ```
 
 On **native Windows** (PowerShell, no WSL): `node -v` and `where.exe node`.
 
-The three target environments:
-
 | Environment | Where node runs | How config invokes it |
 |---|---|---|
-| **macOS** | native `node` | `node /abs/path/...` |
-| **Windows native** | native `node` (installed in Windows) | `node C:\...\index.js` |
-| **Windows + WSL** | `node` inside WSL; Claude/Chrome on Windows | usually `node` with the WSL path (if Claude runs in WSL too), or `wsl.exe -e node /home/...` only when the Claude process is Windows-side |
+| **macOS / Linux** | native `node` | `node /abs/path/.../index.js` |
+| **Windows native** | native `node` | `node C:\...\index.js` |
+| **Windows + WSL** | `node` inside WSL | `node /home/...` if Claude runs in WSL; `wsl.exe -e node /home/...` only when the Claude process is Windows-side |
 
----
-
-## Step 1 — Prerequisites: Node
-
-The MCP server + broker require **Node ≥ 18** (the repo ships ESM importing
-`@modelcontextprotocol/sdk`, `express`, `ws`). Record the **absolute** node path — some
-configs hard-code it.
+## Step 1 — Node ≥ 18
 
 ```bash
-command -v node && node -v     # macOS / Linux / WSL
-# Windows native (PowerShell):
-where.exe node ; node -v
+command -v node && node -v
 ```
 
-If Node is missing or < 18, install it first (https://nodejs.org, or `nvm`/`brew`/`winget`),
-**in the same environment that will run the server** (macOS shell, Windows shell, or WSL shell —
-match where `node` lives).
-
----
+Install Node in the environment that will run the helper if it is missing or older. The helper
+has **no npm dependencies**; there is no `npm install` step.
 
 ## Step 2 — Clone the repo
 
@@ -64,201 +45,78 @@ git clone https://github.com/Turetsky/fastlink.git
 cd fastlink
 ```
 
-On **Windows + WSL**, clone inside WSL (e.g. `~/code/Fastlink`) if Claude/node run in WSL.
-Record the **absolute repo path** — you'll use it in the MCP config and when loading the extension.
+Record the absolute path of `fast-dxt/server/index.js`.
 
----
+## Step 3 — Chrome extension (A)
 
-## Step 3 — Install server dependencies
+1. `chrome://extensions` → **Developer mode** ON → **Load unpacked** → the repo's `fast-ext/`
+   folder. (Windows + WSL: Chrome can't reliably load from `\\wsl$\…`; copy `fast-ext/` to a
+   Windows folder and load that copy.)
+2. On the FastLink setup page that opens, pair the browser (**Sign in with Google**, or a code
+   from `https://relay.ytx.app/pair/new`) and give it a name.
 
-From the repo root, in the SAME environment that will run the server:
+Managed / corporate machines may block unpacked extensions by policy; there is no Web Store
+listing.
 
-```bash
-npm --prefix fast-dxt install
-```
+## Step 4 — Pair this machine (B), once
 
-This installs into `fast-dxt/node_modules`. If you skip it, the server exits immediately with
-`Cannot find module '@modelcontextprotocol/sdk'` (or `express` / `ws`).
-
----
-
-## Step 4 — Register the MCP server with Claude
-
-The server is launched **by Claude**, not by you. The only thing that differs per OS is **how
-`node` is invoked**. Do the sub-step for the surface in use (Claude Code and/or Claude Desktop).
-
-### 4a. Claude Code (CLI) — all platforms
-
-Use `claude mcp add`, or edit `~/.claude.json` directly.
-
-**macOS / Windows-native / Claude-Code-in-WSL** (native node, direct path):
+The user opens `https://relay.ytx.app/pair/new` (same Google account as the browser) and reads
+you the code. Then:
 
 ```bash
-claude mcp add fastlink node /ABSOLUTE/PATH/TO/Fastlink/fast-dxt/server/index.js
+node /ABS/PATH/fast-dxt/server/index.js pair <CODE> --name <machine-name>
 ```
 
-**Windows-side Claude reaching a WSL node** (only when the Claude process is on Windows and node
-lives in WSL — *not* needed if Claude Code itself runs inside WSL):
+This writes `~/.fastlink/agent.json` (dir 0700, file 0600) holding the relay URL and this
+machine's agent token. Run it in the same environment that will run the helper (WSL vs Windows
+have different home dirs). `unpair` deletes the file. A self-hosted relay: `--relay <url>`.
+
+## Step 5 — Register the helper with Claude (C)
+
+### Claude Code
 
 ```bash
-claude mcp add fastlink wsl.exe -- -e node /home/<user>/code/Fastlink/fast-dxt/server/index.js
+claude mcp add fastlink -- node /ABS/PATH/fast-dxt/server/index.js
 ```
 
-Equivalent `~/.claude.json` entry (proven-working local form — `node` direct, absolute server
-path):
+Equivalent `~/.claude.json` entry:
 
 ```json
 "fastlink": {
   "type": "stdio",
   "command": "node",
-  "args": [
-    "/ABSOLUTE/PATH/TO/Fastlink/fast-dxt/server/index.js"
-  ]
+  "args": ["/ABS/PATH/fast-dxt/server/index.js"]
 }
 ```
 
-The server speaks stdio only. After editing config, restart Claude Code or run
-`/mcp` to reconnect.
+Windows-side Claude with node in WSL: `"command": "wsl.exe", "args": ["-e", "node", "/home/<user>/.../fast-dxt/server/index.js"]`.
 
-### 4b. Claude Desktop (.mcpb bundle)
+Remove any older FastLink entries (a `fastlink-relay` URL connector, or a `fastlink` entry with
+broker env vars) so each session has exactly one FastLink. Restart Claude Code or run `/mcp`.
 
-The bundle is `fast-dxt/` (manifest + `server/`); the built artifact is `fast-dxt/fastlink.mcpb`.
-The **shipped** `fast-dxt/manifest.json` is **portable** — it invokes node directly:
+### Claude Desktop (.mcpb)
 
-```json
-"mcp_config": {
-  "command": "node",
-  "args": ["${__dirname}/server/index.js"]
-}
-```
-
-This is correct for **macOS** and **Windows-native** as-is — **do not change it**. Install the
-`.mcpb` by double-clicking it / dragging it into Claude Desktop's Extensions settings.
-
-**Windows + WSL special case:** Claude Desktop runs on Windows but node + the repo live in WSL.
-In that one configuration, after installing the `.mcpb`, edit the **installed** copy's
-`manifest.json` (at the Claude Extensions install dir, e.g.
-`…/Claude/Claude Extensions/local.mcpb.<id>.fastlink/manifest.json`) to wrap with `wsl.exe`:
-
-```json
-"mcp_config": {
-  "command": "wsl.exe",
-  "args": ["-e", "node", "/home/<user>/code/Fastlink/fast-dxt/server/index.js"]
-}
-```
-
-Do this **only** on Windows+WSL. Keep the repo's shipped manifest portable so macOS /
-native-Windows installs work out of the box.
-
-> The broker **auto-spawns** when the server first needs it (detached) and is reused if already
-> running — you never start it by hand. Ports: extension slots **9876** (primary) / **9877**
-> (secondary 2nd Chrome profile), internal MCP↔broker **9870**. The
-> broker binds `0.0.0.0`, multiplexes all MCP clients onto one extension socket, and self-exits
-> after ~60s idle.
-
----
-
-## Step 5 — Install the Chrome extension
-
-Two parts: **load it unpacked once**, then **set up the auto-updater** so the on-disk files keep
-themselves current.
-
-### 5a. Load unpacked (one-time, all platforms)
-
-1. Open `chrome://extensions`.
-2. Toggle **Developer mode** ON (top-right). *Required* — FastLink is not (yet) in the Web Store.
-3. Click **Load unpacked** → select the extension folder.
-   - **macOS / Linux / Windows-native:** point at the repo's **`fast-ext/`** folder directly. A
-     `git pull` then updates the extension in place.
-   - **Windows + WSL:** Chrome cannot reliably load from a `\\wsl$\…` path. Copy `fast-ext/`
-     to a **Windows** folder (default `C:\Users\<you>\FastLink\extension`) and load **that**
-     copy; `scripts/ship-ext.sh` does that copy + reload in one command (see 5b).
-4. The toolbar icon appears: **red** until an MCP client connects, **yellow** at 1 client,
-   **green** at 2+.
-
-**Reload rule:** any change to extension source requires a reload at `chrome://extensions`
-(circular reload arrow on the FastLink card). Content scripts only re-inject on reload + page
-refresh.
-
-> **Managed / corporate machines** may block unpacked extensions by policy
-> (`BlockExternalExtensions`, no Developer mode). On those, Load-unpacked will fail — the path
-> forward is the Chrome Web Store listing (TBD) or an enterprise force-install policy
-> (`ExtensionInstallForcelist` with a signed `.crx`). Neither exists today — FastLink is not
-> published and there is no hosted `.crx` channel.
-
-### 5b. Keep the folder current
-
-`git pull` in the clone updates the extension in place; click the reload arrow on
-the FastLink card at `chrome://extensions` to apply it. There is no background
-auto-updater and no download-swap installer — the extension does not check for
-new versions.
-
-On the owner's WSL box, where Chrome loads a **Windows** copy of `fast-ext/`,
-`bash scripts/ship-ext.sh` is the one command that syncs the committed tree,
-reloads the pinned profile through the broker and verifies the build landed.
-See **`docs/UPDATING.md`**.
-
----
+The bundle is `fast-dxt/` (manifest + `server/`). Build it from `fast-dxt/` with
+`zip -r fastlink.mcpb manifest.json package.json server icons` (no build script exists), then
+install by dragging it into Claude Desktop's Extensions settings. The shipped manifest runs
+`node ${__dirname}/server/index.js`. Windows + WSL only: edit the **installed** copy's
+`manifest.json` to `"command": "wsl.exe", "args": ["-e", "node", "/home/<user>/.../fast-dxt/server/index.js"]`.
 
 ## Step 6 — Verify
 
-1. Chrome is open with at least one normal `http(s)://` tab; the FastLink extension is loaded
-   (icon visible).
-2. In Claude, call **`fast_status`**. Expect `connected: true` and an extension client count ≥ 1.
-3. Smoke test: `fast_snapshot` on the active tab returns page content.
-
-If `fast_status` shows not-connected, see Troubleshooting below.
-
----
-
-## Step 7 — Optional: second Chrome profile (slots)
-
-To drive two Chrome profiles without collision, install the extension in the 2nd profile and set
-its **Broker slot** to `secondary` on the extension's **options page** → it uses port `9877`
-instead of the default `9876`. No source edits. A fresh install is `primary` (9876) with zero
-config.
-
----
+1. Chrome is open with a normal `http(s)://` tab and the extension shows as connected.
+2. In Claude, call **`fast_status`**: it lists the paired browsers by name, which are online,
+   and the default.
+3. `fast_snapshot` returns page content.
+4. With several browsers: `fast_profile {install: "<name>"}` pins this session to one;
+   `"auto"` goes back to the default.
 
 ## Troubleshooting
 
-1. **`wsl.exe` wrapper on a non-WSL machine** (server never starts on macOS / Windows-native).
-   - Check: is the MCP `command` literally `wsl.exe` while `uname -s` is `Darwin` or you're on
-     native Windows with no WSL? Then it's wrong.
-   - Fix: use `command: "node"` with the absolute server path. Reserve `wsl.exe -e node` for the
-     Windows-side-Claude→WSL-node case only.
-
-2. **Missing Node deps** — server exits with `Cannot find module '@modelcontextprotocol/sdk'`
-   (or `express`/`ws`).
-   - Fix: `npm --prefix fast-dxt install` in the environment where node runs.
-
-3. **Hardcoded foreign paths** (`/mnt/c/Users/<someone>/…`, `/tmp/…`).
-   - Shipped defaults are portable: secrets `~/fastlink-secrets.txt` (`os.homedir()`),
-     screenshots/PID/timing in `os.tmpdir()`. Check: `grep -rn -e '/mnt/c' -e "'/tmp/" fast-dxt
-     fast-ext` should return nothing in shipped code.
-
-4. **Hardcoded WSL VM IP** leaked in `HOSTS` (`fast-ext/src/connection.js`).
-   - Shipped default is `HOSTS = ['127.0.0.1']`. WSL-only: if localhost-forwarding breaks after a
-     Windows sleep, run `restart-wsl.bat` (the real cure), or as a stopgap append the current WSL
-     VM IP (`ip addr show eth0`). Do **not** commit a machine-specific IP.
-
-5. **Extension not reloaded after an edit** — changes have no effect / tools time out.
-   - Fix: reload at `chrome://extensions`, then refresh the target tab. On Windows+WSL, also
-     re-sync `fast-ext/` to the Windows folder Chrome loads.
-
-6. **Two brokers / wrong-side broker (Windows+WSL)** — separate localhost stacks.
-   - Ensure every MCP session reaches the **same** broker (the WSL one is the shared default).
-     Compare the `fast_status` client count between the extension's broker and your Claude session.
-
----
-
-## Platform-specific helper files
-
-- `restart-wsl.bat` — **WSL-only** recovery helper (WSL shutdown + restart). Ignore on
-  macOS / Windows-native.
-- `scripts/ship-ext.sh` — the one source-to-Chrome path (WSL dev box): syncs committed
-  `fast-ext/` to the Windows copy, reloads the pinned profile, verifies the build.
-- `fastlink-cloud-mcp/`, `fast-ext-dad/` — **legacy**, untracked, not part of a fresh install
-  (see the README component map).
-</content>
-</invoke>
+- **Every tool says "FastLink isn't paired on this machine yet"** — Step 4 wasn't run in this
+  environment, or `~/.fastlink/agent.json` was removed. Pair, then `/mcp` to reconnect.
+- **"the relay rejected this machine's pairing (HTTP 401)"** — the agent token was revoked.
+  Pair again.
+- **A browser is "offline"** — its Chrome isn't running, the extension isn't paired, or it's
+  paired to a different Google account than the code you used in Step 4.
+- **`wsl.exe` in the config on macOS / native Windows** — use `node` with the absolute path.

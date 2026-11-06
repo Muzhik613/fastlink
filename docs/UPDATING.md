@@ -7,14 +7,12 @@ loadable extension, and it is `scripts/ship-ext.sh`.
 
 ```bash
 git commit ...                 # ship-ext ships HEAD, never the working tree
-bash scripts/ship-ext.sh       # rsync HEAD:fast-ext -> the Windows copy,
-                               # stamp build.json, reload the pinned profile
-                               # through the broker, verify the build matches
+bash scripts/ship-ext.sh       # rsync HEAD:fast-ext -> the Windows copy, stamp build.json
 ```
 
-`SLOT=<label>` picks the profile (default `primary`); `DEST=<path>` overrides the
-Windows copy. The script FAILS loudly if the reloaded profile does not come back
-reporting the HEAD short sha, so a silent half-update is not possible.
+`DEST=<path>` overrides the Windows copy. Then click the reload arrow on the
+FastLink card at `chrome://extensions`. (The script's old reload-and-verify step
+went through the local broker, which was removed on 2026-11-06.)
 
 ## A profile that loads `fast-ext/` straight from a clone
 
@@ -25,8 +23,10 @@ boundary, not a FastLink limitation.
 
 ## The other two components
 
-- **MCP server** (`fast-dxt/`): restart Claude Code (WSL MCP), or rebuild the
-  `.mcpb` for Claude Desktop. Run `npm --prefix fast-dxt install` if deps moved.
+- **Helper** (`fast-dxt/`): `git pull`, then `/mcp` reconnect (or restart) in Claude
+  Code; rebuild and reinstall the `.mcpb` for Claude Desktop (see `docs/INSTALL.md`).
+  No dependencies to install. The machine's pairing (`~/.fastlink/agent.json`) survives
+  updates.
 - **Cloud relay** (`fastlink-relay/`): `wrangler deploy` from that directory.
 
 ## What does NOT exist

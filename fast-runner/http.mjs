@@ -3,7 +3,7 @@
 // per-user browser container) dispatches Grok runs over plain JSON. It is a thin shell over runner.mjs
 // `dispatch` — the same core caller-mcp.mjs uses — so both entries run, hold, answer and report identically.
 //
-//   POST /run            {task, toolset?, gate?, transport?, browser?, hold_ms?}  → dispatch('run')
+//   POST /run            {task, toolset?, gate?, browser?, hold_ms?}              → dispatch('run')
 //   POST /answer         {run_id, answer, hold_ms?}                               → dispatch('answer')
 //   POST /cancel         {run_id}                                                 → dispatch('cancel')
 //   GET  /status/:run_id                                                          → dispatch('status')

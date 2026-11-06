@@ -3,7 +3,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fromModel, forModel, toModelText, toolResultContent, refusalText, gateProblems, recordResult, entryFacts, buildTools, loadToolset, keepNewestPreview } from '../runner.mjs';
-import { TOOLS } from '../../fast-dxt/server/tools.js';
+import { TOOLS as RELAY_TOOLS } from '../../fastlink-relay/tools.js';
+import { withoutBrowserArg } from '../relay-transport.mjs';
+
+const TOOLS = RELAY_TOOLS.map(withoutBrowserArg);   // the list the runner gets from the relay transport
 
 test('several calls in one response: only the last result keeps its page preview; batch is not model-facing', () => {
   const { tools, back } = buildTools(TOOLS, loadToolset('default'));
