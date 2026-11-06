@@ -116,14 +116,33 @@ wrangler secret put MAIL_API_KEY                              # Resend API key
 > `MAIL_API_KEY`. Until that's done, run in **shared mode** (Option A). (auth.js
 > reads `MAIL_API_KEY || RESEND_API_KEY` — standardize on `MAIL_API_KEY`.)
 
-### Feedback admin token (fast_feedback / `GET /admin/feedback`)
+### Operator admin token (`/admin/feedback`, `/admin/drop-legacy-pins`)
 
 ```bash
-openssl rand -hex 32 | wrangler secret put FEEDBACK_ADMIN_TOKEN
+openssl rand -hex 32 | wrangler secret put RELAY_ADMIN_TOKEN
 ```
 
-Unset → `/admin/feedback` answers 404 (fast_feedback still stores rows). The
-reader sends `Authorization: Bearer <FEEDBACK_ADMIN_TOKEN>`. Migration
+Unset → every `/admin/*` route answers 404 (fast_feedback still stores rows).
+Callers send `Authorization: Bearer <RELAY_ADMIN_TOKEN>`.
+
+### One-time: sweep the pre-redesign pin keys (right after the redesign deploy)
+
+```bash
+cur=''; while :; do
+  r=$(curl -s -X POST "https://relay.ytx.app/admin/drop-legacy-pins?after=$cur" -H "Authorization: Bearer $RELAY_ADMIN_TOKEN")
+  echo "$r"; [ "$(echo "$r" | jq -r .done)" = true ] && break; cur=$(echo "$r" | jq -r .next)
+done
+```
+
+Then delete `handleDropLegacyPins` (auth.js) and `#dropLegacyPins` /
+`/__drop-legacy-pins` (userRelay.js) in a follow-up commit and redeploy.
+
+### Revoking a machine (helper agent token)
+
+From any paired machine of the same account: `node fast-dxt/server/index.js
+machines` lists them, `… revoke <id|name>` revokes one, `… unpair` revokes this
+machine and deletes its local file. Lost every machine: pair a new one, then
+revoke. Operator last resort: `UPDATE agents SET revoked=1 WHERE user_id=?`. Migration
 `0007_agents_feedback.sql` (agent tokens + feedback) must be applied before the
 Worker that uses it is deployed. Local dev: put the value in `.dev.vars`
 (gitignored).

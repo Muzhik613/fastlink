@@ -596,11 +596,49 @@ export async function lookupAgent(db, agentToken) {
   return { userId: row.user_id, label: row.label, revoked: !!row.revoked };
 }
 
+// A machine's public id: the first 12 hex chars of its token hash (never the token).
+export const AGENT_ID_LEN = 12;
+
+// The user's live (non-revoked) machines: [{ id, name, createdAt, lastSeen, self }].
+export async function listAgents(db, userId, selfToken = null) {
+  const selfHash = selfToken ? await sha256Hex(selfToken) : null;
+  const { results } = await db
+    .prepare(`SELECT token_hash, label, created_at, last_seen FROM agents WHERE user_id = ? AND revoked = 0 ORDER BY created_at`)
+    .bind(String(userId))
+    .all();
+  return (results || []).map((r) => ({
+    id: r.token_hash.slice(0, AGENT_ID_LEN),
+    name: r.label,
+    createdAt: r.created_at,
+    lastSeen: r.last_seen,
+    self: r.token_hash === selfHash,
+  }));
+}
+
+// Revoke ONE of the user's machines by its public id. Returns true if one was revoked.
+export async function revokeAgentById(db, userId, id) {
+  if (typeof id !== 'string' || !new RegExp(`^[0-9a-f]{${AGENT_ID_LEN}}$`).test(id)) return false;
+  const res = await db
+    .prepare(`UPDATE agents SET revoked = 1 WHERE user_id = ? AND revoked = 0 AND substr(token_hash, 1, ${AGENT_ID_LEN}) = ?`)
+    .bind(String(userId), id)
+    .run();
+  return !!(res.meta && res.meta.changes === 1);
+}
+
 export async function revokeAgent(db, agentToken) {
   await db
     .prepare(`UPDATE agents SET revoked = 1 WHERE token_hash = ?`)
     .bind(await sha256Hex(agentToken))
     .run();
+}
+
+// Every user id, paged by id (operator sweeps).
+export async function listUserIds(db, after = '', limit = 40) {
+  const { results } = await db
+    .prepare(`SELECT user_id FROM users WHERE user_id > ? ORDER BY user_id LIMIT ?`)
+    .bind(String(after), limit)
+    .all();
+  return (results || []).map((r) => r.user_id);
 }
 
 // --- feedback (migration 0007) ----------------------------------------------

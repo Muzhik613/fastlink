@@ -70,7 +70,13 @@ relay ──WSS {type:'call'}──▶ extension (per-tab FIFO queue) ──▶ 
 - Relay `/mcp` accepts `Authorization: Bearer fla_…`:
   - It looks up the D1 `agents` table (sha256 of the token stored, never plaintext) → user_id
     → same DO path as OAuth.
-  - OAuth stays for claude.ai/Grok. No refresh, no expiry. Revocable (`revoked` column).
+  - OAuth stays for claude.ai/Grok. No refresh, no expiry.
+- Revoke path (`/agent/machines`, authed by the calling machine's own fla_ token, same user only):
+  - `node …/index.js machines` lists the account's machines (`id` = first 12 hex of the token hash).
+  - `node …/index.js revoke <id|name>` revokes another machine (a lost laptop).
+  - `node …/index.js unpair` revokes this machine on the relay, then deletes `agent.json`.
+  - Lost every machine: pair a new one, then revoke the others. Operator last resort:
+    `UPDATE agents SET revoked=1 WHERE user_id=?` in D1.
 - The helper is an MCP stdio server, one process per Claude Code session (Claude Code
   already spawns one per session). It keeps in memory:
   - `pin`: a browser name, or null (→ account default).
@@ -89,8 +95,8 @@ relay ──WSS {type:'call'}──▶ extension (per-tab FIFO queue) ──▶ 
   - `client` = the MCP clientInfo name/version (helper: `fastlink-helper@<hostname>`).
   - Returns `{ok:true, id}`.
 - Admin read: `GET /admin/feedback?after=<id>` with `Authorization: Bearer
-  <FEEDBACK_ADMIN_TOKEN>` (wrangler secret; constant-time compare) → `{items:[…], last:<id>}`.
-  No writes.
+  <RELAY_ADMIN_TOKEN>` (wrangler secret, shared by all `/admin/*`; constant-time compare)
+  → `{items:[…], last:<id>}`. No writes.
 - hvm's boss-health timer polls it every 5 min and injects new items into the boss inbox.
   That poller is built from the boss-health project's own session, not here.
 
@@ -105,9 +111,16 @@ docs/UPDATING.md, docs/BUG-5-multi-install-routing.md).
 
 ## 7. Rollout (needs Yaakov's OK; nothing deploys before it)
 
-1. Relay deploy (backward compatible: old extensions and OAuth clients keep working;
+1. Set an account default browser for every account that relies on unnamed calls (Yaakov's
+   has none today; Alex's = `fastlinkchrome`).
+2. Apply D1 migration 0007 remotely; `wrangler secret put RELAY_ADMIN_TOKEN`.
+3. Relay deploy (backward compatible: old extensions and OAuth clients keep working;
    `browser` is optional).
-2. Extension release (sync the Windows copy + reload; Alex's Mac Chrome).
-3. Switch Claude Code configs from the `fastlink-relay` URL connector / old local `fastlink`
+4. One-time cleanup: run the `/admin/drop-legacy-pins` sweep (fastlink-relay/DEPLOY.md) so
+   no `dev:pin:*` / `dev:spin:*` key is left in any user's DO. Then delete the sweep code
+   (auth.js `handleDropLegacyPins`, userRelay.js `#dropLegacyPins`) in a follow-up commit and
+   redeploy.
+5. Extension release (sync the Windows copy + reload; Alex's Mac Chrome).
+6. Switch Claude Code configs from the `fastlink-relay` URL connector / old local `fastlink`
    to the helper, then pair each machine once.
-4. Alex: unload `com.alexturetsky.FastlinkBroker`.
+7. Alex: unload `com.alexturetsky.FastlinkBroker`.

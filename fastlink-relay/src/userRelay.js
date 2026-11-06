@@ -61,6 +61,11 @@ function quietFocus(action, args) {
   return args;
 }
 
+// Origin cache key: one entry per (browser device, tab). `tabId` null = that
+// browser's current target tab.
+const TARGET_MOVERS = new Set(['fast_tab', 'fast_switch', 'fast_close']);
+const originKey = (deviceToken, tabId) => `${deviceToken}#${tabId == null ? 'target' : tabId}`;
+
 export class UserRelay extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -107,6 +112,8 @@ export class UserRelay extends DurableObject {
     if (url.pathname === '/__ext') return this.#acceptExtension(request);
     if (url.pathname === '/__mcp') return handleMcpRequest(request, this);
     if (url.pathname === '/__revoke') return this.#revokeDevice(request);
+    // ONE-TIME ROLLOUT CLEANUP (auth.js /admin/drop-legacy-pins): delete with it.
+    if (url.pathname === '/__drop-legacy-pins') return this.#dropLegacyPins();
     // Named-browser management for the extension options page. Reached only via
     // auth.js's device-token-authed /devices, which resolves the token to THIS
     // user before forwarding — the DO never sees an unauthenticated request and
@@ -139,6 +146,20 @@ export class UserRelay extends DurableObject {
     this.ctx.acceptWebSocket(server, ['ext']); // tag 'ext' survives hibernation
     try { server.serializeAttachment({ connectedAt: Date.now(), deviceToken: token }); } catch { /* non-fatal */ }
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // ONE-TIME ROLLOUT CLEANUP: remove the pre-redesign pin keys from this DO.
+  async #dropLegacyPins() {
+    let deleted = 0;
+    for (const prefix of ['dev:pin:', 'dev:spin:']) {
+      for (;;) {
+        const batch = await this.ctx.storage.list({ prefix, limit: 128 });
+        if (!batch.size) break;
+        await this.ctx.storage.delete([...batch.keys()]);
+        deleted += batch.size;
+      }
+    }
+    return new Response(JSON.stringify({ deleted }), { headers: { 'content-type': 'application/json' } });
   }
 
   // Merge into a socket's hibernation-surviving attachment. serializeAttachment
@@ -395,8 +416,12 @@ export class UserRelay extends DurableObject {
       // SIGNUP-SPEC §5.2: the extension stamps the acted-on tab's origin on each
       // result. Cache it for THAT device (consent gate / eval check / audit).
       if (typeof msg.origin === 'string' && msg.origin && entry.deviceToken) {
-        this.origins.set(entry.deviceToken, msg.origin);
+        this.origins.set(originKey(entry.deviceToken, entry.tabKey), msg.origin);
+        if (msg.tabId != null) this.origins.set(originKey(entry.deviceToken, msg.tabId), msg.origin);
       }
+      // Tab actions can move the browser's target tab: forget its cached origin so
+      // the next untargeted call re-reads it instead of gating on the old page.
+      if (TARGET_MOVERS.has(entry.action) && entry.deviceToken) this.origins.delete(originKey(entry.deviceToken, null));
       // Strip the routing envelope (origin too); `tabId` stays in the reply so the
       // MCP layer can surface which tab was acted on.
       const { type, id, origin, ...reply } = msg;
@@ -492,7 +517,10 @@ export class UserRelay extends DurableObject {
     });
     const id = crypto.randomUUID();
     return new Promise((resolve) => {
-      const entry = { resolve, timer: null, grace: null, ws, deviceToken: target.deviceToken || null, sentAt: Date.now(), timeoutMs };
+      // tabKey: which tab's origin this result reports — the call's own tabId, else
+      // the browser's current target tab.
+      const tabKey = typeof rest.tabId === 'number' ? rest.tabId : null;
+      const entry = { resolve, timer: null, grace: null, ws, deviceToken: target.deviceToken || null, tabKey, action, sentAt: Date.now(), timeoutMs };
       this.pending.set(id, entry);
       this.#arm(id, entry, entry.sentAt + timeoutMs);
       try {
@@ -530,40 +558,46 @@ export class UserRelay extends DurableObject {
   // Resolve {ok} | {ok:false,error} for a fast_evaluate attempt. Reads the active
   // tab's origin (cheap fast_list, no debugger attach) only when needed to check
   // the allowlist.
-  async checkEvalAllowed(target) {
+  async checkEvalAllowed(target, tabId = null) {
     const p = await this.evalPolicy();
     if (!p.allowEvaluate) {
       return { ok: false, error: 'fast_evaluate is disabled for this account — enable it in relay settings (high-risk: it runs arbitrary JavaScript in your page).' };
     }
     if (p.allowAll) return { ok: true };
-    const origin = await this.currentOrigin(target);
-    if (origin && p.origins.includes(origin)) return { ok: true };
+    // The origin of the EXACT tab the call acts on. Unknown = denied (fail closed).
+    const origin = await this.currentOrigin(target, tabId);
+    if (origin && p.origins.includes(origin)) return { ok: true, origin };
     return { ok: false, error: `fast_evaluate is disabled for this site — enable it and allowlist this origin (${origin || 'unknown'}) in relay settings.` };
   }
 
-  // The TARGET browser's last-known origin (per-device cache, set from each
-  // result frame per SIGNUP-SPEC §5.2). '' when nothing is cached yet.
-  cachedOrigin(target) {
-    return (target && target.deviceToken && this.origins.get(target.deviceToken)) || '';
+  // Last-known origin of ONE tab on the target browser: `tabId`, or (null) the
+  // browser's current target tab. Cached per (device, tab) from result frames
+  // (SIGNUP-SPEC §5.2). '' when nothing is cached yet.
+  cachedOrigin(target, tabId = null) {
+    if (!target || !target.deviceToken) return '';
+    return this.origins.get(originKey(target.deviceToken, tabId)) || '';
   }
 
-  // The target browser's origin: the cache, else a fast_list probe on THAT
-  // browser. '' if it truly can't be determined.
-  async currentOrigin(target) {
-    const cached = this.cachedOrigin(target);
+  // That tab's origin: the cache, else a fast_list probe on THAT browser.
+  // '' if it truly can't be determined (callers fail closed where it matters).
+  async currentOrigin(target, tabId = null) {
+    const cached = this.cachedOrigin(target, tabId);
     if (cached) return cached;
-    const o = await this.activeOrigin(target);
-    if (o && target?.deviceToken) this.origins.set(target.deviceToken, o);
+    const o = await this.activeOrigin(target, tabId);
+    if (o && target?.deviceToken) this.origins.set(originKey(target.deviceToken, tabId), o);
     return o;
   }
 
-  // The target tab's origin via a cheap fast_list (no CDP/debugger attach → no
-  // banner flicker): the extension's target tab, else the active one.
-  async activeOrigin(target) {
+  // A tab's origin via a cheap fast_list (no CDP/debugger attach → no banner
+  // flicker): the tab with id `tabId`, else the extension's target tab, else the
+  // active one.
+  async activeOrigin(target, tabId = null) {
     try {
       const r = await this.callExtension('fast_list', {}, REQUEST_TIMEOUT_MS, target);
       const tabs = r?.result;
-      const t = Array.isArray(tabs) ? (tabs.find((x) => x.targetTab) || tabs.find((x) => x.active)) : null;
+      const t = !Array.isArray(tabs) ? null
+        : tabId != null ? tabs.find((x) => x.id === tabId)
+        : (tabs.find((x) => x.targetTab) || tabs.find((x) => x.active));
       if (t?.url) { try { return new URL(t.url).origin; } catch {} }
     } catch { /* ignore */ }
     return '';
@@ -644,7 +678,7 @@ export class UserRelay extends DurableObject {
       const { logAudit } = await import('./db.js');
       // Log argument KEYS only, never their values (could carry secrets/PII).
       // Include the active-tab origin (T4) so the log answers "what, and where".
-      const detail = JSON.stringify({ args: Object.keys(args || {}), browser: target?.name || null, origin: this.cachedOrigin(target) || null, ok: !!ok });
+      const detail = JSON.stringify({ args: Object.keys(args || {}), browser: target?.name || null, origin: this.cachedOrigin(target, typeof args?.tabId === 'number' ? args.tabId : null) || null, ok: !!ok });
       await logAudit(this.env.DB, this.userId, action, detail);
     } catch { /* auditing must never break a tool call */ }
   }

@@ -38,7 +38,8 @@ Every path goes through the hosted relay. There is no local broker and no local 
 
    Each session drives your default browser. To use another one, ask Claude to call
    `fast_profile` with the browser's name; that choice lasts for that session only.
-   `node …/index.js unpair` forgets this machine's pairing.
+   Machines: `node …/index.js machines` lists this account's paired machines,
+   `… revoke <id|name>` revokes a lost one, `… unpair` revokes this machine and forgets it.
 4. **claude.ai web / Grok**: add a custom connector with URL `https://relay.ytx.app/mcp` and
    sign in with the **same Google account** as step 2 (a different account = "browser offline").
 5. **Verify**: ask the AI to run `fast_status`, then e.g. "snapshot my active tab".

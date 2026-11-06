@@ -6,6 +6,7 @@ import { clickXY, typeText } from './input.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
 import { isInjectableUrl, missingTabError } from '../util.js';
+import { checkExpectedSite } from '../siteGuard.js';
 
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_list', 'fast_close', 'fast_switch']);
 const PAGE_ACTIONS = new Set([
@@ -132,6 +133,12 @@ export async function dispatchAction(action, rawArgs) {
   if (!SELF_TARGETING.has(action) && typeof args.tabId !== 'number') {
     const id = await getTargetTabId();
     if (typeof id === 'number') args = { ...args, tabId: id };
+  }
+  // The relay approved this write for one site; refuse if the tab moved off it.
+  {
+    const guard = await checkExpectedSite(action, args, async (id) => (await chrome.tabs.get(id)).url);
+    args = guard.args;
+    if (guard.error) return await stampTab(guard.error, args.tabId);
   }
   const evtId = ++__evtSeq;
   const overlayTab = typeof args.tabId === 'number' ? args.tabId : await getTargetTabId();

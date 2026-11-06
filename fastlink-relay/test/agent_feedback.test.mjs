@@ -80,7 +80,7 @@ test('Bearer fla_ reaches the user\'s DO on /mcp; unknown or revoked → 401', a
 
 test('an fla_ token opens nothing but /mcp', async () => {
   const db = fakeD1(); seedCode(db);
-  const e = env(db, { FEEDBACK_ADMIN_TOKEN: 'admin-secret-xyz' });
+  const e = env(db, { RELAY_ADMIN_TOKEN: 'admin-secret-xyz' });
   const { agentToken } = await (await pair(e, { code: 'ABCDEFGH' })).json();
   const h = makeDefaultHandler();
   const get = (p, auth) => h.fetch(new Request(`https://relay.test${p}`, { headers: auth ? { authorization: `Bearer ${auth}` } : {} }), e, {});
@@ -130,7 +130,7 @@ test('/admin/feedback: 404 without the secret, 401 on a wrong bearer, pages by a
   const h = makeDefaultHandler();
   const get = (e, q, auth) => h.fetch(new Request(`https://relay.test/admin/feedback${q}`, { headers: auth ? { authorization: `Bearer ${auth}` } : {} }), e, {});
   assert.equal((await get(env(db), '', 'anything')).status, 404);
-  const e = env(db, { FEEDBACK_ADMIN_TOKEN: 'admin-secret-xyz' });
+  const e = env(db, { RELAY_ADMIN_TOKEN: 'admin-secret-xyz' });
   assert.equal((await get(e, '', 'wrong')).status, 401);
   assert.equal((await get(e, '')).status, 401);
   const page = await (await get(e, '?after=1&limit=2', 'admin-secret-xyz')).json();
@@ -140,4 +140,53 @@ test('/admin/feedback: 404 without the secret, 401 on a wrong bearer, pages by a
   assert.deepEqual(empty, { items: [], last: 99 });
   const post = await h.fetch(new Request('https://relay.test/admin/feedback', { method: 'POST', headers: { authorization: 'Bearer admin-secret-xyz' } }), e, {});
   assert.equal(post.status, 405);
+});
+
+const machines = (e, token, method = 'GET', body) => makeDefaultHandler().fetch(new Request('https://relay.test/agent/machines', {
+  method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}),
+}), e, {});
+
+test('/agent/machines: a machine lists its owner\'s machines and revokes one by id; never another user\'s', async () => {
+  const db = fakeD1(); const e = env(db);
+  seedCode(db, 'AAAAAAAA'); seedCode(db, 'BBBBBBBB'); seedCode(db, 'CCCCCCCC', 'other');
+  const t1 = (await (await pair(e, { code: 'AAAAAAAA', name: 'laptop' }, '1.1.1.1')).json()).agentToken;
+  const t2 = (await (await pair(e, { code: 'BBBBBBBB', name: 'hvm' }, '1.1.1.2')).json()).agentToken;
+  const t3 = (await (await pair(e, { code: 'CCCCCCCC', name: 'theirs' }, '1.1.1.3')).json()).agentToken;
+  assert.equal((await machines(e, null)).status, 401);
+  const list = (await (await machines(e, t1)).json()).machines;
+  assert.deepEqual(list.map((m) => [m.name, m.self]), [['laptop', true], ['hvm', false]]);
+  assert.ok(list.every((m) => /^[0-9a-f]{12}$/.test(m.id)));
+  // another user's machine id is not found
+  const theirs = (await (await machines(e, t3)).json()).machines[0].id;
+  assert.equal((await machines(e, t1, 'POST', { revoke: theirs })).status, 404);
+  // revoke hvm from laptop → hvm's token stops working
+  const hvm = list.find((m) => m.name === 'hvm').id;
+  assert.deepEqual(await (await machines(e, t1, 'POST', { revoke: hvm })).json(), { ok: true, revoked: hvm });
+  assert.equal((await machines(e, t2)).status, 401);
+  assert.equal((await mcp(e, t2)).status, 401);
+  // unpair = revoke self
+  assert.deepEqual(await (await machines(e, t1, 'POST', { revoke: 'self' })).json(), { ok: true });
+  assert.equal((await machines(e, t1)).status, 401);
+  assert.equal((await machines(e, t3)).status, 200);
+});
+
+test('/admin/drop-legacy-pins: admin-only, pages through users, calls each DO', async () => {
+  const db = fakeD1(); const e = env(db, { RELAY_ADMIN_TOKEN: 'admin-secret-xyz' });
+  for (const u of ['u1', 'u2', 'u3']) db.raw.prepare(`INSERT INTO users (user_id, email, created_at) VALUES (?, ?, ?)`).run(u, `${u}@x`, Date.now());
+  const sweep = (q, tok = 'admin-secret-xyz') => makeDefaultHandler().fetch(new Request(`https://relay.test/admin/drop-legacy-pins${q}`, { method: 'POST', headers: { authorization: `Bearer ${tok}` } }), e, {});
+  assert.equal((await sweep('', 'wrong')).status, 401);
+  const p1 = await (await sweep('?limit=2')).json();
+  assert.deepEqual([p1.users, p1.done, p1.next], [2, false, 'u2']);
+  const p2 = await (await sweep(`?after=${p1.next}&limit=2`)).json();
+  assert.deepEqual([p2.users, p2.done], [1, true]);
+  assert.deepEqual(e.seen.map((s) => [s.id, s.path]), [['id:u1', '/__drop-legacy-pins'], ['id:u2', '/__drop-legacy-pins'], ['id:u3', '/__drop-legacy-pins']]);
+  assert.equal((await makeDefaultHandler().fetch(new Request('https://relay.test/admin/drop-legacy-pins', { method: 'POST' }), env(fakeD1()), {})).status, 404);
+});
+
+test('DO /__drop-legacy-pins removes only dev:pin:* and dev:spin:* keys', async () => {
+  const { r, storage } = await makeRelay({});
+  for (const k of ['dev:pin:c1', 'dev:pin:c2', 'dev:spin:s1', 'dev:default', 'tidx']) await storage.put(k, 'x');
+  const res = await r.fetch(new Request('https://do/__drop-legacy-pins', { method: 'POST' }));
+  assert.deepEqual(await res.json(), { deleted: 3 });
+  assert.deepEqual([...storage.m.keys()].sort(), ['dev:default', 'tidx']);
 });

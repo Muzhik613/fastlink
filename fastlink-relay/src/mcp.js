@@ -170,6 +170,20 @@ const PAUSE_EXEMPT = new Set(['fast_status', 'fast_feedback']);
 // pushed into these steps.
 const TAB_LEVEL = new Set(['fast_list', 'fast_tab', 'fast_switch', 'fast_close']);
 
+// The tab a call's gates must judge: its own tabId for page tools; tab-level
+// tools (open/switch/close/list) are judged on the browser's target tab.
+function gateTab(name, args) {
+  return !TAB_LEVEL.has(name) && typeof args?.tabId === 'number' ? args.tabId : null;
+}
+
+// Page-touching writes carry the origin the gates approved; the extension checks
+// the tab is still on it at execution time (closes the gate→act race).
+function withExpectOrigin(relay, name, args, target) {
+  if (!MUTATING_TOOLS.has(name) || TAB_LEVEL.has(name)) return args;
+  const origin = relay.cachedOrigin(target, gateTab(name, args));
+  return origin ? { ...args, expectOrigin: origin } : args;
+}
+
 const FEEDBACK_MAX = 4000;
 const FEEDBACK_KINDS = new Set(['bug', 'idea', 'other']);
 
@@ -181,22 +195,26 @@ const FEEDBACK_KINDS = new Set(['bug', 'idea', 'other']);
 //   readonly → refuse MUTATING_TOOLS (reads pass)
 //   prompt   → undecided origin under the multi-user default: reads pass, a write
 //              returns the consent_required affordance so the human can approve.
-async function consentVerdict(relay, name, target) {
+// `tabId` = the tab the call will act on (null = the browser's target tab): the
+// gate reads THAT tab's origin, never another tab's (security review 11-06).
+async function consentVerdict(relay, name, target, tabId = null) {
   if (CONSENT_EXEMPT.has(name)) return null;
 
   const def = relay.consentDefault();
-  // Cheap path: the TARGET browser's stamped origin if we have it. With none yet,
-  // only pay for a probe when the default actually gates (prompt/readonly); in
-  // allow-default (shared/operator) skip straight through.
-  let origin = relay.cachedOrigin(target);
+  const mutating = MUTATING_TOOLS.has(name);
+  // The stamped origin of that exact tab. With none yet, only pay for a probe of
+  // that tab when the default actually gates (prompt/readonly); under the
+  // allow-default an unvisited tab has nothing to check.
+  let origin = relay.cachedOrigin(target, tabId);
+  if (!origin && def !== 'allow') origin = await relay.currentOrigin(target, tabId);
   if (!origin) {
-    if (def === 'allow') return null;
-    origin = await relay.currentOrigin(target);
+    // Unknown site: reads (and the allow-default) run; a write under a gating
+    // default fails closed rather than acting on a site nobody approved.
+    if (def === 'allow' || !mutating) return null;
+    return { error: `Couldn't tell which site this tab is on, so "${name}" was not run. Read the page first, then retry.`, consentUnknown: true };
   }
-  if (!origin) return null; // no resolvable active-tab origin — let the call run (it'll fail naturally if disconnected)
 
   const mode = await relay.consentFor(origin); // 'allow'|'readonly'|'block'|'prompt'
-  const mutating = MUTATING_TOOLS.has(name);
 
   if (mode === 'allow') return null;
   if (mode === 'block') {
@@ -254,14 +272,14 @@ async function dispatchTool(params, relay, trace) {
   // Per-origin consent gate (M4) — applies to every page-touching tool, incl.
   // fast_evaluate (in MUTATING_TOOLS). Batch steps are gated in runBatch.
   {
-    const verdict = await consentVerdict(relay, name, target);
+    const verdict = await consentVerdict(relay, name, target, gateTab(name, args));
     if (verdict) return textResult(verdict);
   }
 
   // fast_evaluate: arbitrary in-page JS. Per-user ALLOWLIST gate (db.getEvalPolicy
   // + the target browser's origin): enabled AND (operator allow-all OR allowlisted).
   if (name === 'fast_evaluate') {
-    const verdict = await relay.checkEvalAllowed(target);
+    const verdict = await relay.checkEvalAllowed(target, gateTab(name, args));
     if (!verdict.ok) return textResult({ error: verdict.error, evalBlocked: true });
   }
 
@@ -270,8 +288,10 @@ async function dispatchTool(params, relay, trace) {
     return textResult(await runBatch(batchArgs, batchIo(relay, target, tabId)));
   }
 
-  // Everything else: one straight passthrough to the extension (tabId included).
-  const payload = await relay.callExtension(name, args, undefined, target);
+  // Everything else: one straight passthrough to the extension (tabId included),
+  // pinned to the origin the gates just approved (the extension refuses if the
+  // tab moved to another site in between).
+  const payload = await relay.callExtension(name, withExpectOrigin(relay, name, args, target), undefined, target);
   relay.audit(name, args, !(payload && typeof payload === 'object' && 'error' in payload), target); // best-effort, fire-and-forget
 
   // Tool-level errors come back as resolved payloads with `error` set (+ extras
@@ -344,7 +364,7 @@ async function relayStatus(relay, browser) {
   const connected = !!(target && target.ws);
   const policy = await relay.evalPolicy();
   // Per-origin consent (M4): the decision for the ROUTED browser's last-known origin.
-  const origin = connected ? relay.cachedOrigin(target) : '';
+  const origin = connected ? relay.cachedOrigin(target, null) : '';
   const consentMode = origin ? await relay.consentFor(origin) : null;
   const drivingPaused = await relay.isDrivingPaused();
   return {
@@ -382,16 +402,17 @@ async function relayStatus(relay, browser) {
 const batchIo = (relay, target, tabId) => ({
   gate: async (step) => {
     if (DIAGNOSTIC_ONLY.has(step.name)) return { error: `"${step.name}" is a diagnostic/deferred tool (not allowed as a batch step)` };
+    const stepTab = gateTab(step.name, { tabId, ...(step.args || {}) });
     if (step.name === 'fast_evaluate') {
-      const verdict = await relay.checkEvalAllowed(target);
+      const verdict = await relay.checkEvalAllowed(target, stepTab);
       if (!verdict.ok) return { error: verdict.error };
     }
-    return consentVerdict(relay, step.name, target);
+    return consentVerdict(relay, step.name, target, stepTab);
   },
   call: async (name, args) => {
     let a = args || {};
     if (tabId != null && !TAB_LEVEL.has(name) && a.tabId == null) a = { ...a, tabId };
-    const r = await relay.callExtension(name, a, undefined, target);
+    const r = await relay.callExtension(name, withExpectOrigin(relay, name, a, target), undefined, target);
     if (tabId != null && name === 'fast_list' && Array.isArray(r?.result)) {
       r.result = r.result.map((t) => ({ ...t, targetTab: t.id === tabId }));
     }

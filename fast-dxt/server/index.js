@@ -4,11 +4,13 @@
 //   node index.js                                  MCP stdio server (what Claude Code runs)
 //   node index.js pair <CODE> [--name <machine>] [--relay <url>]
 //                                                  pair this machine once (code: https://relay.ytx.app/pair/new)
-//   node index.js unpair                           forget this machine's pairing
+//   node index.js unpair                           revoke this machine on the relay and forget it
+//   node index.js machines                         list this account's paired machines
+//   node index.js revoke <id|name>                 revoke another machine (e.g. a lost laptop)
 import { createInterface } from 'node:readline';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { loadAgent, pair, removeAgent, agentFilePath, DEFAULT_RELAY, PAIR_URL } from './agentFile.js';
+import { loadAgent, pair, removeAgent, agentFilePath, listMachines, revokeMachine, DEFAULT_RELAY, PAIR_URL } from './agentFile.js';
 import { createHelper } from './helper.js';
 import { log } from './log.js';
 
@@ -37,6 +39,45 @@ async function runPair(argv) {
   }
 }
 
+function requireAgent() {
+  const agent = loadAgent();
+  if (!agent) { console.error(`Not paired (${agentFilePath()} doesn't exist). Pair first: ${PAIR_COMMAND} <CODE>`); process.exit(1); }
+  return agent;
+}
+
+const when = (ms) => (ms ? new Date(ms).toISOString().slice(0, 16).replace('T', ' ') : 'never');
+
+async function runMachines() {
+  const list = await listMachines(requireAgent());
+  for (const m of list) console.log(`${m.id}  ${String(m.name || '(no name)').padEnd(24)} paired ${when(m.createdAt)}  last used ${when(m.lastSeen)}${m.self ? '  (this machine)' : ''}`);
+  if (!list.length) console.log('No machines.');
+}
+
+async function runRevoke(which) {
+  if (!which) { console.error(`usage: ${PAIR_COMMAND.replace(/ pair$/, '')} revoke <id|name>  (ids from: machines)`); process.exit(2); }
+  const agent = requireAgent();
+  const list = await listMachines(agent);
+  const hits = list.filter((m) => m.id === which || m.name === which);
+  if (hits.length !== 1) {
+    console.error(hits.length ? `"${which}" matches ${hits.length} machines; use its id:` : `No machine "${which}". Machines:`);
+    for (const m of (hits.length ? hits : list)) console.error(`  ${m.id}  ${m.name || '(no name)'}`);
+    process.exit(1);
+  }
+  if (hits[0].self) { console.error('That is this machine. Use: unpair'); process.exit(1); }
+  await revokeMachine(agent, hits[0].id);
+  console.log(`Revoked "${hits[0].name || hits[0].id}" (${hits[0].id}). Its token no longer works.`);
+}
+
+async function runUnpair() {
+  const agent = loadAgent();
+  if (!agent) return console.log(`Not paired (${agentFilePath()} doesn't exist).`);
+  let note = 'Revoked on the relay.';
+  try { await revokeMachine(agent, 'self'); }
+  catch (e) { note = `Could NOT revoke it on the relay (${e.message}); revoke it from another machine with: revoke ${agent.name || '<id>'}`; }
+  removeAgent();
+  console.log(`Unpaired. ${note} Removed ${agentFilePath()}.`);
+}
+
 function serve() {
   const helper = createHelper({ loadAgent, pairCommand: PAIR_COMMAND });
   const write = (msg) => { if (msg) process.stdout.write(JSON.stringify(msg) + '\n'); };
@@ -61,6 +102,8 @@ function serve() {
 
 const cmd = process.argv[2];
 if (cmd === 'pair') await runPair(process.argv.slice(2));
-else if (cmd === 'unpair') console.log(removeAgent() ? `Unpaired. Removed ${agentFilePath()}.` : `Not paired (${agentFilePath()} doesn't exist).`);
+else if (cmd === 'unpair') await runUnpair();
+else if (cmd === 'machines') await runMachines().catch((e) => { console.error(e.message); process.exit(1); });
+else if (cmd === 'revoke') await runRevoke(process.argv[3]).catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === undefined) serve();
-else { console.error(`unknown command "${cmd}". Commands: pair <CODE> [--name <machine>] [--relay <url>], unpair`); process.exit(2); }
+else { console.error(`unknown command "${cmd}". Commands: pair <CODE> [--name <machine>] [--relay <url>], unpair, machines, revoke <id|name>`); process.exit(2); }

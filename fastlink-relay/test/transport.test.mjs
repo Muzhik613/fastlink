@@ -118,3 +118,51 @@ test('origin is cached per device: the target browser\'s origin drives consent/e
   assert.equal(vb.ok, false);
   assert.match(vb.error, /b\.test/);
 });
+
+test('origin is cached per TAB: a call naming another tab is gated on that tab, not the last one seen', async () => {
+  const a = fakeSocket('tokA');
+  const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets: [a] });
+  const ta = target(r, 'w', 'tokA');
+  let p = r.callExtension('fast_text', { tabId: 7 }, undefined, ta);
+  await reply(r, a, a.lastCall().id, { result: 1, origin: 'https://allowed.test', tabId: 7 });
+  await p;
+  p = r.callExtension('fast_text', { tabId: 9 }, undefined, ta);
+  await reply(r, a, a.lastCall().id, { result: 1, origin: 'https://other.test', tabId: 9 });
+  await p;
+  assert.equal(r.cachedOrigin(ta, 7), 'https://allowed.test');
+  assert.equal(r.cachedOrigin(ta, 9), 'https://other.test');
+  r.evalPolicy = async () => ({ allowEvaluate: true, allowAll: false, isOperator: false, origins: ['https://allowed.test'] });
+  assert.equal((await r.checkEvalAllowed(ta, 7)).ok, true);
+  const v9 = await r.checkEvalAllowed(ta, 9);
+  assert.equal(v9.ok, false);
+  assert.match(v9.error, /other\.test/);
+});
+
+test('eval on a tab whose site is unknown is denied (fail closed)', async () => {
+  const a = fakeSocket('tokA');
+  const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets: [a] });
+  const ta = target(r, 'w', 'tokA');
+  r.evalPolicy = async () => ({ allowEvaluate: true, allowAll: false, isOperator: false, origins: ['https://allowed.test'] });
+  const p = r.checkEvalAllowed(ta, 55);
+  await new Promise((res) => setImmediate(res));
+  // the probe (fast_list) does not list tab 55
+  await reply(r, a, a.lastCall().id, { result: [{ id: 7, url: 'https://allowed.test/x', active: true }] });
+  assert.equal((await p).ok, false);
+});
+
+test('writes carry expectOrigin = the origin the gates approved for that tab', async () => {
+  const a = fakeSocket('tokA');
+  const { r, storage } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets: [a] });
+  await storage.put('dev:default', 'w');
+  const { mcpCall } = await import('./helpers.mjs');
+  const ta = target(r, 'w', 'tokA');
+  let p = r.callExtension('fast_text', { tabId: 7 }, undefined, ta);
+  await reply(r, a, a.lastCall().id, { result: 1, origin: 'https://site.test', tabId: 7 });
+  await p;
+  p = mcpCall(r, 'fast_click', { tabId: 7, text: 'Go' });
+  for (let i = 0; i < 200 && a.lastCall().action !== 'fast_click'; i++) await new Promise((res) => setImmediate(res));
+  assert.equal(a.lastCall().action, 'fast_click');
+  assert.equal(a.lastCall().args.expectOrigin, 'https://site.test');
+  await reply(r, a, a.lastCall().id, { result: { ok: true }, origin: 'https://site.test', tabId: 7 });
+  await p;
+});

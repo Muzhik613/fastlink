@@ -5,7 +5,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn, execFile } from 'node:child_process';
-import { mkdtempSync, statSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +48,9 @@ function toolResult(name, args) {
   return txt({ ok: true, tabId: args.tabId ?? 7 });
 }
 
+// machines known to the fake relay's /agent/machines
+const fleet = [];
+
 const relay = createServer(async (req, res) => {
   let body = '';
   for await (const c of req) body += c;
@@ -56,6 +59,18 @@ const relay = createServer(async (req, res) => {
     if (code !== 'GOOD-CODE') { res.writeHead(400, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: 'invalid or expired code' })); }
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ agentToken: `fla_for_${name}` }));
+  }
+  if (req.url === '/agent/machines') {
+    const self = String(req.headers.authorization || '').slice(7);
+    const live = fleet.filter((m) => !m.revoked);
+    const me = live.find((m) => m.token === self);
+    if (!me) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end('{"error":"not_paired"}'); }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    if (req.method === 'GET') return res.end(JSON.stringify({ machines: live.map((m) => ({ id: m.id, name: m.name, createdAt: 1, lastSeen: null, self: m === me })) }));
+    const { revoke } = JSON.parse(body);
+    const hit = revoke === 'self' ? me : live.find((m) => m.id === revoke);
+    hit.revoked = true;
+    return res.end(JSON.stringify({ ok: true }));
   }
   authSeen.push(req.headers.authorization);
   sessionSeen.push(req.headers['mcp-session-id'] ?? null);
@@ -241,4 +256,22 @@ test('pair writes agent.json 0600 in a 0700 dir; unpair removes it', async () =>
   assert.match((await run(process.execPath, [SERVER, 'unpair'], { env })).stdout, /Unpaired/);
   assert.ok(!existsSync(file));
   assert.match((await run(process.execPath, [SERVER, 'unpair'], { env })).stdout, /Not paired/);
+});
+
+test('machines lists the account, revoke <name> revokes another, unpair revokes self and deletes the file', async () => {
+  const run = promisify(execFile);
+  const file = join(tmp, 'fleet', 'agent.json');
+  const env = { ...process.env, FASTLINK_AGENT_FILE: file };
+  mkdirSync(join(tmp, 'fleet'), { recursive: true });
+  writeFileSync(file, JSON.stringify({ relay: RELAY_URL, agentToken: 'fla_me', name: 'laptop', pairedAt: 'x' }));
+  fleet.push({ id: 'aaaaaaaaaaaa', name: 'laptop', token: 'fla_me' }, { id: 'bbbbbbbbbbbb', name: 'old-mac', token: 'fla_old' });
+  const ls = (await run(process.execPath, [SERVER, 'machines'], { env })).stdout;
+  assert.match(ls, /aaaaaaaaaaaa\s+laptop.*\(this machine\)/);
+  assert.match(ls, /bbbbbbbbbbbb\s+old-mac/);
+  await assert.rejects(run(process.execPath, [SERVER, 'revoke', 'laptop'], { env }), /this machine.*unpair/s);
+  assert.match((await run(process.execPath, [SERVER, 'revoke', 'old-mac'], { env })).stdout, /Revoked "old-mac"/);
+  assert.equal(fleet[1].revoked, true);
+  assert.match((await run(process.execPath, [SERVER, 'unpair'], { env })).stdout, /Unpaired\. Revoked on the relay\./);
+  assert.equal(fleet[0].revoked, true);
+  assert.equal(existsSync(file), false);
 });

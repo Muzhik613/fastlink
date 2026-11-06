@@ -9,7 +9,9 @@
 //   GET/POST /pair/new             — a logged-in human mints a one-time pairing code
 //   POST     /pair/claim           — the extension exchanges a code for a device token
 //   POST     /agent/pair           — the fast-dxt helper exchanges a code for an agent token (fla_…)
-//   GET      /admin/feedback       — operator read of fast_feedback rows (FEEDBACK_ADMIN_TOKEN)
+//   GET/POST /agent/machines       — a paired machine lists / revokes its owner's machines (Bearer fla_…)
+//   GET      /admin/feedback       — operator read of fast_feedback rows (RELAY_ADMIN_TOKEN)
+//   POST     /admin/drop-legacy-pins — ONE-TIME rollout sweep of the old pin keys (RELAY_ADMIN_TOKEN)
 //   *        /ext                  — WSS upgrade; resolve device token -> user's DO
 //   GET      /  /health            — health check
 //
@@ -76,8 +78,12 @@ export function makeDefaultHandler() {
             return handlePairClaim(request, env);
           case '/agent/pair':
             return handleAgentPair(request, env);
+          case '/agent/machines':
+            return handleAgentMachines(request, env);
           case '/admin/feedback':
             return handleAdminFeedback(request, env);
+          case '/admin/drop-legacy-pins':
+            return handleDropLegacyPins(request, env);
           case '/ext/authorize':
             return handleExtAuthorize(request, env);
           case '/ext/authorize/wait':
@@ -545,16 +551,18 @@ async function handleAgentPair(request, env) {
 
 // ===========================================================================
 // /admin/feedback — operator read of fast_feedback rows. Read-only.
-//   GET ?after=<id>&limit=<≤100>  Authorization: Bearer <FEEDBACK_ADMIN_TOKEN>
+//   GET ?after=<id>&limit=<≤100>  Authorization: Bearer <RELAY_ADMIN_TOKEN>
 //   -> { items:[{id,user_id,email,browser,client,kind,text,ts}], last:<id> }
 // 404 when the secret is unset, so the endpoint doesn't exist until configured.
 // ===========================================================================
 const FEEDBACK_PAGE_MAX = 100;
 
-async function handleAdminFeedback(request, env) {
-  const secret = env.FEEDBACK_ADMIN_TOKEN;
+// Operator auth for /admin/*: Bearer RELAY_ADMIN_TOKEN (wrangler secret), constant-
+// time compare. Unset secret → 404 (the endpoints don't exist). null = authorized.
+function adminDenied(request, env, method) {
+  const secret = env.RELAY_ADMIN_TOKEN;
   if (!secret) return new Response('not found', { status: 404 });
-  if (request.method !== 'GET') return jsonResponse({ error: 'method_not_allowed' }, 405);
+  if (request.method !== method) return jsonResponse({ error: 'method_not_allowed' }, 405);
   const auth = request.headers.get('Authorization') || '';
   const presented = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   if (!timingSafeEqual(presented, secret)) {
@@ -562,6 +570,12 @@ async function handleAdminFeedback(request, env) {
       status: 401, headers: { 'content-type': 'application/json', 'WWW-Authenticate': 'Bearer' },
     });
   }
+  return null;
+}
+
+async function handleAdminFeedback(request, env) {
+  const denied = adminDenied(request, env, 'GET');
+  if (denied) return denied;
   const url = new URL(request.url);
   const after = Math.max(0, parseInt(url.searchParams.get('after') || '0', 10) || 0);
   const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || String(FEEDBACK_PAGE_MAX), 10) || FEEDBACK_PAGE_MAX, 1), FEEDBACK_PAGE_MAX);
@@ -570,6 +584,66 @@ async function handleAdminFeedback(request, env) {
   return new Response(JSON.stringify({ items, last: items.length ? items[items.length - 1].id : after }), {
     headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   });
+}
+
+// ===========================================================================
+// ONE-TIME ROLLOUT CLEANUP (docs/PIN-REDESIGN.md §7). The redesign dropped the
+// relay-side pins; this sweeps their leftover keys (dev:pin:*, dev:spin:*) out of
+// every user's DO. Paged by user id because a Worker invocation has a subrequest
+// cap: call with ?after=<cursor> until `done`. DELETE this handler and the DO's
+// /__drop-legacy-pins in the follow-up commit once the sweep has run.
+//   POST ?after=<user_id>&limit=<≤40>  → { users, deleted, next, done }
+// ===========================================================================
+const SWEEP_PAGE_MAX = 40;
+
+async function handleDropLegacyPins(request, env) {
+  const denied = adminDenied(request, env, 'POST');
+  if (denied) return denied;
+  const url = new URL(request.url);
+  const after = url.searchParams.get('after') || '';
+  const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || String(SWEEP_PAGE_MAX), 10) || SWEEP_PAGE_MAX, 1), SWEEP_PAGE_MAX);
+  const ids = await db.listUserIds(env.DB, after, limit);
+  let deleted = 0;
+  for (const userId of ids) {
+    const stub = env.USER_RELAY.get(env.USER_RELAY.idFromName(String(userId)));
+    const res = await stub.fetch(new Request('https://do/__drop-legacy-pins', { method: 'POST' }));
+    deleted += (await res.json()).deleted || 0;
+  }
+  return jsonResponse({ users: ids.length, deleted, next: ids.length ? ids[ids.length - 1] : after, done: ids.length < limit });
+}
+
+// ===========================================================================
+// /agent/machines — the revoke path for machine (agent) tokens. Authenticated by
+// the CALLING machine's own token (Bearer fla_…); it only ever sees and revokes
+// machines of the same user. A lost machine is revoked from any other paired one
+// (or: pair a new machine first, then revoke the lost one).
+//   GET                      → { machines:[{id, name, createdAt, lastSeen, self}] }
+//   POST { revoke: <id> }    → { ok, revoked:<id> }      id = 12 hex chars from GET
+//   POST { revoke: 'self' }  → { ok }                    (what `unpair` sends)
+// ===========================================================================
+async function handleAgentMachines(request, env) {
+  const auth = request.headers.get('Authorization') || '';
+  const token = auth.startsWith('Bearer fla_') ? auth.slice(7) : '';
+  const agent = token ? await db.lookupAgent(env.DB, token) : null;
+  if (!agent || agent.revoked) return jsonResponse({ error: 'not_paired' }, 401);
+
+  if (request.method === 'GET') {
+    return jsonResponse({ machines: await db.listAgents(env.DB, agent.userId, token) });
+  }
+  if (request.method !== 'POST') return jsonResponse({ error: 'method_not_allowed' }, 405);
+  let body;
+  try { body = await request.json(); } catch { return jsonResponse({ error: 'invalid_json' }, 400); }
+  const want = body && body.revoke;
+  if (want === 'self') {
+    await db.revokeAgent(env.DB, token);
+    await db.logAudit(env.DB, agent.userId, 'agent_revoke', { self: true, label: agent.label });
+    return jsonResponse({ ok: true });
+  }
+  if (!(await db.revokeAgentById(env.DB, agent.userId, String(want || '')))) {
+    return jsonResponse({ error: 'no_such_machine' }, 404);
+  }
+  await db.logAudit(env.DB, agent.userId, 'agent_revoke', { id: want });
+  return jsonResponse({ ok: true, revoked: want });
 }
 
 // ===========================================================================

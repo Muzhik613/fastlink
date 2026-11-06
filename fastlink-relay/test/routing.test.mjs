@@ -12,7 +12,7 @@ const twoBrowsers = () => {
 // Run a browser tool and answer it from whichever socket received the call.
 async function drive(r, sockets, name, args) {
   const p = mcpCall(r, name, args);
-  await tick(); await tick();
+  for (let i = 0; i < 200 && !sockets.some((s) => s.lastCall()); i++) await tick();
   const ws = sockets.find((s) => s.lastCall());
   assert.ok(ws, 'no call was sent');
   await reply(r, ws, ws.lastCall().id, { result: { ok: true }, origin: 'https://x.test', tabId: 7 });
@@ -103,7 +103,7 @@ test('fast_batch: steps go to the routed browser, batch tabId reaches page steps
   const { a, b, devices, sockets } = twoBrowsers();
   const { r } = await makeRelay({ devices, sockets });
   const p = mcpCall(r, 'fast_batch', { browser: 'home', tabId: 9, actions: [{ name: 'fast_text', args: { browser: 'work' } }] });
-  for (let i = 0; i < 50 && !b.lastCall(); i++) await tick();
+  for (let i = 0; i < 200 && !b.lastCall(); i++) await tick();
   const call = b.lastCall();
   assert.equal(call.action, 'fast_text');
   assert.equal(call.args.tabId, 9);

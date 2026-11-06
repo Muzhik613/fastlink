@@ -131,7 +131,7 @@ EXTENSION_ID = "ockcjadbkdfgfllidpcoamcepahfmlpf"
 #   MAIL_API_KEY      - Resend API key to send the link (auth.js reads
 #                       MAIL_API_KEY || RESEND_API_KEY; standardize on MAIL_API_KEY).
 #   --- optional ---
-#   FEEDBACK_ADMIN_TOKEN - bearer for GET /admin/feedback (unset → 404).
+#   RELAY_ADMIN_TOKEN - operator bearer for /admin/* (feedback read, one-time pin sweep); unset → 404.
 
 # ---------------------------------------------------------------------------
 # Observability: tail/live logs back the audit/debug story (SAFETY.md §5).

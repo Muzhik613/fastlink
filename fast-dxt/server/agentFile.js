@@ -38,6 +38,22 @@ export function removeAgent() {
   return true;
 }
 
+// /agent/machines with this machine's own token: list the account's machines, or
+// revoke one ({revoke:<id>|'self'}). Throws with the relay's message on failure.
+async function machinesCall(agent, body) {
+  const res = await fetch(`${agent.relay}/agent/machines`, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${agent.agentToken}` },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* not JSON */ }
+  if (!res.ok) throw new Error(`relay said ${res.status}: ${data?.error || 'error'}`);
+  return data;
+}
+export const listMachines = (agent) => machinesCall(agent).then((d) => d.machines || []);
+export const revokeMachine = (agent, id) => machinesCall(agent, { revoke: id });
+
 // POST /agent/pair {code, name} → {agentToken}. Throws with the relay's message on failure.
 export async function pair({ code, name, relay = DEFAULT_RELAY }) {
   const base = relay.replace(/\/+$/, '');
