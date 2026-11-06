@@ -5,6 +5,6 @@
   "main": "server/index.js",
   "description": "FastLink helper: per-session MCP stdio server that forwards to the FastLink relay.",
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs && python3 -m unittest discover -s test -p 'test_*.py'"
   }
 }
