@@ -166,3 +166,26 @@ test('fast_status reports each online browser\'s extension version', async () =>
   const { data } = await mcpCall(r, 'fast_status', { browser: 'work' });
   assert.deepEqual(data.browsers.map((x) => [x.name, x.version]), [['work', '0.4.8'], ['home', '0.4.6'], ['off', null]]);
 });
+
+test('fast_profile on the relay (stale connector tool list): explains per-call browser, never a routing error', async () => {
+  const { a, b, devices, sockets } = twoBrowsers();
+  const { r } = await makeRelay({ devices, sockets });
+  let { data } = await mcpCall(r, 'fast_profile', { install: 'home' });
+  assert.equal(data.pinSupported, false);
+  assert.equal(data.browser, 'home');
+  assert.match(data.hint, /browser:"home"/);
+  assert.doesNotMatch(JSON.stringify(data), /none was named/);
+  ({ data } = await mcpCall(r, 'fast_profile', { install: 'nope' }));
+  assert.match(data.error, /No browser named "nope"/);
+  ({ data } = await mcpCall(r, 'fast_profile', { install: 'auto' }));
+  assert.match(data.hint, /only online browser/);
+  assert.equal(a.sent.length + b.sent.length, 0, 'nothing reaches a browser');
+});
+
+test('unknown tool names are refused by name, never forwarded', async () => {
+  const { a, b, devices, sockets } = twoBrowsers();
+  const { r } = await makeRelay({ devices, sockets });
+  const { data } = await mcpCall(r, 'fast_ext_reload', { browser: 'home' });
+  assert.equal(data.unknownTool, true);
+  assert.equal(a.sent.length + b.sent.length, 0);
+});

@@ -150,6 +150,31 @@ const errorResult = (message) => ({ content: [{ type: 'text', text: `Error: ${me
 // Raw tools that return a screenshot dataURL. On Workers there's no /tmp to save
 // to, so we hand the image back as proper MCP image content instead.
 const IMAGE_TOOLS = new Set(['fast_screenshot']);
+const KNOWN_TOOLS = new Set(TOOLS.map((t) => t.name));
+
+// fast_profile on the relay (connector clients: claude.ai, Grok, a CLI using the URL
+// connector). There is nothing to pin server-side, so check the name and say how to
+// use it: name the browser on each call. Never an error about routing.
+async function profileOnRelay(relay, args, browser) {
+  const want = String(args?.install ?? args?.browser ?? browser ?? '').trim().toLowerCase();
+  const devices = await relay.deviceList();
+  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected }));
+  const online = devices.filter((d) => d.connected).map((d) => d.name);
+  const how = 'This connector can\'t pin a browser: the relay keeps no per-chat state. Pass `browser` on each call instead. (In Claude Code, the FastLink helper\'s fast_profile pins a browser for the session.)';
+  if (!want || want === 'auto') {
+    return { pinned: null, pinSupported: false, browsers, hint: `${how} With no browser named, calls use the only online browser, else they error with the online list. Online now: ${online.join(', ') || '(none)'}.` };
+  }
+  const dev = devices.find((d) => d.name === want);
+  if (!dev) return { error: `No browser named "${want}". Browsers: ${browsers.map((b) => b.name).join(', ') || '(none paired)'}.`, pinned: null, pinSupported: false, browsers };
+  return {
+    pinned: null,
+    pinSupported: false,
+    browser: dev.name,
+    connected: dev.connected,
+    browsers,
+    hint: `${how} Use browser:"${dev.name}" on your next calls${dev.connected ? '' : ` (it is offline right now; online: ${online.join(', ') || 'none'})`}.`,
+  };
+}
 
 // Mutating actions blocked when a site is in read-only consent mode (SAFETY §7).
 const MUTATING_TOOLS = new Set([
@@ -278,6 +303,13 @@ async function dispatchTool(params, relay, trace) {
       drivingPaused: true,
     });
   }
+
+  // fast_profile is not a relay tool: pins live in the client (the Claude Code helper
+  // answers it locally) and the relay keeps no per-chat state. A connector that still
+  // calls it (a tool list cached from before 11-06) gets a clear answer, not a routing error.
+  if (name === 'fast_profile') return textResult(await profileOnRelay(relay, args, browser));
+  // Only the relay's own tools are forwarded; anything else is refused by name.
+  if (!KNOWN_TOOLS.has(name)) return textResult({ error: `Unknown FastLink tool "${name}". Tools: ${[...KNOWN_TOOLS].join(', ')}.`, unknownTool: true });
 
   // Relay-native tools that answer without needing a live browser.
   if (name === 'fast_status') return textResult(await relayStatus(relay, browser, lastBrowser));
