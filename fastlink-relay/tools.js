@@ -4,13 +4,13 @@
 // Descriptions stay short: what the tool does, its key arguments, at most one gotcha (<= 300 chars).
 // Every browser-touching tool also takes `browser` and `tabId` (added by withTarget below).
 
-const BROWSER_ARG = { type: 'string', description: 'Browser name to drive (see fast_status). Omitted: the account default browser.' };
+const BROWSER_ARG = { type: 'string', description: 'Browser name to drive (see fast_status). Omitted: the only online browser.' };
 const TAB_ARG = { type: 'number', description: 'Tab id to act on, without changing the browser\'s target tab. Omitted: the target tab.' };
 
 const RELAY_TOOLS = [
   {
     name: 'fast_status',
-    description: 'Which browsers are paired and connected, the account default, and which browser a call is routed to. Call when other tools say a browser is not connected.',
+    description: 'Which browsers are paired and online, and which browser a call is routed to. Call when other tools say a browser is not connected.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -27,7 +27,7 @@ const RELAY_TOOLS = [
       properties: {
         text: { type: 'string', maxLength: 4000, description: 'What happened or what you need (up to 4000 characters).' },
         kind: { type: 'string', enum: ['bug', 'idea', 'other'], description: 'Default "other".' },
-        browser: { type: 'string', description: 'Browser name the note is about. Omitted: the account default.' },
+        browser: { type: 'string', description: 'Browser name the note is about (optional).' },
       },
       required: ['text'],
     },

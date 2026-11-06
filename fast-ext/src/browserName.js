@@ -53,7 +53,7 @@ export function suggestName(devices) {
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
-// GET (no body) or POST {name} / {makeDefault} to {base}/devices.
+// GET (no body) or POST {name} to {base}/devices.
 // Returns null when this browser isn't paired.
 export async function devicesFetch(method, body) {
   const c = await chrome.storage.local.get(['relayBase', 'deviceToken']);

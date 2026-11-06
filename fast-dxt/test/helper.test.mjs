@@ -24,6 +24,7 @@ const sessionSeen = [];    // mcp-session-id headers
 let nextTab = 100;
 const liveTabs = new Set([7]);
 let useSse = false;
+let serveMeta = false;      // when true, results say which browser served them (relay _meta)
 
 const BROWSERS = [
   { name: 'home', connected: true, lastSeen: 1 },
@@ -40,7 +41,7 @@ const TOOLS = [
 const txt = (o) => ({ content: [{ type: 'text', text: JSON.stringify(o) }] });
 
 function toolResult(name, args) {
-  if (name === 'fast_status') return txt({ browsers: BROWSERS, defaultBrowser: 'home', routedBrowser: args.browser || 'home' });
+  if (name === 'fast_status') return txt({ browsers: BROWSERS, routedBrowser: args.browser || args.lastBrowser || 'home' });
   if (args.tabId != null && !liveTabs.has(args.tabId)) return txt({ error: `No tab with id: ${args.tabId}.` });
   if (name === 'fast_tab') { const id = nextTab++; liveTabs.add(id); return txt({ tabId: id, url: args.url }); }
   if (name === 'fast_nav') return txt({ tabId: args.tabId ?? 7, url: args.url });
@@ -85,7 +86,9 @@ const relay = createServer(async (req, res) => {
     result = { tools: TOOLS };
   } else if (rpc.method === 'tools/call') {
     calls.push(rpc.params);
-    result = toolResult(rpc.params.name, rpc.params.arguments || {});
+    const a = rpc.params.arguments || {};
+    result = toolResult(rpc.params.name, a);
+    if (serveMeta) result = { ...result, _meta: { 'fastlink/browser': a.browser || a.lastBrowser || 'home' } };
   }
   const reply = JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result });
   if (useSse) {
@@ -274,4 +277,41 @@ test('machines lists the account, revoke <name> revokes another, unpair revokes 
   assert.match((await run(process.execPath, [SERVER, 'unpair'], { env })).stdout, /Unpaired\. Revoked on the relay\./);
   assert.equal(fleet[0].revoked, true);
   assert.equal(existsSync(file), false);
+});
+
+test('no pin: the browser that served the last call is sent as the lastBrowser hint, per session and per machine', async (t) => {
+  serveMeta = true;
+  t.after(() => { serveMeta = false; });
+  const dir = join(tmp, 'hint'); mkdirSync(dir, { recursive: true });
+  const agentFile = writeAgent(join(dir, 'agent.json'));
+  const a = startHelper(agentFile); t.after(a.stop);
+  await a.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'cc', version: '1' } });
+
+  // Fresh machine: no hint. The relay picked 'home' (the only one online).
+  await a.call('fast_snapshot');
+  assert.deepEqual(calls.at(-1).arguments, {});
+  // From now on this session hints 'home'.
+  await a.call('fast_snapshot');
+  assert.deepEqual(calls.at(-1).arguments, { lastBrowser: 'home' });
+  // The machine remembers it for the NEXT session.
+  assert.equal(JSON.parse(readFileSync(join(dir, 'last-browser.json'), 'utf8')).browser, 'home');
+  assert.equal(statSync(join(dir, 'last-browser.json')).mode & 0o777, 0o600);
+  const b = startHelper(agentFile); t.after(b.stop);
+  await b.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'cc', version: '1' } });
+  await b.call('fast_snapshot');
+  assert.deepEqual(calls.at(-1).arguments, { lastBrowser: 'home' }, 'second session starts from the machine hint');
+
+  // A pin is hard and replaces the hint; the model's explicit browser wins over both.
+  await a.call('fast_profile', { install: 'work' });
+  await a.call('fast_snapshot');
+  assert.deepEqual(calls.at(-1).arguments, { browser: 'work' });
+  await a.call('fast_snapshot', { browser: 'home' });
+  assert.deepEqual(calls.at(-1).arguments, { browser: 'home' });
+
+  // 'auto' drops the pin; the hint is now the last browser that served this session.
+  const auto = a.json(await a.call('fast_profile', { install: 'auto' }));
+  assert.equal(auto.pinned, null);
+  assert.match(auto.hint, /only online browser/);
+  await a.call('fast_snapshot');
+  assert.deepEqual(calls.at(-1).arguments, { lastBrowser: 'home' });
 });

@@ -18,14 +18,20 @@ relay ──WSS {type:'call'}──▶ extension (per-tab FIFO queue) ──▶ 
 ## 1. Tool arguments (relay `tools.js` is the ONE schema source)
 
 - Every browser-touching tool gets two optional args:
-  - `browser` (string): browser NAME (`[a-z0-9_-]`, ≤32). Omitted → the account default
-    (`dev:default`). Default unset or offline → hard error naming the connected browsers.
+  - `browser` (string): browser NAME (`[a-z0-9_-]`, ≤32). A named browser that is offline
+    or unknown is a hard error. Never silently redirect to another browser.
+  - Omitted (Yaakov 11-06, no fixed default): (1) exactly one of the account's browsers
+    online → it; (2) else the hidden `lastBrowser` hint the helper sends (the browser
+    this session, else this machine, used most recently) if it's online; (3) else an
+    error listing the online browsers. claude.ai / Grok send no hint, so with several
+    online they name one. Each result reports the browser that served it in
+    `_meta['fastlink/browser']`; the helper records it (`~/.fastlink/last-browser.json`).
     Never silently redirect to another browser.
   - `tabId` (number): act on that tab. Omitted → the extension's current target tab
     (today's behavior).
 - `fast_profile` is REMOVED from the relay. The helper implements it locally.
 - `fast_status` stays on the relay. It takes optional `browser`, lists every browser
-  `{name, connected, lastSeen}`, `defaultBrowser`, and `routedBrowser` for the given/default name.
+  `{name, connected, lastSeen}` and `routedBrowser` for the given name (or the rules above).
 - New `fast_feedback` (see §5).
 - The helper fetches `tools/list` from the relay and passes it through. It removes `browser`
   and `tabId` from schemas it shows (it fills them itself) and adds its local `fast_profile`.
@@ -79,7 +85,7 @@ relay ──WSS {type:'call'}──▶ extension (per-tab FIFO queue) ──▶ 
     `UPDATE agents SET revoked=1 WHERE user_id=?` in D1.
 - The helper is an MCP stdio server, one process per Claude Code session (Claude Code
   already spawns one per session). It keeps in memory:
-  - `pin`: a browser name, or null (→ account default).
+  - `pin`: a browser name, or null (→ the rules in §1, with this session's `lastBrowser` hint).
   - `myTab` (per browser): learned from tabId in `fast_tab` / `fast_nav` / `fast_switch` results.
 - Every forwarded `tools/call` gets `browser: pin` (when set) and `tabId: myTab[pin]` (when
   known and the model didn't pass its own).
@@ -111,16 +117,15 @@ docs/UPDATING.md, docs/BUG-5-multi-install-routing.md).
 
 ## 7. Rollout (needs Yaakov's OK; nothing deploys before it)
 
-1. Set an account default browser for every account that relies on unnamed calls (Yaakov's
-   has none today; Alex's = `fastlinkchrome`).
-2. Apply D1 migration 0007 remotely; `wrangler secret put RELAY_ADMIN_TOKEN`.
-3. Relay deploy (backward compatible: old extensions and OAuth clients keep working;
+1. Apply D1 migration 0007 remotely; `wrangler secret put RELAY_ADMIN_TOKEN`.
+2. Relay deploy (backward compatible: old extensions and OAuth clients keep working;
    `browser` is optional).
-4. One-time cleanup: run the `/admin/drop-legacy-pins` sweep (fastlink-relay/DEPLOY.md) so
-   no `dev:pin:*` / `dev:spin:*` key is left in any user's DO. Then delete the sweep code
+3. One-time cleanup: run the `/admin/drop-legacy-pins` sweep (fastlink-relay/DEPLOY.md) so
+   no `dev:pin:*` / `dev:spin:*` / `dev:default` key is left in any user's DO. Then delete the sweep code
    (auth.js `handleDropLegacyPins`, userRelay.js `#dropLegacyPins`) in a follow-up commit and
    redeploy.
+4. Pair each machine once and switch Claude Code configs from the `fastlink-relay` URL
+   connector / old local `fastlink` to the helper. This comes BEFORE the extension release:
+   extension 0.4.8 drops the local broker connection the old local `fastlink` still uses.
 5. Extension release (sync the Windows copy + reload; Alex's Mac Chrome).
-6. Switch Claude Code configs from the `fastlink-relay` URL connector / old local `fastlink`
-   to the helper, then pair each machine once.
-7. Alex: unload `com.alexturetsky.FastlinkBroker`.
+6. Switch off the old brokers (Alex: unload `com.alexturetsky.FastlinkBroker`).

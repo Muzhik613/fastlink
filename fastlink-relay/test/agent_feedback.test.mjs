@@ -1,7 +1,7 @@
 // Agent tokens (/agent/pair + Bearer fla_ on /mcp), fast_feedback, /admin/feedback.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fakeD1, makeRelay, mcpCall } from './helpers.mjs';
+import { fakeD1, makeRelay, mcpCall, fakeSocket } from './helpers.mjs';
 import { makeDefaultHandler } from '../src/auth.js';
 import { sha256Hex, revokeAgent } from '../src/db.js';
 
@@ -92,8 +92,8 @@ test('an fla_ token opens nothing but /mcp', async () => {
 
 test('fast_feedback inserts a row (no browser needed) with email, browser, client', async () => {
   const db = fakeD1();
-  const { r, storage } = await makeRelay({ db, userId: 'owner', devices: [{ name: 'work', token: 'tokA' }] });
-  await storage.put('dev:default', 'work');
+  // 'work' is the only browser online, so an unnamed note is about it
+  const { r } = await makeRelay({ db, userId: 'owner', devices: [{ name: 'work', token: 'tokA' }], sockets: [fakeSocket('tokA')] });
   let { data } = await mcpCall(r, 'fast_feedback', { text: 'snapshot misses the dialog', kind: 'bug' }, { 'user-agent': 'ua-test/1' });
   assert.equal(data.ok, true);
   let row = db.raw.prepare('SELECT * FROM feedback WHERE id = ?').get(data.id);
@@ -183,10 +183,10 @@ test('/admin/drop-legacy-pins: admin-only, pages through users, calls each DO', 
   assert.equal((await makeDefaultHandler().fetch(new Request('https://relay.test/admin/drop-legacy-pins', { method: 'POST' }), env(fakeD1()), {})).status, 404);
 });
 
-test('DO /__drop-legacy-pins removes only dev:pin:* and dev:spin:* keys', async () => {
+test('DO /__drop-legacy-pins removes the old pins and the retired account default, nothing else', async () => {
   const { r, storage } = await makeRelay({});
   for (const k of ['dev:pin:c1', 'dev:pin:c2', 'dev:spin:s1', 'dev:default', 'tidx']) await storage.put(k, 'x');
   const res = await r.fetch(new Request('https://do/__drop-legacy-pins', { method: 'POST' }));
-  assert.deepEqual(await res.json(), { deleted: 3 });
-  assert.deepEqual([...storage.m.keys()].sort(), ['dev:default', 'tidx']);
+  assert.deepEqual(await res.json(), { deleted: 4 });
+  assert.deepEqual([...storage.m.keys()].sort(), ['tidx']);
 });

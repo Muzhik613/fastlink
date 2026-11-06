@@ -148,10 +148,11 @@ export class UserRelay extends DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  // ONE-TIME ROLLOUT CLEANUP: remove the pre-redesign pin keys from this DO.
+  // ONE-TIME ROLLOUT CLEANUP: remove the pre-redesign pin keys and the retired
+  // account default (dev:default) from this DO.
   async #dropLegacyPins() {
     let deleted = 0;
-    for (const prefix of ['dev:pin:', 'dev:spin:']) {
+    for (const prefix of ['dev:pin:', 'dev:spin:', 'dev:default']) {
       for (;;) {
         const batch = await this.ctx.storage.list({ prefix, limit: 128 });
         if (!batch.size) break;
@@ -244,88 +245,66 @@ export class UserRelay extends DurableObject {
 
   // --- browser ROUTING (stateless) -------------------------------------------
   //
-  // Which browser a call drives is decided by the CALLER on every request: the
-  // optional `browser` tool argument (a name), else the account default
-  // (`dev:default`). The relay keeps NO per-client or per-session selection
-  // (docs/PIN-REDESIGN.md): the fast-dxt helper holds a session's pin locally and
-  // stamps `browser` on each call; claude.ai / Grok rely on the account default.
-
-  // The account-wide default browser (set from a browser's options page). null = unset.
-  async getDefaultDevice() {
-    try { return (await this.ctx.storage.get('dev:default')) || null; } catch { return null; }
-  }
-
-  async setDefaultDevice(name) {
-    if (name) await this.ctx.storage.put('dev:default', name);
-    else await this.ctx.storage.delete('dev:default');
-  }
-
-  // RESOLVE THE TARGET for one MCP request: the named browser, else the account
-  // default. There is NO fallback — an unset default, an unknown name or an
-  // offline browser is a hard error naming the connected browsers, never a
-  // redirect to some other browser.
+  // Which browser a call drives is decided per request; the relay stores NO
+  // selection and NO account default (Yaakov 11-06, docs/PIN-REDESIGN.md §1):
+  //   1. `browser` named → that browser (hard: offline/unknown is an error).
+  //   2. none named, exactly ONE of the account's browsers online → it.
+  //   3. several online → `lastBrowser` (a hint the helper sends: the browser
+  //      this session/machine used most recently) if it is online.
+  //   4. else a clear error listing the online browsers. Never a guess.
+  // claude.ai / Grok send no hint, so for them it's rule 2 or name one.
   // Returns { ws, name, deviceToken } | { error, ...diagnostics }.
-  async resolveTarget(browser) {
+  async resolveTarget(browser, lastBrowser = null) {
     const devices = await this.deviceList();
     const names = devices.map((d) => d.name);
-    const connectedNames = devices.filter((d) => d.connected).map((d) => d.name);
+    const online = devices.filter((d) => d.connected);
+    const connectedNames = online.map((d) => d.name);
     const diag = { browsers: names, connected: connectedNames };
-    if (!devices.length) return { error: NO_DEVICE_ERROR, noDeviceConnected: true, ...diag };
+    const pick = (dev) => ({ ws: this.#socketForToken(dev.deviceToken), name: dev.name, deviceToken: dev.deviceToken });
 
     const given = browser !== undefined && browser !== null && browser !== '';
-    let want;
-    let via;
-    if (given) {
-      want = sanitizeDeviceName(String(browser));
-      via = 'requested by this call';
-      if (!want || RESERVED_DEVICE_NAMES.has(want)) {
-        return {
-          error: `Invalid browser name "${browser}". Connected browsers: ${connectedNames.join(', ') || '(none)'}. Pass one of those as \`browser\`.`,
-          invalidBrowser: true, ...diag,
-        };
-      }
-    } else {
-      want = await this.getDefaultDevice();
-      via = 'the account default browser';
-      if (!want) {
-        return {
-          error: `No browser was named and this account has no default browser, so nothing was done. `
-            + `Connected browsers: ${connectedNames.join(', ') || '(none)'}. `
-            + `Pass \`browser\` with one of those names, or set a default on that browser's FastLink options page.`,
-          noDefaultBrowser: true, ...diag,
-        };
-      }
+    if (!given) {
+      if (!online.length) return { error: NO_DEVICE_ERROR, noDeviceConnected: true, ...diag };
+      if (online.length === 1) return pick(online[0]);
+      const hint = lastBrowser ? sanitizeDeviceName(String(lastBrowser)) : '';
+      const last = hint && online.find((d) => d.name === hint);
+      if (last) return pick(last);
+      return {
+        error: `Several browsers are online (${connectedNames.join(', ')}) and none was named, so nothing was done. `
+          + 'Pass `browser` with one of those names (in Claude Code: fast_profile picks one for this session).',
+        browserNotChosen: true, ...diag,
+      };
+    }
+    const want = sanitizeDeviceName(String(browser));
+    if (!want || RESERVED_DEVICE_NAMES.has(want)) {
+      return {
+        error: `Invalid browser name "${browser}". Online browsers: ${connectedNames.join(', ') || '(none)'}. Pass one of those as \`browser\`.`,
+        invalidBrowser: true, ...diag,
+      };
     }
     const dev = devices.find((d) => d.name === want);
     if (!dev) {
       return {
-        error: `No browser named "${want}" is paired to this account (${via}). `
-          + `Paired browsers: ${names.join(', ') || '(none)'}; connected: ${connectedNames.join(', ') || '(none)'}.`,
+        error: `No browser named "${want}" is paired to this account. `
+          + `Paired browsers: ${names.join(', ') || '(none)'}; online: ${connectedNames.join(', ') || '(none)'}.`,
         wrongBrowser: true, selected: want, ...diag,
       };
     }
     if (!dev.connected) {
       return {
-        error: `Browser "${want}" is not connected right now (${via}), so nothing was done. `
-          + `Connected now: ${connectedNames.join(', ') || '(none)'}. `
-          + `Open Chrome in that profile so FastLink reconnects, or pass \`browser\` with a connected name.`,
+        error: `Browser "${want}" is not connected right now, so nothing was done. `
+          + `Online now: ${connectedNames.join(', ') || '(none)'}. `
+          + 'Open Chrome in that profile so FastLink reconnects, or pass `browser` with an online name.',
         deviceNotConnected: true, selected: want, ...diag,
       };
     }
-    return { ws: this.#socketForToken(dev.deviceToken), name: want, deviceToken: dev.deviceToken };
-  }
-
-  // The account default is stored BY NAME, so a rename must carry it over —
-  // otherwise it would dangle at a name nothing owns.
-  async #followRename(oldName, newName) {
-    if (await this.getDefaultDevice() === oldName) await this.setDefaultDevice(newName);
+    return pick(dev);
   }
 
   // --- device management (options page, via auth.js /devices) ---------------
 
-  // GET  → { devices:[{name,connected,lastSeen,deviceToken(masked),self}], self, default }
+  // GET  → { devices:[{name,connected,lastSeen,deviceToken(masked),self}], self }
   // POST { name }               → rename THIS device (the token that authed)
-  // POST { makeDefault:bool }   → set/clear the account default to THIS device
   async #devicesRequest(request) {
     const token = request.headers.get('X-Fastlink-Device-Token') || '';
     const reply = (obj, status = 200) =>
@@ -334,22 +313,9 @@ export class UserRelay extends DurableObject {
     if (request.method === 'POST') {
       let body = {};
       try { body = await request.json(); } catch { return reply({ error: 'invalid_json' }, 400); }
-      if (typeof body.makeDefault === 'boolean') {
-        const rows = await this.#deviceRows(true);
-        const me = rows.find((r) => r.deviceToken === token);
-        if (!me) return reply({ error: 'unknown_device' }, 404);
-        await this.setDefaultDevice(body.makeDefault ? me.name : null);
-      } else {
-        // The account default is stored BY NAME, so read the old name BEFORE the
-        // rename: if this browser was the default, the default must follow it,
-        // otherwise it would dangle at a name nothing owns and every client
-        // relying on it would start erroring.
-        const oldName = (await this.#deviceRows()).find((r) => r.deviceToken === token)?.name;
-        const res = await renameDevice(this.env.DB, this.userId, token, body.name);
-        if (!res.ok) return reply({ error: res.error }, res.error === 'unknown_device' ? 404 : 400);
-        this._devices = null; // names changed → drop the cache
-        if (oldName && oldName !== res.name) await this.#followRename(oldName, res.name);
-      }
+      const res = await renameDevice(this.env.DB, this.userId, token, body.name);
+      if (!res.ok) return reply({ error: res.error }, res.error === 'unknown_device' ? 404 : 400);
+      this._devices = null; // names changed → drop the cache
     } else if (request.method !== 'GET') {
       return reply({ error: 'method_not_allowed' }, 405);
     }
@@ -358,7 +324,6 @@ export class UserRelay extends DurableObject {
     const self = devices.find((d) => d.deviceToken === token) || null;
     return reply({
       self: self ? self.name : null,
-      default: await this.getDefaultDevice(),
       devices: devices.map((d) => ({
         name: d.name,
         connected: d.connected,

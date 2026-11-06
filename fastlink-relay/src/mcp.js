@@ -21,7 +21,7 @@ import { sanitizeDeviceName, getUserEmail, insertFeedback } from './db.js';
 // Guidance the client sees in the initialize result — steers it toward the FAST
 // tools instead of its default "screenshot + read it myself" instinct.
 const INSTRUCTIONS = [
-  'FastLink drives the user\'s own Chrome browsers through the FastLink relay. Each paired browser has a NAME. Browser tools act on the account default browser unless you pass `browser:"<name>"`; fast_status lists the browsers and which are connected. A browser that is offline is an error, never a silent switch to another one.',
+  'FastLink drives the user\'s own Chrome browsers through the FastLink relay. Each paired browser has a NAME. With only one browser online, tools use it; with several online, pass `browser:"<name>"` (fast_status lists the browsers and which are online). A named browser that is offline is an error, never a silent switch to another one.',
   '',
   'FastLink drives the user\'s real Chrome tab. Use it efficiently:',
   '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content.',
@@ -119,10 +119,14 @@ async function handleOne(rpc, relay, trace) {
       }
       const startTs = Date.now();
       try {
-        // WHICH BROWSER this call drives comes from the call itself (`browser`,
-        // else the account default) and is resolved once in dispatchTool —
-        // nothing about it is stored on the DO.
-        return ok(id, await dispatchTool(params || {}, relay, trace));
+        // WHICH BROWSER this call drives comes from the call itself (`browser`, else
+        // the one online browser, else the caller's `lastBrowser` hint) and is
+        // resolved once in dispatchTool — nothing about it is stored on the DO.
+        // The browser that served the call rides back in _meta so the helper can
+        // remember it as this session's last-used browser.
+        const result = await dispatchTool(params || {}, relay, trace);
+        if (result && trace.routed) result._meta = { ...(result._meta || {}), 'fastlink/browser': trace.routed };
+        return ok(id, result);
       } finally {
         recordTiming(relay, trace.sessionId, params?.name || 'unknown', startTs, Date.now());
       }
@@ -261,8 +265,8 @@ async function consentVerdict(relay, name, target, tabId = null) {
 
 async function dispatchTool(params, relay, trace) {
   const name = params?.name;
-  // `browser` is routing-only: consumed here, never forwarded to the extension.
-  const { browser, ...args } = params?.arguments || {};
+  // `browser` / `lastBrowser` are routing-only: consumed here, never forwarded.
+  const { browser, lastBrowser, ...args } = params?.arguments || {};
   if (!name) return errorResult('missing tool name');
 
   // N2 kill-switch (SAFETY): if the user paused driving from the extension popup,
@@ -276,14 +280,15 @@ async function dispatchTool(params, relay, trace) {
   }
 
   // Relay-native tools that answer without needing a live browser.
-  if (name === 'fast_status') return textResult(await relayStatus(relay, browser));
-  if (name === 'fast_feedback') return textResult(await handleFeedback(relay, args, browser, trace));
+  if (name === 'fast_status') return textResult(await relayStatus(relay, browser, lastBrowser));
+  if (name === 'fast_feedback') return textResult(await handleFeedback(relay, args, browser, lastBrowser, trace));
 
-  // WHICH BROWSER: the named one, else the account default — resolved once and
-  // threaded through every sub-step below. An unset default, unknown name or
-  // offline browser is a hard error naming the connected browsers.
-  const target = await relay.resolveTarget(browser);
+  // WHICH BROWSER: the named one, else the only one online, else the caller's
+  // lastBrowser hint — resolved once and threaded through every sub-step below.
+  // Anything else is a hard error naming the online browsers.
+  const target = await relay.resolveTarget(browser, lastBrowser);
   if (target.error) return textResult(target);
+  trace.routed = target.name;
   {
     const bad = badTabId(args);
     if (bad) return textResult(bad);
@@ -342,10 +347,10 @@ async function dispatchTool(params, relay, trace) {
 }
 
 // ---- fast_feedback: store a note for the FastLink operators ----------------
-// Works with no browser connected. `browser` = the named browser, else the
-// account default (may be null). `client` = the MCP clientInfo from this
-// connection's initialize, else the User-Agent.
-async function handleFeedback(relay, args, browser, trace) {
+// Works with no browser connected. `browser` = the named browser, else the one
+// this call would be routed to (may be null). `client` = the MCP clientInfo from
+// this connection's initialize, else the User-Agent.
+async function handleFeedback(relay, args, browser, lastBrowser, trace) {
   const text = typeof args?.text === 'string' ? args.text.trim() : '';
   if (!text) return { error: 'fast_feedback needs `text`.' };
   if (text.length > FEEDBACK_MAX) return { error: `fast_feedback \`text\` is ${text.length} characters; the limit is ${FEEDBACK_MAX}.` };
@@ -353,7 +358,12 @@ async function handleFeedback(relay, args, browser, trace) {
   if (!FEEDBACK_KINDS.has(kind)) return { error: `fast_feedback \`kind\` must be one of: ${[...FEEDBACK_KINDS].join(', ')}.` };
   if (!relay.env.DB || !relay.userId) return { error: 'Feedback storage is unavailable on this relay.' };
 
-  const name = browser != null && browser !== '' ? (sanitizeDeviceName(String(browser)) || null) : await relay.getDefaultDevice();
+  let name = null;
+  if (browser != null && browser !== '') name = sanitizeDeviceName(String(browser)) || null;
+  else {
+    const t = await relay.resolveTarget(null, lastBrowser);
+    name = t && !t.error ? t.name : null;
+  }
   let client = await traceClient(relay, trace.sessionId);
   if (!client) client = (trace.request.headers.get('user-agent') || '').slice(0, 200) || null;
   let email = null;
@@ -374,13 +384,12 @@ function imageResult(result) {
   return { content };
 }
 
-// Relay-aware status: every browser of the account, the default, and where a
-// call with this `browser` (or none → the default) would be routed.
-async function relayStatus(relay, browser) {
+// Relay-aware status: every browser of the account and where a call with this
+// `browser` (or none → the only online one, else `lastBrowser`) would be routed.
+async function relayStatus(relay, browser, lastBrowser) {
   const devices = await relay.deviceList();
   const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen }));
-  const defaultBrowser = await relay.getDefaultDevice();
-  const target = await relay.resolveTarget(browser);
+  const target = await relay.resolveTarget(browser, lastBrowser);
   const connected = !!(target && target.ws);
   const policy = await relay.evalPolicy();
   // Per-origin consent (M4): the decision for the ROUTED browser's last-known origin.
@@ -392,7 +401,6 @@ async function relayStatus(relay, browser) {
     transport: 'cloud-relay',
     userId: relay.userId || null,
     browsers,
-    defaultBrowser,
     routedBrowser: connected ? target.name : null,
     targetError: target && target.error ? target.error : null,
     drivingPaused,

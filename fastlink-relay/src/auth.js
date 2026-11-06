@@ -741,7 +741,6 @@ async function handleTrace(request, env) {
 // parameter), so a device token can only read/rename devices on its own account.
 //   GET  ?deviceToken=...                -> { self, default, devices:[{name,connected,lastSeen,self,deviceToken(masked)}] }
 //   POST { deviceToken, name }           -> rename THIS browser (unique per user; a clash is an error)
-//   POST { deviceToken, makeDefault:bool}-> make THIS browser the account default (where calls without `browser` go)
 // ===========================================================================
 async function handleDevices(request, env) {
   if (request.method === 'OPTIONS') return corsPreflight();

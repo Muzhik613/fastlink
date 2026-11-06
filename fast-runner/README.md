@@ -24,7 +24,7 @@ caller (HTTP, e.g. a Durable Object) ──POST /run…──► http.mjs ─┴
 ```
 npm install                                   # once
 node relay-login.mjs                          # once: sign in to the relay (prints the authorize URL)
-node cli.mjs "Open example.com and report the h1"   # the account's default browser
+node cli.mjs "Open example.com and report the h1"   # the only online browser
 node cli.mjs --browser browser-1 "..."        # a named browser, sent as `browser` on every call
 node cli.mjs --toolset phase2 "..."           # A/B: triaged tool list (default: toolset.json = all tools)
 node cli.mjs --toolset phase2 --dump-tools    # print exactly what Grok would see; touches no browser
@@ -52,7 +52,7 @@ FASTRUN_HTTP_TOKEN=<secret> FASTRUN_BROWSER=<name> node http.mjs     # listens o
 What a per-user browser container needs to serve `http.mjs` (the runner reaches the browser through the relay, like any other client):
 - **Node 22** (developed on 22.23), and `npm install` in `fast-runner/`.
 - **Chromium that loads unpacked extensions**: Chrome for Testing (branded Chrome ≥137 ignores `--load-extension`), started with `--load-extension=<repo>/fast-ext --user-data-dir=<profile> --no-first-run --no-default-browser-check --password-store=basic` (without the last one the extension's network is frozen ~25 s by the keyring). Add `--no-sandbox` where user namespaces are blocked, and give it a display (Xvfb) or run headless=new. Use the **committed** `fast-ext` (a checkout at the deployed commit).
-- **Pairing**: pair that extension to the relay account once (its onboarding page) and give it a browser name; set `FASTRUN_BROWSER` to that name, or leave it unset when it is the account default.
+- **Pairing**: pair that extension to the relay account once (its onboarding page) and give it a browser name; set `FASTRUN_BROWSER` to that name, or leave it unset when it is the only browser online.
 - **Relay sign-in**: run `node relay-login.mjs` once as the user `http.mjs` runs as (or provide that user's `~/.config/fastrun/relay-token.json`, mode 600), signed in to the same account the extension is paired to.
 - **Model access**, one client, one of two ways:
   - **Shared proxy behind a gate (the frontdesk setup)**: `GROKCODE_URL=https://grok.ytx.app`, `GROKCODE_TOKEN=<gate key>` (secret, sent as `Authorization: Bearer`, stripped by the gate; the proxy injects its own grok login), `FASTRUN_PROXY_AUTOSTART=off`, no `XAI_API_KEY`.
@@ -63,7 +63,7 @@ What a per-user browser container needs to serve `http.mjs` (the runner reaches 
   |---|---|---|
   | `FASTRUN_HTTP_TOKEN` | secret shared with the caller | bearer token (required) |
   | `FASTRUN_HTTP_PORT` / `FASTRUN_HTTP_HOST` | e.g. `8799` / `0.0.0.0` | where `http.mjs` listens (default 127.0.0.1:8799) |
-  | `FASTRUN_BROWSER` | unset, or the browser's relay name | browser to drive, sent as `browser` on every call (unset: the account default) |
+  | `FASTRUN_BROWSER` | unset, or the browser's relay name | browser to drive, sent as `browser` on every call (unset: the only online browser) |
   | `FASTRUN_TOOLSET` | `phase2` | tools Grok sees (default `default`) |
   | `FASTRUN_MODEL` | `grok-4.6` | driving model |
   | `FASTRUN_GATE` | `on` | report_done gate |

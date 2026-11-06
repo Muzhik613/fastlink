@@ -1,7 +1,7 @@
 // agentFile.js — this machine's pairing with the relay: { relay, agentToken, name, pairedAt }.
 // One file per machine (~/.fastlink/agent.json, dir 0700, file 0600) covers every
 // Claude Code session on it. FASTLINK_AGENT_FILE overrides the path (tests).
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync, existsSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -35,6 +35,7 @@ export function removeAgent() {
   const file = agentFilePath();
   if (!existsSync(file)) return false;
   rmSync(file, { force: true });
+  rmSync(lastBrowserPath(), { force: true });
   return true;
 }
 
@@ -73,3 +74,19 @@ export async function pair({ code, name, relay = DEFAULT_RELAY }) {
   const file = saveAgent(agent);
   return { agent, file };
 }
+
+// This machine's last-used browser, shared by its sessions (a soft routing hint,
+// never a pin): next to agent.json. Missing/unreadable → null.
+export const lastBrowserPath = () => join(dirname(agentFilePath()), 'last-browser.json');
+export const lastBrowserStore = {
+  get() {
+    try { return JSON.parse(readFileSync(lastBrowserPath(), 'utf8')).browser || null; } catch { return null; }
+  },
+  set(browser) {
+    const file = lastBrowserPath();
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ browser, at: new Date().toISOString() }), { mode: 0o600 });
+    renameSync(tmp, file);
+  },
+};

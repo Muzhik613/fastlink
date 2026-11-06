@@ -1,10 +1,14 @@
 // helper.js — one Claude Code session's view of FastLink.
 //
-// Forwards MCP initialize / tools/list / tools/call to the relay and keeps two
-// things in memory, never on the relay (docs/PIN-REDESIGN.md §4):
-//   pin    — the browser name this session drives, or null (→ account default)
-//   myTab  — per browser (pin ?? 'default'), the tab this session is working in
-// Every forwarded call gets {browser: pin} and {tabId: myTab} filled in.
+// Forwards MCP initialize / tools/list / tools/call to the relay. Browser choice
+// lives here, never on the relay (docs/PIN-REDESIGN.md §1, §4):
+//   pin       — the browser this session was told to drive (fast_profile), or null
+//   lastUsed  — the browser that served this session's last call (else this
+//               MACHINE's last one, from lastBrowserStore)
+//   myTab     — per browser, the tab this session is working in
+// A pinned call gets {browser: pin}. An unpinned call gets the soft hint
+// {lastBrowser}: the relay uses the only online browser, else that hint if it's
+// online, else errors with the online list. Calls also get {tabId: myTab}.
 import { hostname } from 'node:os';
 import { createRelayClient } from './relayClient.js';
 import { PAIR_URL } from './agentFile.js';
@@ -22,7 +26,7 @@ const TAB_GONE_RE = /no tab with id|tab (?:\S+ )?(?:not found|was closed|is clos
 
 const PROFILE_TOOL = {
   name: 'fast_profile',
-  description: 'Choose which browser this session drives, by name (see fast_status), or "auto" for your default browser.',
+  description: 'Choose which browser this session drives, by name (see fast_status), or "auto" to let FastLink pick (the only online browser, else the last one used here).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -64,11 +68,14 @@ export function stripRoutingArgs(tool) {
  * @param {object} o
  * @param {() => object|null} o.loadAgent  current pairing (re-read while unpaired, so pairing mid-session works)
  * @param {string} o.pairCommand           the exact command a user runs to pair
+ * @param {{get():string|null, set(name:string):void}} [o.lastBrowserStore]  this machine's last-used browser
  */
-export function createHelper({ loadAgent, pairCommand }) {
+export function createHelper({ loadAgent, pairCommand, lastBrowserStore = { get: () => null, set() {} } }) {
   let agent = loadAgent();
   let relay = agent ? createRelayClient(agent) : null;
   let pin = null;
+  let lastUsed = null;
+  const hint = () => lastUsed ?? lastBrowserStore.get();
   const myTab = new Map();
   let downstreamClient = null; // what spawned us (claude-code etc.), folded into clientInfo.version
 
@@ -112,7 +119,8 @@ export function createHelper({ loadAgent, pairCommand }) {
   }
 
   async function relayStatus() {
-    const r = await relay.request('tools/call', { name: 'fast_status', arguments: {} });
+    const h = hint();
+    const r = await relay.request('tools/call', { name: 'fast_status', arguments: h ? { lastBrowser: h } : {} });
     const s = resultJson(r);
     if (!s || !Array.isArray(s.browsers)) throw new Error(`fast_status gave no browser list: ${JSON.stringify(r).slice(0, 200)}`);
     return s;
@@ -124,11 +132,16 @@ export function createHelper({ loadAgent, pairCommand }) {
     try { status = await relayStatus(); } catch (e) { return errorText(`Couldn't read your browsers from the relay: ${e.message}`); }
     const browsers = status.browsers.map((b) => ({ name: b.name, connected: !!b.connected }));
     const list = browsers.map((b) => `${b.name}${b.connected ? '' : ' (offline)'}`).join(', ') || '(none paired)';
-    const defaultBrowser = status.defaultBrowser ?? null;
 
     if (raw === '' || raw === 'auto') {
       pin = null;
-      return text({ pinned: null, browsers, defaultBrowser, hint: `Using your default browser${defaultBrowser ? ` "${defaultBrowser}"` : ''}. Browsers: ${list}.` });
+      const now = status.routedBrowser;
+      return text({
+        pinned: null,
+        browsers,
+        routedBrowser: now ?? null,
+        hint: `No browser pinned: calls use the only online browser, else the one this session or machine used last${now ? ` (now "${now}")` : ''}. Browsers: ${list}.`,
+      });
     }
     const hit = browsers.find((b) => b.name === raw);
     if (!hit) return text({ error: `No browser named "${raw}". Browsers: ${list}.`, pinned: pin, browsers });
@@ -136,9 +149,8 @@ export function createHelper({ loadAgent, pairCommand }) {
     return text({
       pinned: pin,
       browsers,
-      defaultBrowser,
       hint: hit.connected
-        ? `This session now drives "${pin}". fast_profile "auto" goes back to the default.`
+        ? `This session now drives "${pin}". fast_profile "auto" lets FastLink pick again.`
         : `This session now drives "${pin}", but it's offline. Calls will fail until that browser reconnects. Browsers: ${list}.`,
     });
   }
@@ -149,8 +161,11 @@ export function createHelper({ loadAgent, pairCommand }) {
     if (!ensureRelay()) return text(unpairedMessage());
     if (name === 'fast_profile') return profile(args);
 
-    const key = pin ?? 'default';
-    if (pin) args.browser = pin;
+    // An explicit `browser` from the model wins; else the pin (hard); else the hint (soft).
+    const h = hint();
+    if (args.browser == null && pin) args.browser = pin;
+    if (args.browser == null && h) args.lastBrowser = h;
+    const key = args.browser ?? h ?? '?';
     let injectedTab = null;
     if (!NO_TAB.has(name) && args.tabId == null && myTab.has(key)) {
       injectedTab = myTab.get(key);
@@ -166,13 +181,21 @@ export function createHelper({ loadAgent, pairCommand }) {
 
     const body = resultJson(result);
     const failed = result?.isError || (body && typeof body === 'object' && 'error' in body);
+    // The browser that actually served the call (relay _meta) becomes this
+    // session's — and this machine's — last-used browser.
+    const served = result?._meta?.['fastlink/browser'] || null;
+    const tabKey = served ?? key;
+    if (served && !failed) {
+      lastUsed = served;
+      try { lastBrowserStore.set(served); } catch { /* best-effort */ }
+    }
     if (failed) {
       const msg = result?.content?.map?.((c) => c.text || '').join(' ') || '';
       if (injectedTab != null && TAB_GONE_RE.test(msg) && myTab.get(key) === injectedTab) myTab.delete(key);
     } else if (LEARNS_TAB.has(name) && typeof body?.tabId === 'number') {
-      myTab.set(key, body.tabId);
-    } else if (name === 'fast_close' && args.tabId != null && myTab.get(key) === args.tabId) {
-      myTab.delete(key);
+      myTab.set(tabKey, body.tabId);
+    } else if (name === 'fast_close' && args.tabId != null && myTab.get(tabKey) === args.tabId) {
+      myTab.delete(tabKey);
     }
     return result;
   }
@@ -198,5 +221,5 @@ export function createHelper({ loadAgent, pairCommand }) {
     }
   }
 
-  return { handle, get pin() { return pin; }, myTab };
+  return { handle, get pin() { return pin; }, get lastUsed() { return lastUsed; }, myTab };
 }

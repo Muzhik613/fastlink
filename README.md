@@ -36,7 +36,8 @@ Every path goes through the hosted relay. There is no local broker and no local 
       `claude mcp add fastlink -- node /ABSOLUTE/PATH/TO/Fastlink/fast-dxt/server/index.js`
       (Claude Desktop: install `fast-dxt/fastlink.mcpb`.) Node ≥ 18, no `npm install` needed.
 
-   Each session drives your default browser. To use another one, ask Claude to call
+   With one browser online, sessions drive it; with several, a session keeps using the one it
+   (or this machine) used last. To pick another, ask Claude to call
    `fast_profile` with the browser's name; that choice lasts for that session only.
    Machines: `node …/index.js machines` lists this account's paired machines,
    `… revoke <id|name>` revokes a lost one, `… unpair` revokes this machine and forgets it.

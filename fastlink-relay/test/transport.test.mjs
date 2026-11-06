@@ -152,8 +152,7 @@ test('eval on a tab whose site is unknown is denied (fail closed)', async () => 
 
 test('writes carry expectOrigin = the origin the gates approved for that tab', async () => {
   const a = fakeSocket('tokA');
-  const { r, storage } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets: [a] });
-  await storage.put('dev:default', 'w');
+  const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets: [a] });
   const { mcpCall } = await import('./helpers.mjs');
   const ta = target(r, 'w', 'tokA');
   let p = r.callExtension('fast_text', { tabId: 7 }, undefined, ta);

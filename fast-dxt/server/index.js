@@ -10,7 +10,7 @@
 import { createInterface } from 'node:readline';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { loadAgent, pair, removeAgent, agentFilePath, listMachines, revokeMachine, DEFAULT_RELAY, PAIR_URL } from './agentFile.js';
+import { loadAgent, pair, removeAgent, agentFilePath, listMachines, revokeMachine, lastBrowserStore, DEFAULT_RELAY, PAIR_URL } from './agentFile.js';
 import { createHelper } from './helper.js';
 import { log } from './log.js';
 
@@ -79,7 +79,7 @@ async function runUnpair() {
 }
 
 function serve() {
-  const helper = createHelper({ loadAgent, pairCommand: PAIR_COMMAND });
+  const helper = createHelper({ loadAgent, pairCommand: PAIR_COMMAND, lastBrowserStore });
   const write = (msg) => { if (msg) process.stdout.write(JSON.stringify(msg) + '\n'); };
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   rl.on('line', (line) => {

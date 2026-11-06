@@ -309,18 +309,16 @@ function relayNameMsg(text, kind) {
   el.className = kind ? `msg ${kind}` : 'msg';
 }
 
-// Paint the card from a /devices payload: this browser's name, the account
-// default, and every browser with its live connection state.
+// Paint the card from a /devices payload: this browser's name and every browser
+// with its live connection state.
 function paintRelayDevices(data) {
   const list = $('relay-devices');
   const input = $('relay-name');
-  const toggle = $('relay-default-toggle');
   if (!list) return;
   list.replaceChildren();
 
   if (!data) {
     if (input) { input.value = ''; input.disabled = true; }
-    if (toggle) toggle.disabled = true;
     const p = document.createElement('div');
     p.className = 'perm-empty';
     p.textContent = 'Pair this browser with the cloud relay (above) to name it.';
@@ -336,10 +334,6 @@ function paintRelayDevices(data) {
     if (document.activeElement !== input) input.value = unnamed ? suggestName(data.devices) : data.self;
   }
   $('relay-name-card')?.classList.toggle('attention', unnamed);
-  if (toggle) {
-    toggle.disabled = false;
-    toggle.checked = !!(data.self && data.default === data.self);
-  }
 
   const devices = Array.isArray(data.devices) ? data.devices : [];
   if (!devices.length) {
@@ -365,7 +359,6 @@ function paintRelayDevices(data) {
     tags.className = 'fine';
     const bits = [d.connected ? 'connected' : 'offline'];
     if (d.self) bits.push('this browser');
-    if (data.default === d.name) bits.push('default');
     tags.textContent = bits.join(' · ');
 
     item.append(dot, nameEl, tags);
@@ -411,22 +404,6 @@ async function onSaveRelayName() {
     renderRelayDevices();   // revert the field to what the relay actually holds
   } finally {
     btn.disabled = false;
-  }
-}
-
-async function onRelayDefaultToggle(e) {
-  const makeDefault = !!e.target.checked;
-  relayNameMsg('Saving…', 'info');
-  try {
-    const data = await devicesFetch('POST', { makeDefault });
-    if (!data) return;
-    paintRelayDevices(data);
-    relayNameMsg(makeDefault
-      ? `Chats that don't pick a browser now drive “${data.self}”.`
-      : 'Cleared the default — chats that don\'t pick a browser drive whichever connected most recently.', 'ok');
-  } catch (err) {
-    relayNameMsg(err?.message || String(err), 'err');
-    renderRelayDevices();
   }
 }
 
@@ -600,7 +577,6 @@ $('disconnect-btn').addEventListener('click', onDisconnectToggle);
 $('dbg-btn').addEventListener('click', onToggleDebugger);
 $('relay-name-btn').addEventListener('click', onSaveRelayName);
 $('relay-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') onSaveRelayName(); });
-$('relay-default-toggle').addEventListener('change', onRelayDefaultToggle);
 $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') onPair(); });
 
 $('notify-toggle').addEventListener('change', (e) => {

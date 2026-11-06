@@ -30,37 +30,54 @@ test('browser arg routes to that browser; browser is stripped, tabId passes thro
 
 test('the result envelope tabId reaches the MCP result', async () => {
   const { devices, sockets } = twoBrowsers();
-  const { r, storage } = await makeRelay({ devices, sockets });
-  await storage.put('dev:default', 'work');
-  const { out } = await drive(r, sockets, 'fast_tab', { url: 'https://x.test' });
+  const { r } = await makeRelay({ devices, sockets });
+  const { out } = await drive(r, sockets, 'fast_tab', { url: 'https://x.test', browser: 'work' });
   assert.equal(out.data.tabId, 7);
 });
 
-test('no browser arg → account default', async () => {
-  const { a, devices, sockets } = twoBrowsers();
-  const { r, storage } = await makeRelay({ devices, sockets });
-  await storage.put('dev:default', 'work');
-  const { ws } = await drive(r, sockets, 'fast_text', {});
-  assert.equal(ws, a);
-});
-
-test('no browser arg and no default → error naming connected browsers, nothing sent', async () => {
-  const { a, b, devices, sockets } = twoBrowsers();
-  const { r } = await makeRelay({ devices, sockets });
-  const { data } = await mcpCall(r, 'fast_click', { text: 'Go' });
-  assert.equal(data.noDefaultBrowser, true);
-  assert.match(data.error, /work, home/);
-  assert.equal(a.sent.length + b.sent.length, 0);
-});
-
-test('named browser offline → error, never a redirect', async () => {
+test('no browser arg, ONE browser online → that browser (even with others paired)', async () => {
   const a = fakeSocket('tokA');
   const devices = [{ name: 'work', token: 'tokA' }, { name: 'home', token: 'tokB' }];
-  const { r, storage } = await makeRelay({ devices, sockets: [a] });
-  await storage.put('dev:default', 'work');
+  const { r } = await makeRelay({ devices, sockets: [a] });
+  const { ws, out } = await drive(r, [a], 'fast_text', {});
+  assert.equal(ws, a);
+  assert.equal(out.body.result._meta['fastlink/browser'], 'work');
+});
+
+test('no browser arg, several online → the lastBrowser hint if it is online', async () => {
+  const { b, devices, sockets } = twoBrowsers();
+  const { r } = await makeRelay({ devices, sockets });
+  const { ws, call, out } = await drive(r, sockets, 'fast_text', { lastBrowser: 'home' });
+  assert.equal(ws, b);
+  assert.equal('lastBrowser' in call.args, false);
+  assert.equal(out.body.result._meta['fastlink/browser'], 'home');
+});
+
+test('no browser arg, several online, no usable hint → error listing the online browsers, nothing sent', async () => {
+  for (const hint of [undefined, 'gone']) {
+    const { a, b, devices, sockets } = twoBrowsers();
+    const { r } = await makeRelay({ devices, sockets });
+    const { data } = await mcpCall(r, 'fast_click', { text: 'Go', ...(hint ? { lastBrowser: hint } : {}) });
+    assert.equal(data.browserNotChosen, true);
+    assert.match(data.error, /work, home/);
+    assert.equal(a.sent.length + b.sent.length, 0);
+  }
+});
+
+test('nothing online → no-browser error', async () => {
+  const devices = [{ name: 'work', token: 'tokA' }];
+  const { r } = await makeRelay({ devices, sockets: [] });
+  const { data } = await mcpCall(r, 'fast_text', {});
+  assert.equal(data.noDeviceConnected, true);
+});
+
+test('named browser offline → error, never a redirect (even if it is the only one paired that is offline)', async () => {
+  const a = fakeSocket('tokA');
+  const devices = [{ name: 'work', token: 'tokA' }, { name: 'home', token: 'tokB' }];
+  const { r } = await makeRelay({ devices, sockets: [a] });
   const { data } = await mcpCall(r, 'fast_click', { browser: 'home', text: 'Go' });
   assert.equal(data.deviceNotConnected, true);
-  assert.match(data.error, /Connected now: work/);
+  assert.match(data.error, /Online now: work/);
   assert.equal(a.sent.length, 0);
 });
 
@@ -72,14 +89,13 @@ test('unknown browser name → error listing paired browsers', async () => {
   assert.match(data.error, /Paired browsers: work, home/);
 });
 
-test('fast_status reports browsers, defaultBrowser and routedBrowser for the given name', async () => {
+test('fast_status reports browsers and routedBrowser; there is no default', async () => {
   const a = fakeSocket('tokA');
   const devices = [{ name: 'work', token: 'tokA' }, { name: 'home', token: 'tokB' }];
-  const { r, storage } = await makeRelay({ devices, sockets: [a] });
-  await storage.put('dev:default', 'work');
+  const { r } = await makeRelay({ devices, sockets: [a] });
   let { data } = await mcpCall(r, 'fast_status', {});
   assert.deepEqual(data.browsers.map((x) => [x.name, x.connected]), [['work', true], ['home', false]]);
-  assert.equal(data.defaultBrowser, 'work');
+  assert.equal('defaultBrowser' in data, false);
   assert.equal(data.routedBrowser, 'work');
   ({ data } = await mcpCall(r, 'fast_status', { browser: 'home' }));
   assert.equal(data.routedBrowser, null);
@@ -89,14 +105,13 @@ test('fast_status reports browsers, defaultBrowser and routedBrowser for the giv
 test('no pin state is written anywhere by routing or status calls', async () => {
   const { devices, sockets } = twoBrowsers();
   const { r, storage } = await makeRelay({ devices, sockets });
-  await storage.put('dev:default', 'work');
   const before = new Set(storage.m.keys());
   await drive(r, sockets, 'fast_snapshot', { browser: 'home' });
+  await drive(r, sockets, 'fast_snapshot', { lastBrowser: 'work' });
   await mcpCall(r, 'fast_status', { browser: 'home' });
   const added = [...storage.m.keys()].filter((k) => !before.has(k));
   assert.deepEqual(added.filter((k) => k.startsWith('dev:')), []);
-  assert.equal(storage.m.get('dev:default'), 'work');
-  for (const gone of ['clientKey', 'sessionKey', 'getSelection', 'setSelection']) assert.equal(r[gone], undefined);
+  for (const gone of ['clientKey', 'sessionKey', 'getSelection', 'setSelection', 'getDefaultDevice', 'setDefaultDevice']) assert.equal(r[gone], undefined);
 });
 
 test('fast_batch: steps go to the routed browser, batch tabId reaches page steps only', async () => {
