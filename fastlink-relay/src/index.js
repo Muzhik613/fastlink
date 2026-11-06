@@ -166,6 +166,10 @@ const oauthProvider = new OAuthProvider({
   clientRegistrationEndpoint: '/oauth/register', // claude.ai dynamic-registers here
   scopesSupported: ['browser.drive'],
   accessTokenTTL: 3600,
+  // Lib defaults (30d refresh grant fixed at creation, 90d DCR client) forced re-sign-in
+  // monthly ("Grant not found"). 1y grant; explicit undefined = client never expires (0 is invalid).
+  refreshTokenTTL: 365 * 24 * 3600,
+  clientRegistrationTTL: undefined,
   // OAuth 2.1: reject the `plain` PKCE method, require S256. The library defaults
   // this true (accepts plain) for backwards-compat; plain offers no cryptographic
   // protection, so we pin S256-only before any stranger connects (audit M1).
