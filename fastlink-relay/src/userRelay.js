@@ -66,6 +66,9 @@ function quietFocus(action, args) {
 const TARGET_MOVERS = new Set(['fast_tab', 'fast_switch', 'fast_close']);
 const originKey = (deviceToken, tabId) => `${deviceToken}#${tabId == null ? 'target' : tabId}`;
 
+// The extension pings every 20 s; three missed pings = the socket is dead.
+export const STALE_SOCKET_MS = 60_000;
+
 // Per-call tabId is honoured from this extension version on (PIN-REDESIGN §3).
 export const TABID_MIN_VERSION = '0.4.8';
 const NATIVE_TAB_ACTIONS = new Set(['fast_switch', 'fast_close']);
@@ -176,15 +179,34 @@ export class UserRelay extends DurableObject {
   // [{ ws, at: connectedAt, token: deviceToken }]. A half-dead socket left over
   // from an MV3 service-worker death is filtered out by readyState; a same-device
   // redial appears as a second entry with a newer `at`.
+  //
+  // LIVENESS (11-06): a socket can stay OPEN here long after its browser is gone (a
+  // force-killed Chrome, a profile whose window was closed) and every call to it then
+  // times out. The extension pings every 20 s and the runtime answers without waking
+  // us, but it records WHEN it last answered. A socket with no ping for STALE_SOCKET_MS
+  // is dead: it is closed (its pending calls fail fast) and never routed to. The
+  // extension's own watchdog reconnects when it is still alive.
   #liveSockets() {
     const out = [];
+    const now = Date.now();
     for (const ws of this.ctx.getWebSockets('ext')) {
       if (ws.readyState !== 1) continue; // WebSocket.OPEN
       let a = {};
       try { a = ws.deserializeAttachment() || {}; } catch { /* unstamped */ }
+      const seen = Math.max(a.connectedAt || 0, this.#lastPing(ws));
+      if (now - seen > STALE_SOCKET_MS) {
+        try { ws.close(1011, 'no keepalive'); } catch { /* already closing */ }
+        for (const [id, e] of this.pending) if (e.ws === ws) this.#settle(id, { error: 'The browser stopped answering (no keepalive), so the relay disconnected it. It reconnects by itself when it is still running.' });
+        continue;
+      }
       out.push({ ws, at: a.connectedAt || 0, token: a.deviceToken || null });
     }
     return out;
+  }
+
+  // ms timestamp of the runtime's last auto-answered ping on `ws` (0 = none yet).
+  #lastPing(ws) {
+    try { const t = this.ctx.getWebSocketAutoResponseTimestamp(ws); return t ? t.getTime() : 0; } catch { return 0; }
   }
 
   // Newest live socket carrying `token` (a redial supersedes its own stale socket).

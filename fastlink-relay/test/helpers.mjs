@@ -60,6 +60,8 @@ export async function makeRelay({ devices = [], sockets = [], db = null, userId 
     storage,
     getWebSockets: () => sockets,
     setWebSocketAutoResponse() {},
+    // last auto-answered ping per socket; a fake socket's `lastPing` (ms), else none
+    getWebSocketAutoResponseTimestamp: (ws) => (ws.lastPing ? new Date(ws.lastPing) : null),
     acceptWebSocket() {},
     waitUntil() {},
   };

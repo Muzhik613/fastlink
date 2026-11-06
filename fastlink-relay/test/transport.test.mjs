@@ -187,3 +187,32 @@ test('a call naming a tab is refused for extensions older than 0.4.8 (they would
     }
   }
 });
+
+test('a socket with no keepalive for 60 s is dropped: not routed to, closed, its calls fail fast', async () => {
+  const { STALE_SOCKET_MS } = await import('../src/userRelay.js');
+  const now = Date.now();
+  // zombie: connected long ago, last ping long ago (force-killed Chrome); fresh: pinging
+  const zombie = fakeSocket('tokA', now - 3600e3, '0.4.6'); zombie.lastPing = now - 3600e3;
+  const fresh = fakeSocket('tokB', now - 3600e3, '0.4.8'); fresh.lastPing = now - 5000;
+  const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }, { name: 'h', token: 'tokB' }], sockets: [zombie, fresh] });
+  const list = await r.deviceList();
+  assert.deepEqual(list.map((d) => [d.name, d.connected]), [['w', false], ['h', true]]);
+  assert.equal(zombie.readyState, 3, 'zombie closed');
+  assert.equal((await r.resolveTarget('w')).deviceNotConnected, true);
+  assert.equal((await r.resolveTarget(null)).name, 'h', 'only live browser is the one online');
+  // a just-connected socket counts as live until its first ping is due
+  const newSock = fakeSocket('tokA', now - 1000, '0.4.8');
+  const { r: r2 } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets: [newSock] });
+  assert.equal((await r2.deviceList())[0].connected, true);
+  assert.equal(STALE_SOCKET_MS, 60000);
+});
+
+test('the same browser reconnecting: the live new socket wins over its dead old one', async () => {
+  const now = Date.now();
+  const old = fakeSocket('tokA', now - 7200e3, '0.4.6'); old.lastPing = now - 3500e3;
+  const neu = fakeSocket('tokA', now - 60e3, '0.4.8'); neu.lastPing = now - 2000;
+  const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets: [old, neu] });
+  const t = await r.resolveTarget('w');
+  assert.equal(t.ws, neu);
+  assert.equal((await r.deviceList())[0].version, '0.4.8');
+});
