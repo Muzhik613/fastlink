@@ -315,3 +315,25 @@ test('no pin: the browser that served the last call is sent as the lastBrowser h
   await a.call('fast_snapshot');
   assert.deepEqual(calls.at(-1).arguments, { lastBrowser: 'home' });
 });
+
+test('call.js: scripts call FastLink with the machine pairing, browser on every call, broker-like replies', async () => {
+  const file = writeAgent(join(tmp, 'script-agent.json'));
+  const prev = process.env.FASTLINK_AGENT_FILE;
+  process.env.FASTLINK_AGENT_FILE = file;
+  try {
+    const { connect } = await import('../server/call.js');
+    const fl = await connect({ browser: 'home', client: 'costar-sweep' });
+    assert.match(inits.at(-1).clientInfo.version, /costar-sweep/);
+    const tab = await fl.call('fast_tab', { url: 'https://x.test' });
+    assert.deepEqual(calls.at(-1).arguments, { url: 'https://x.test', browser: 'home' });
+    assert.equal(typeof tab.result.tabId, 'number');
+    const ok = await fl.call('fast_snapshot', { tabId: tab.result.tabId });
+    assert.deepEqual(calls.at(-1).arguments, { tabId: tab.result.tabId, browser: 'home' });
+    assert.equal(ok.result.ok, true);
+    const bad = await fl.call('fast_snapshot', { tabId: 99999 });
+    assert.match(bad.error, /No tab with id/);
+    assert.equal('result' in bad, false);
+  } finally {
+    if (prev === undefined) delete process.env.FASTLINK_AGENT_FILE; else process.env.FASTLINK_AGENT_FILE = prev;
+  }
+});
