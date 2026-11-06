@@ -176,6 +176,22 @@ function gateTab(name, args) {
   return !TAB_LEVEL.has(name) && typeof args?.tabId === 'number' ? args.tabId : null;
 }
 
+// The args a batch step actually runs with: a batch-level tabId fills page steps
+// that name no tab. Used by BOTH the step's gate and its call, so the tab that is
+// checked is the tab that is driven (security review 11-06).
+function stepArgs(name, args, batchTabId) {
+  const a = { ...(args || {}) };
+  if (batchTabId != null && !TAB_LEVEL.has(name) && a.tabId == null) a.tabId = batchTabId;
+  return a;
+}
+
+// tabId must be a number when present; anything else is refused, never guessed.
+function badTabId(args) {
+  return args && args.tabId != null && typeof args.tabId !== 'number'
+    ? { error: `tabId must be a number (a tab id from fast_list); got ${JSON.stringify(args.tabId)}.` }
+    : null;
+}
+
 // Page-touching writes carry the origin the gates approved; the extension checks
 // the tab is still on it at execution time (closes the gate→act race).
 function withExpectOrigin(relay, name, args, target) {
@@ -268,6 +284,10 @@ async function dispatchTool(params, relay, trace) {
   // offline browser is a hard error naming the connected browsers.
   const target = await relay.resolveTarget(browser);
   if (target.error) return textResult(target);
+  {
+    const bad = badTabId(args);
+    if (bad) return textResult(bad);
+  }
 
   // Per-origin consent gate (M4) — applies to every page-touching tool, incl.
   // fast_evaluate (in MUTATING_TOOLS). Batch steps are gated in runBatch.
@@ -402,7 +422,10 @@ async function relayStatus(relay, browser) {
 const batchIo = (relay, target, tabId) => ({
   gate: async (step) => {
     if (DIAGNOSTIC_ONLY.has(step.name)) return { error: `"${step.name}" is a diagnostic/deferred tool (not allowed as a batch step)` };
-    const stepTab = gateTab(step.name, { tabId, ...(step.args || {}) });
+    const eff = stepArgs(step.name, step.args, tabId);
+    const bad = badTabId(eff);
+    if (bad) return bad;
+    const stepTab = gateTab(step.name, eff);
     if (step.name === 'fast_evaluate') {
       const verdict = await relay.checkEvalAllowed(target, stepTab);
       if (!verdict.ok) return { error: verdict.error };
@@ -410,8 +433,7 @@ const batchIo = (relay, target, tabId) => ({
     return consentVerdict(relay, step.name, target, stepTab);
   },
   call: async (name, args) => {
-    let a = args || {};
-    if (tabId != null && !TAB_LEVEL.has(name) && a.tabId == null) a = { ...a, tabId };
+    const a = stepArgs(name, args, tabId);
     const r = await relay.callExtension(name, withExpectOrigin(relay, name, a, target), undefined, target);
     if (tabId != null && name === 'fast_list' && Array.isArray(r?.result)) {
       r.result = r.result.map((t) => ({ ...t, targetTab: t.id === tabId }));

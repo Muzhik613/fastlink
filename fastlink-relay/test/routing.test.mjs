@@ -122,3 +122,25 @@ test('tools.js: fast_profile gone, fast_feedback present, browser tools take bro
   assert.ok(TOOLS.find((t) => t.name === 'fast_status').inputSchema.properties.browser);
   assert.doesNotMatch(JSON.stringify(TOOLS), /fast_profile|pin/i);
 });
+
+test('fast_batch: a step with tabId:null is gated AND run on the batch tab (one source of args)', async () => {
+  const { b, devices, sockets } = twoBrowsers();
+  const { r } = await makeRelay({ devices, sockets, env: { CONSENT_DEFAULT: 'readonly' } });
+  // tab 9 is known to be on a read-only site; the browser's target tab is unknown
+  let p = r.callExtension('fast_text', { tabId: 9 }, undefined, { ws: b, name: 'home', deviceToken: 'tokB' });
+  await reply(r, b, b.lastCall().id, { result: 1, origin: 'https://ro.test', tabId: 9 });
+  await p;
+  const out = await mcpCall(r, 'fast_batch', { browser: 'home', tabId: 9, actions: [{ name: 'fast_click', args: { tabId: null, text: 'Buy' } }] });
+  assert.match(JSON.stringify(out.data), /read-only|readonly/i);
+  assert.notEqual(b.lastCall().action, 'fast_click');
+});
+
+test('a non-number tabId is refused, top level and in batch steps', async () => {
+  const { a, devices, sockets } = twoBrowsers();
+  const { r } = await makeRelay({ devices, sockets });
+  const top = await mcpCall(r, 'fast_click', { browser: 'work', tabId: '9', text: 'x' });
+  assert.match(JSON.stringify(top.data), /tabId must be a number/);
+  const batch = await mcpCall(r, 'fast_batch', { browser: 'work', actions: [{ name: 'fast_click', args: { tabId: 'x' } }] });
+  assert.match(JSON.stringify(batch.data), /tabId must be a number/);
+  assert.equal(a.sent.filter((m) => m.action === 'fast_click').length, 0);
+});
