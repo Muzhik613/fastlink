@@ -23,8 +23,7 @@ async function ensureAttached(tabId) {
     // A respawned worker starts with an empty set while OUR session from the
     // previous worker is still on the tab, so attach() throws "Another debugger
     // is already attached". Before this, that error was swallowed and every CDP
-    // call on the tab failed until the tab closed (fast_evaluate then fell back to
-    // an in-page eval that CSP pages like web.whatsapp.com block). detach() only
+    // call on the tab failed until the tab closed. detach() only
     // succeeds on a session this extension owns, so it cleanly tells ours apart
     // from DevTools or another extension.
     try { await chrome.debugger.detach({ tabId }); }
@@ -50,7 +49,7 @@ try {
 // chrome.storage.local `advancedControl` flag (default ON when unset — the
 // permission is granted, so the capability is available unless the user
 // explicitly turns it off in the popup/options). Every CDP path — coordinate
-// input (click_xy/type), fast_evaluate, and background-tab /
+// input (click_xy/type) and background-tab /
 // GPU-fallback capture — funnels through cdp(), so this single guard makes the
 // whole debugger surface degrade gracefully when the flag is OFF: a clear,
 // actionable error instead of acting. DOM actions (snapshot, selector

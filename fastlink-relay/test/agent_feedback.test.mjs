@@ -169,3 +169,28 @@ test('/agent/machines: a machine lists its owner\'s machines and revokes one by 
   assert.equal((await machines(e, t1)).status, 401);
   assert.equal((await machines(e, t3)).status, 200);
 });
+
+test('/admin/extension-ids: admin-only list of extra ids for one-click sign-in', async () => {
+  const db = fakeD1();
+  const e = env(db, { RELAY_ADMIN_TOKEN: 'adm', EXTENSION_ID: 'ockcjadbkdfgfllidpcoamcepahfmlpf' });
+  const call = (method, body, tok = 'adm') => makeDefaultHandler().fetch(new Request('https://relay.test/admin/extension-ids', {
+    method, headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` }, ...(body ? { body: JSON.stringify(body) } : {}),
+  }), e, {});
+  assert.equal((await call('GET', null, 'wrong')).status, 401);
+  assert.equal((await call('POST', { add: 'not-an-id' })).status, 400);
+  const r = await (await call('POST', { add: 'abcdefghijklmnopabcdefghijklmnop' })).json();
+  assert.deepEqual(r.ids, ['ockcjadbkdfgfllidpcoamcepahfmlpf', 'abcdefghijklmnopabcdefghijklmnop']);
+  const r2 = await (await call('POST', { remove: 'abcdefghijklmnopabcdefghijklmnop' })).json();
+  assert.deepEqual(r2.ids, ['ockcjadbkdfgfllidpcoamcepahfmlpf']);
+});
+
+test('pruneOld: drops activity-log rows older than 30 days and expired pairing codes', async () => {
+  const { pruneOld } = await import('../src/db.js');
+  const db = fakeD1();
+  db.raw.prepare(`INSERT INTO users (user_id, email, created_at) VALUES ('u', 'u@x', 1)`).run();
+  const day = 86400_000, now = Date.now();
+  db.raw.prepare(`INSERT INTO grants_audit (user_id, ts, action, detail) VALUES ('u', ?, 'old', '{}'), ('u', ?, 'new', '{}')`).run(now - 31 * day, now - 29 * day);
+  db.raw.prepare(`INSERT INTO pairing_codes (code, user_id, expires_at) VALUES ('OLD', 'u', ?), ('NEW', 'u', ?)`).run(now - 2 * day, now + 600_000);
+  assert.deepEqual(await pruneOld(db), { audit: 1, pairingCodes: 1 });
+  assert.deepEqual(db.raw.prepare(`SELECT action FROM grants_audit`).all().map((r) => r.action), ['new']);
+});

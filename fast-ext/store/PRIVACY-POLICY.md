@@ -1,131 +1,52 @@
-# FastLink — Privacy Policy
-
+# FastLink: Privacy Policy
 _Last updated: 2026-11-08_
 
-FastLink is a browser extension that lets **your own** Claude assistant (Claude
-Code, Claude Desktop, or claude.ai on the web) read and operate the browser tab
-you point it at, on your behalf. This policy explains exactly what data moves,
-where it goes, and what is — and isn't — stored.
+FastLink is a browser extension that lets an AI assistant you already use (for example Claude Code, claude.ai, or another app that supports remote MCP connectors) read and operate the Chrome tabs you point it at, on your behalf. FastLink is an independent tool, not affiliated with Anthropic, Google or any AI company.
 
-**Plain-language summary:** FastLink is a pipe between your browser and your
-Claude assistant. It does not sell your data, show ads, profile you, or use your
-data to train any model. Page content travels only to the Claude assistant you
-have connected, so Claude can do what you asked it to do.
+## Summary
+FastLink is a pipe between your browser and the AI assistant you connect. It does not sell your data, show ads, profile you, or use your data to train any model.
 
----
+## What FastLink handles, and when
+Only when your assistant performs an action you asked for, FastLink captures and sends to that assistant:
+- the text and structure (links, buttons, form fields) of the tab it works in;
+- screenshots of that tab;
+- the URL and title of your open tabs when the assistant lists or switches tabs.
 
-## Who operates FastLink
-FastLink is an independent developer tool. The extension connects to one back
-end: the **cloud relay**, a Cloudflare-hosted relay you pair your browser to.
-Every Claude assistant you connect (claude.ai on the web, or Claude Code /
-Claude Desktop through the FastLink helper) drives your browser through it, so
-data sent this way transits the relay. Until you pair, FastLink connects to
-nothing. See "Cloud relay" below.
+FastLink also watches request start/finish events in the browser to tell when a page has finished loading. This is never stored or sent anywhere.
 
----
+On claude.ai, FastLink reads the assistant's latest reply to show it in FastLink's side panel. That text stays on your device. When you click Allow or Deny in FastLink's panel, FastLink presses the matching button in claude.ai's permission prompt.
 
-## What data FastLink handles
+## Where data goes
+- **FastLink relay (relay.ytx.app, hosted on Cloudflare).** Commands and page data pass through it, encrypted in transit (HTTPS/WSS), between your browser and your assistant. The relay does not store page content or screenshots.
+- **The AI app you connect** (for example Anthropic's Claude, or any other app you add as a connector). It receives the page data your request needs, under that provider's own terms and privacy policy.
+- **Google**, only to sign you in (we receive your email address and account ID).
 
-### Page / browsing data (only while you have Claude act)
-When you ask Claude to do something with a tab, FastLink may capture and send to
-your connected Claude assistant:
-- **DOM / accessibility snapshots and visible text** of the active/target tab.
-- **Screenshots** of the active/target tab.
-- **Results of page JavaScript** your assistant runs, only if you turned on
-  "Allow User Scripts" for FastLink in Chrome (see "Your controls").
-- **The current tab's URL and title.**
+No one else receives your data.
 
-FastLink also watches request start/finish events (read-only) to tell when a page
-has finished loading. It never blocks or alters requests, and it does not send
-this request data anywhere.
+## What is stored
+On your device (chrome.storage): this browser's pairing token, the relay address, and your settings. No page content.
 
-On **claude.ai** tabs, FastLink reads the latest reply from your Claude chat to show
-it in FastLink's side panel and on-page indicator. That text stays on your device;
-it is not sent to the relay.
+On the relay:
+- Account: Google account ID and email address.
+- Devices: each paired browser's token, name and last-seen time.
+- Helper tokens for Claude Code: stored only as a hash.
+- Your per-site choices (Allow / Read-only / Block).
+- Activity log: for each action, the action name, the argument names (never their values), the site's origin, the browser name, and success or failure. It is used for security and troubleshooting.
+- Pairing codes and sign-in links: short-lived and single-use.
 
-This data is captured **on demand**, to fulfill the action you requested through
-Claude. FastLink does not continuously record your browsing.
-
-### Credentials and configuration (stored locally on your device)
-Stored in `chrome.storage.local` / `chrome.storage.session` on your machine:
-- A **device token** — a bearer credential identifying this browser to your own
-  relay account (once you pair).
-- Relay configuration (relay base URL, your relay user id).
-- Connection status for the toolbar UI.
-
-No page content is persisted in extension storage.
-
----
-
-## Cloud relay: what it stores
-Once you pair a browser, the relay (Cloudflare D1 database) stores the
-following account/operational data:
-- **Account:** your Google account's user id, your email, and account flags.
-- **Devices:** your device token(s), each browser's name, and last-seen
-  time, so paired browsers can connect and so you can revoke them.
-- **Paired machines:** a hash (never the plaintext) of each FastLink helper
-  token you create for Claude Code / Claude Desktop, so you can revoke it.
-- **Pairing / sign-in:** short-lived one-time pairing codes and magic-link
-  records (consumed on use).
-- **Per-origin consent:** your `allow` / `readonly` / `block` choice per website
-  origin.
-- **Audit log:** an append-only record of actions taken (tool name, origin, a
-  short argument summary, success/failure) so you can see what was done.
-
-The relay routes live commands and page data between your Claude assistant and your browser
-**in transit**; it does not store your page snapshots, screenshots, or page
-content as part of normal operation.
-
----
-
-## What FastLink does NOT do
-- ❌ No selling or renting of your data.
-- ❌ No advertising and no ad/tracking networks.
-- ❌ No use of your data to train any AI model (FastLink-operated).
-- ❌ No analytics/telemetry beyond the operational audit log described above.
-- ❌ No background or continuous collection — capture happens only when you have
-  Claude act.
-
----
-
-## Data sharing
-Your data is shared only as needed to perform the action you requested:
-- with **the Claude assistant you connected** (Anthropic's Claude Code / Desktop /
-  claude.ai), governed by Anthropic's terms and privacy policy.
-
-No other third parties receive your data.
-
----
+## Retention and deletion
+On-device data stays until you remove the extension or clear its storage. Relay account, device and site-choice records stay until you ask us to delete them. The activity log is deleted automatically after 30 days, and expired pairing codes after a day. To delete your account and all relay data, email support@ytx.app from your account's address; we delete it within 30 days.
 
 ## Your controls
-- **Per-origin consent:** set any site to `readonly` (reads only, no actions) or
-  `block`.
-- **Revoke devices:** revoke a paired browser's device token at any time; the
-  relay closes its connection.
-- **Unpair / disable:** turn off the cloud relay in the extension options; no
-  Claude assistant can drive your browser until you turn it back on.
-- **Page JavaScript (`fast_evaluate`) is off by default.** It runs only after you
-  turn on Chrome's "Allow User Scripts" switch for FastLink, and only where your
-  account's settings allow it.
+- Allow, Read-only or Block any site; FastLink asks before the assistant first uses a new site.
+- "Stop driving" pauses all actions; "Disconnect relay" disconnects this browser; removing the extension deletes its local data.
+- Advanced control (Chrome debugger: real mouse/keyboard input and background-tab screenshots) can be turned off in Options.
 
----
-
-## Data retention
-- **On-device:** persists until you unpair, clear extension storage, or remove
-  the extension.
-- **Relay:** account, device, consent, and audit records persist until you
-  delete them / revoke; pairing codes and magic-links are short-lived and
-  single-use.
-
----
+## Limited Use
+The use of information received from Google APIs will adhere to the Chrome Web Store User Data Policy, including the Limited Use requirements.
 
 ## Children
-FastLink is a developer tool not directed to children and is not intended for
-use by anyone under 13.
+FastLink is not directed to children under 13.
 
-## Changes
-We will update this policy as the product evolves and revise the "Last updated"
-date above.
-
-## Contact
-Questions or data requests: **support@ytx.app**
+## Changes and contact
+We update this page when practices change and revise the date above. Questions or data requests: support@ytx.app

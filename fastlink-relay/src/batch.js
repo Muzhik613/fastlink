@@ -47,12 +47,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const isSelectorProbe = (s) => SELECTOR_RE.test(String(s));
 
-// One bounded readyState probe: the readyState string, or null on timeout/error.
+// One bounded load probe on the target tab via fast_list (no page JavaScript):
+// 'complete' / 'loading' from Chrome's tab status, or null on timeout/error. An extension
+// older than 0.4.12 reports no status: treated as loaded (no extra wait).
 function probeReadyState(call, ms) {
-  const p = Promise.resolve().then(() => call('fast_evaluate', { fn: '() => document.readyState' }));
+  const p = Promise.resolve().then(() => call('fast_list', {}));
   p.catch(() => {});
+  const pick = (r) => {
+    const tabs = Array.isArray(r?.result) ? r.result : [];
+    const t = tabs.find((x) => x && x.targetTab) || tabs.find((x) => x && x.active);
+    if (!t) return null;
+    return t.status === 'loading' ? 'loading' : 'complete';
+  };
   return Promise.race([
-    p.then((r) => (r && typeof r === 'object' ? r.result : null)).catch(() => null),
+    p.then(pick).catch(() => null),
     sleep(ms).then(() => null),
   ]);
 }

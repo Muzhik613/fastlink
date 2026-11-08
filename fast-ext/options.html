@@ -368,7 +368,7 @@
       <!-- 3. ADVANCED CONTROL -->
       <div class="card" id="advanced-card">
       <h2>Advanced control <span id="dbg-pill" class="pill off badge">…</span></h2>
-      <p class="desc">FastLink works out of the box with DOM-based reading, clicking, and form-filling. <strong>Advanced control</strong> is an on/off setting (default on) that enables precise coordinate clicks/typing (vision tier), running scripts on the page, and <strong>capturing tabs that aren't in front</strong> (so Claude can drive a background tab while you stay on the chat). Turn it off to limit FastLink to DOM-based reading and form-filling.</p>
+      <p class="desc">FastLink works out of the box with DOM-based reading, clicking, and form-filling. <strong>Advanced control</strong> is an on/off setting (default on) that uses Chrome's debugger to send real mouse and keyboard input (for sites that ignore simulated clicks) and to <strong>capture tabs that aren't in front</strong> (so your assistant can work in a background tab while you stay on the chat). While it is attached, Chrome shows its "debugging this browser" bar. Turn it off to limit FastLink to DOM-based reading, clicking and form-filling.</p>
       <p class="fine">This is a setting, not a Chrome permission grant — toggling it doesn't add or remove any browser permission.</p>
       <div class="row">
         <button id="dbg-btn" class="ghost">Enable advanced control</button>

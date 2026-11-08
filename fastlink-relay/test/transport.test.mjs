@@ -96,7 +96,7 @@ test('socket close: 10 s grace lets the redialed socket deliver, then fails', as
   assert.equal(r.pending.size, 0);
 });
 
-test('origin is cached per device: the target browser\'s origin drives consent/eval/audit', async () => {
+test('origin is cached per device: the target browser\'s origin drives consent/audit', async () => {
   const a = fakeSocket('tokA'); const b = fakeSocket('tokB');
   const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }, { name: 'h', token: 'tokB' }], sockets: [a, b] });
   const ta = target(r, 'w', 'tokA'); const tb = target(r, 'h', 'tokB');
@@ -110,13 +110,6 @@ test('origin is cached per device: the target browser\'s origin drives consent/e
   assert.equal(r.cachedOrigin(tb), 'https://b.test');
   assert.equal(await r.currentOrigin(ta), 'https://a.test');
   assert.equal(r.lastOrigin, undefined);
-
-  // eval allowlist reads the TARGET browser's origin
-  r.evalPolicy = async () => ({ allowEvaluate: true, allowAll: false, isOperator: false, origins: ['https://a.test'] });
-  assert.equal((await r.checkEvalAllowed(ta)).ok, true);
-  const vb = await r.checkEvalAllowed(tb);
-  assert.equal(vb.ok, false);
-  assert.match(vb.error, /b\.test/);
 });
 
 test('origin is cached per TAB: a call naming another tab is gated on that tab, not the last one seen', async () => {
@@ -131,23 +124,17 @@ test('origin is cached per TAB: a call naming another tab is gated on that tab, 
   await p;
   assert.equal(r.cachedOrigin(ta, 7), 'https://allowed.test');
   assert.equal(r.cachedOrigin(ta, 9), 'https://other.test');
-  r.evalPolicy = async () => ({ allowEvaluate: true, allowAll: false, isOperator: false, origins: ['https://allowed.test'] });
-  assert.equal((await r.checkEvalAllowed(ta, 7)).ok, true);
-  const v9 = await r.checkEvalAllowed(ta, 9);
-  assert.equal(v9.ok, false);
-  assert.match(v9.error, /other\.test/);
 });
 
-test('eval on a tab whose site is unknown is denied (fail closed)', async () => {
+test('a tab whose site is unknown has no origin (gates fail closed)', async () => {
   const a = fakeSocket('tokA');
   const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets: [a] });
   const ta = target(r, 'w', 'tokA');
-  r.evalPolicy = async () => ({ allowEvaluate: true, allowAll: false, isOperator: false, origins: ['https://allowed.test'] });
-  const p = r.checkEvalAllowed(ta, 55);
+  const p = r.currentOrigin(ta, 55);
   await new Promise((res) => setImmediate(res));
   // the probe (fast_list) does not list tab 55
   await reply(r, a, a.lastCall().id, { result: [{ id: 7, url: 'https://allowed.test/x', active: true }] });
-  assert.equal((await p).ok, false);
+  assert.equal(await p, '');
 });
 
 test('writes carry expectOrigin = the origin the gates approved for that tab', async () => {

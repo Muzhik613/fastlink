@@ -81,6 +81,8 @@ export function makeDefaultHandler() {
             return handleAgentMachines(request, env);
           case '/admin/feedback':
             return handleAdminFeedback(request, env);
+          case '/admin/extension-ids':
+            return handleAdminExtensionIds(request, env);
           case '/ext/authorize':
             return handleExtAuthorize(request, env);
           case '/ext/authorize/wait':
@@ -169,7 +171,6 @@ async function authorizeShared(request, env, oauthReqInfo) {
     }
     const userId = sharedUserId(env);
     await db.upsertUser(env.DB, userId, {});
-    await db.setOperator(env.DB, userId, true); // bootstrap single-user IS the operator
     return completeOAuth(env, st.req, userId);
   }
   return new Response('method not allowed', { status: 405 });
@@ -254,9 +255,6 @@ async function handleUpstreamCallback(request, env) {
   await db.upsertUser(env.DB, userId, { email: identity.email });
   // Designate the operator (enables operator-only eval test mode) if configured —
   // parity with the magic-link callback.
-  if (env.OPERATOR_EMAIL && identity.email && normalizeEmail(env.OPERATOR_EMAIL) === normalizeEmail(identity.email)) {
-    await db.setOperator(env.DB, userId, true);
-  }
 
   if (st.intent === 'pair') {
     // Resuming a /pair/new flow: mint the code now that we know who the user is.
@@ -268,7 +266,7 @@ async function handleUpstreamCallback(request, env) {
     // EXTENSION_ID guard — never trust state blindly), mint a device token via the
     // SAME createDevice path as shared one-click / /pair/claim, then 302 to the
     // extension carrying the token in the URL fragment.
-    const redirectUri = validExtRedirect(env, st.redirectUri);
+    const redirectUri = await validExtRedirect(env, st.redirectUri);
     if (!redirectUri) return htmlPage('Invalid request', `<p>Invalid redirect target.</p>`, 400);
     // A pairing flow may HINT a name; db.createDevice sanitizes it and, on a
     // clash (or no hint), assigns a unique numbered default (browser-1, browser-2
@@ -310,9 +308,6 @@ async function handleMagicCallback(request, env) {
   const userId = await resolveUserId(st.email);
   await db.upsertUser(env.DB, userId, { email: st.email });
   // Designate the operator (enables operator-only eval test mode) if configured.
-  if (env.OPERATOR_EMAIL && normalizeEmail(env.OPERATOR_EMAIL) === st.email) {
-    await db.setOperator(env.DB, userId, true);
-  }
 
   if (st.intent === 'pair') return mintAndShowCode(env, userId);
   // Phase 2 (DARK): one-click extension sign-in (SIGNUP-SPEC §1.5 step 3). Mint the
@@ -802,13 +797,36 @@ const EXT_REDIRECT_RE = /^https:\/\/[a-p]{32}\.chromiumapp\.org\/?$/;
 // Validate an extension redirect URI against the normative regex (and pin to
 // EXTENSION_ID when configured). Returns the string unchanged, or null. The single
 // open-redirect chokepoint.
-function validExtRedirect(env, raw) {
+async function validExtRedirect(env, raw) {
   if (!raw || typeof raw !== 'string' || !EXT_REDIRECT_RE.test(raw)) return null;
-  const id = String(env.EXTENSION_ID || '');
-  if (/^[a-p]{32}$/.test(id) && raw !== `https://${id}.chromiumapp.org/` && raw !== `https://${id}.chromiumapp.org`) {
-    return null;
+  const ids = await allowedExtIds(env);
+  if (!ids.length) return raw;   // none configured: the generic chromiumapp.org shape only
+  return ids.some((id) => raw === `https://${id}.chromiumapp.org/` || raw === `https://${id}.chromiumapp.org`) ? raw : null;
+}
+
+// Extension ids that may complete one-click sign-in: the built-in EXTENSION_ID
+// (wrangler.toml) plus any added at runtime (POST /admin/extension-ids, e.g. the Web
+// Store copy's id), so adding one needs no deploy.
+async function allowedExtIds(env) {
+  const ids = [];
+  const base = String(env.EXTENSION_ID || '');
+  if (/^[a-p]{32}$/.test(base)) ids.push(base);
+  try { for (const id of await db.listExtensionIds(env.DB)) if (/^[a-p]{32}$/.test(id) && !ids.includes(id)) ids.push(id); } catch { /* table missing: built-in only */ }
+  return ids;
+}
+
+// /admin/extension-ids (RELAY_ADMIN_TOKEN): GET -> { ids }; POST { add: id } | { remove: id }.
+async function handleAdminExtensionIds(request, env) {
+  const denied = adminDenied(request, env, request.method === 'GET' ? 'GET' : 'POST');
+  if (denied) return denied;
+  if (request.method === 'POST') {
+    let body = {};
+    try { body = await request.json(); } catch { return jsonResponse({ error: 'invalid_json' }, 400); }
+    const id = String(body.add || body.remove || '');
+    if (!/^[a-p]{32}$/.test(id)) return jsonResponse({ error: 'an extension id is 32 letters a-p' }, 400);
+    if (body.add) await db.addExtensionId(env.DB, id); else await db.removeExtensionId(env.DB, id);
   }
-  return raw;
+  return jsonResponse({ builtIn: env.EXTENSION_ID || null, ids: await allowedExtIds(env) });
 }
 
 // Append result params to a (pre-validated) redirect_uri as a URL fragment.
@@ -847,7 +865,7 @@ async function handleExtAuthorize(request, env) {
 
   if (request.method === 'GET') {
     const url = new URL(request.url);
-    const redirectUri = validExtRedirect(env, url.searchParams.get('redirect_uri'));
+    const redirectUri = await validExtRedirect(env, url.searchParams.get('redirect_uri'));
     // No safe redirect target → must NOT redirect (open-redirect guard). Render an error.
     if (!redirectUri) {
       return htmlPage(
@@ -907,7 +925,7 @@ async function handleExtAuthorize(request, env) {
     if (!st || st.x !== 'ext_pair') {
       return htmlPage('Session expired', `<p>Please retry sign-in from the extension.</p>`, 400);
     }
-    const redirectUri = validExtRedirect(env, st.redirectUri);
+    const redirectUri = await validExtRedirect(env, st.redirectUri);
     if (!redirectUri) return htmlPage('Invalid request', `<p>Invalid redirect target.</p>`, 400);
     const state = String(st.state || '');
     // Name HINT only — db.createDevice sanitizes it and guarantees uniqueness.
@@ -934,8 +952,7 @@ async function handleExtAuthorize(request, env) {
       }
       const userId = sharedUserId(env);
       await db.upsertUser(env.DB, userId, {});
-      await db.setOperator(env.DB, userId, true); // bootstrap single-user IS the operator
-      const deviceToken = randomToken();
+        const deviceToken = randomToken();
       const name = await db.createDevice(env.DB, userId, deviceToken, label);
       await db.logAudit(env.DB, userId, 'pair_authorize', { label: name, via: 'shared', tab: !!st.pollId });
       const headers = secretOk ? { 'set-cookie': await pairSessionCookie(env) } : {};
@@ -1057,7 +1074,7 @@ async function handleExtAuthorizeWait(request, env) {
     return htmlPage('Link expired', `<p>This sign-in session has expired — please retry from the extension.</p>`, 400);
   }
   if (pr.status === 'ready' && pr.deviceToken) {
-    const redirectUri = validExtRedirect(env, pr.redirectUri);
+    const redirectUri = await validExtRedirect(env, pr.redirectUri);
     if (!redirectUri) return htmlPage('Invalid request', `<p>Invalid redirect target.</p>`, 400);
     return redirectResponse(extSuccessRedirect(env, redirectUri, pr.deviceToken, pr.userId, pr.state));
   }

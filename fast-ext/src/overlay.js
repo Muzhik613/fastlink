@@ -87,7 +87,6 @@
     fast_wait: 'Waiting', fast_key_press: 'Pressing key',
     fast_tab: 'Switching tab', fast_switch: 'Switching tab',
     fast_list: 'Listing tabs', fast_close: 'Closing tab',
-    fast_evaluate: 'Running script',
   };
   const humanVerb = (action) =>
     VERB[action] || String(action || '').replace(/^fast_/, '').replace(/_/g, ' ') || 'Working';

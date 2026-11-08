@@ -617,43 +617,6 @@ export class UserRelay extends DurableObject {
 
   // --- SAFETY hooks (SPEC.md §7) --------------------------------------------
 
-  // fast_evaluate is high-risk (arbitrary in-page JS). ALLOWLIST gate (SPEC §7/§12):
-  // resolve the user's eval policy, then allow only when enabled AND (operator
-  // test allow-all OR the active tab's origin is explicitly allowlisted).
-  //
-  // Policy shape (from db.getEvalPolicy): { allowEvaluate, allowAll, isOperator,
-  // origins:[...] }. Without D1/userId (v1 test loop), fall back to the
-  // ALLOW_EVALUATE env flag treated as operator allow-all.
-  async evalPolicy() {
-    try {
-      if (this.env.DB && this.userId) {
-        const { getEvalPolicy } = await import('./db.js');
-        if (typeof getEvalPolicy === 'function') {
-          const p = await getEvalPolicy(this.env.DB, this.userId);
-          if (p) return { allowEvaluate: !!p.allowEvaluate, allowAll: !!p.allowAll, isOperator: !!p.isOperator, origins: Array.isArray(p.origins) ? p.origins : [] };
-        }
-      }
-    } catch { /* fall through to env default */ }
-    const v = this.env.ALLOW_EVALUATE;
-    const on = v === 'true' || v === '1' || v === true;
-    return { allowEvaluate: on, allowAll: on, isOperator: on, origins: [] };
-  }
-
-  // Resolve {ok} | {ok:false,error} for a fast_evaluate attempt. Reads the active
-  // tab's origin (cheap fast_list, no debugger attach) only when needed to check
-  // the allowlist.
-  async checkEvalAllowed(target, tabId = null) {
-    const p = await this.evalPolicy();
-    if (!p.allowEvaluate) {
-      return { ok: false, error: 'fast_evaluate is disabled for this account — enable it in relay settings (high-risk: it runs arbitrary JavaScript in your page).' };
-    }
-    if (p.allowAll) return { ok: true };
-    // The origin of the EXACT tab the call acts on. Unknown = denied (fail closed).
-    const origin = await this.currentOrigin(target, tabId);
-    if (origin && p.origins.includes(origin)) return { ok: true, origin };
-    return { ok: false, error: `fast_evaluate is disabled for this site — enable it and allowlist this origin (${origin || 'unknown'}) in relay settings.` };
-  }
-
   // Last-known origin of ONE tab on the target browser: `tabId`, or (null) the
   // browser's current target tab. Cached per (device, tab) from result frames
   // (SIGNUP-SPEC §5.2). '' when nothing is cached yet.

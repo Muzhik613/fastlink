@@ -21,7 +21,7 @@ const PAGE_ACTIONS = new Set([
 // the MAIN-world frame before the click handler returned, the navigation ITSELF
 // is the evidence the action fired — so for these we treat a frame-removal error
 // as SUCCESS (navigated) instead of failing the step (BUG-2 sub-bug). READ
-// actions (fast_snapshot, fast_evaluate, …) are deliberately excluded: a frame
+// actions (fast_snapshot, fast_text, …) are deliberately excluded: a frame
 // loss there is a real failure and must keep erroring. (Of these,
 // fast_click / fast_select_option / fast_key_press flow through runBridge;
 // fast_click_xy uses the CDP input path and never hits this code — listed
@@ -215,7 +215,9 @@ async function runOne(action, args) {
   if (TAB_ACTIONS.has(action))      return handleTabAction(action, args);
   if (action === 'fast_screenshot') return takeScreenshot(args);
   if (action === 'fast_text')       return getText(args);
-  if (action === 'fast_evaluate')   return evaluate(args);
+  // Page JavaScript exists only in the secure build (one owner-controlled browser; it adds
+  // the userScripts permission). The normal/store extension has no such tool.
+  if (action === 'fast_evaluate' && SECURE_BUILD) return evaluate(args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
   if (action === 'fast_frame_read') return frameRead(args);

@@ -19,6 +19,9 @@ grep -q '^export const SECURE_BUILD = true;$' "$OUT/src/secure/build.js" || { ec
 node -e '
 const f = process.argv[1], fs = require("fs"), m = JSON.parse(fs.readFileSync(f, "utf8"));
 delete m.update_url;
+// Page JavaScript (fast_evaluate) exists only in the secure build: chrome.userScripts.execute (Chrome 135+).
+if (!m.permissions.includes("userScripts")) m.permissions.push("userScripts");
+m.minimum_chrome_version = "135";
 m.version_name = m.version + "-secure";
 m.name = "FastLink (secure)";
 fs.writeFileSync(f, JSON.stringify(m, null, 2) + "\n");

@@ -301,29 +301,6 @@ export async function listSiteConsent(db, userId) {
   return rows.map((r) => ({ origin: r.origin, mode: r.mode, updatedAt: r.updated_at }));
 }
 
-// --- fast_evaluate capability flag (per-user, OFF by default) ---------------
-
-// Returns true only if the user has explicitly opted in to fast_evaluate.
-export async function getAllowEvaluate(db, userId) {
-  const row = await db
-    .prepare(`SELECT allow_evaluate FROM users WHERE user_id = ?`)
-    .bind(String(userId))
-    .first();
-  return !!(row && row.allow_evaluate);
-}
-
-// Set the per-user fast_evaluate opt-in. Upserts the user row if needed.
-export async function setAllowEvaluate(db, userId, allowed) {
-  await db
-    .prepare(
-      `INSERT INTO users (user_id, email, created_at, allow_evaluate)
-       VALUES (?, NULL, ?, ?)
-       ON CONFLICT(user_id) DO UPDATE SET allow_evaluate = excluded.allow_evaluate`
-    )
-    .bind(String(userId), now(), allowed ? 1 : 0)
-    .run();
-}
-
 // --- magic links (email sign-in, single-use) --------------------------------
 
 // Record a pending magic link, valid for ttlSec seconds. `jti` is a random id
@@ -515,79 +492,31 @@ export async function purgeRateLimits(db) {
   return (r && r.meta && r.meta.changes) || 0;
 }
 
-// --- operator flag ----------------------------------------------------------
+// --- extension ids allowed for one-click sign-in (migration 0009) ------------
 
-export async function isOperator(db, userId) {
-  const row = await db
-    .prepare(`SELECT is_operator FROM users WHERE user_id = ?`)
-    .bind(String(userId))
-    .first();
-  return !!(row && row.is_operator);
+export async function listExtensionIds(db) {
+  const res = await db.prepare(`SELECT id FROM extension_ids ORDER BY added_at`).all();
+  return ((res && res.results) || []).map((r) => r.id);
 }
 
-// Designate (or clear) a user as the relay operator. Upserts the user row.
-export async function setOperator(db, userId, isOp) {
-  await db
-    .prepare(
-      `INSERT INTO users (user_id, email, created_at, is_operator)
-       VALUES (?, NULL, ?, ?)
-       ON CONFLICT(user_id) DO UPDATE SET is_operator = excluded.is_operator`
-    )
-    .bind(String(userId), now(), isOp ? 1 : 0)
-    .run();
+export async function addExtensionId(db, id) {
+  await db.prepare(`INSERT INTO extension_ids (id, added_at) VALUES (?, ?) ON CONFLICT(id) DO NOTHING`).bind(String(id), now()).run();
 }
 
-// --- fast_evaluate policy (allowlist) ---------------------------------------
-
-// Composite policy for relay-core's gate. fast_evaluate fires only when
-// allowEvaluate && (allowAll || origin ∈ origins). allowAll is operator-only.
-export async function getEvalPolicy(db, userId) {
-  const u = await db
-    .prepare(`SELECT allow_evaluate, eval_allow_all, is_operator FROM users WHERE user_id = ?`)
-    .bind(String(userId))
-    .first();
-  const res = await db
-    .prepare(`SELECT origin FROM eval_allowed_origins WHERE user_id = ?`)
-    .bind(String(userId))
-    .all();
-  const origins = ((res && res.results) || []).map((r) => r.origin);
-  const isOp = !!(u && u.is_operator);
-  return {
-    allowEvaluate: !!(u && u.allow_evaluate),
-    // allow_all only honored for the operator — strangers can never get blanket eval.
-    allowAll: isOp && !!(u && u.eval_allow_all),
-    isOperator: isOp,
-    origins,
-  };
+export async function removeExtensionId(db, id) {
+  await db.prepare(`DELETE FROM extension_ids WHERE id = ?`).bind(String(id)).run();
 }
 
-export async function setEvalAllowAll(db, userId, allowAll) {
-  await db
-    .prepare(
-      `INSERT INTO users (user_id, email, created_at, eval_allow_all)
-       VALUES (?, NULL, ?, ?)
-       ON CONFLICT(user_id) DO UPDATE SET eval_allow_all = excluded.eval_allow_all`
-    )
-    .bind(String(userId), now(), allowAll ? 1 : 0)
-    .run();
-}
+// --- retention ----------------------------------------------------------------
 
-export async function addEvalOrigin(db, userId, origin) {
-  await db
-    .prepare(
-      `INSERT INTO eval_allowed_origins (user_id, origin, added_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(user_id, origin) DO NOTHING`
-    )
-    .bind(String(userId), String(origin), now())
-    .run();
-}
-
-export async function removeEvalOrigin(db, userId, origin) {
-  await db
-    .prepare(`DELETE FROM eval_allowed_origins WHERE user_id = ? AND origin = ?`)
-    .bind(String(userId), String(origin))
-    .run();
+// Delete activity-log rows older than `days`, and expired single-use pairing codes.
+// Run daily by the worker's scheduled handler (index.js). Returns the rows removed.
+export const AUDIT_RETENTION_DAYS = 30;
+export async function pruneOld(db, days = AUDIT_RETENTION_DAYS) {
+  const cutoff = now() - days * 86400_000;
+  const a = await db.prepare(`DELETE FROM grants_audit WHERE ts < ?`).bind(cutoff).run();
+  const p = await db.prepare(`DELETE FROM pairing_codes WHERE expires_at < ?`).bind(now() - 86400_000).run();
+  return { audit: a?.meta?.changes || 0, pairingCodes: p?.meta?.changes || 0 };
 }
 
 // --- agent tokens (migration 0007) ------------------------------------------

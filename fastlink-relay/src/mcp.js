@@ -9,7 +9,8 @@
 //
 // SCOPE: every tool routes straight to the extension (fast_batch runs its steps
 // here). Image-returning tools come back as MCP image content (no /tmp on Workers).
-// fast_evaluate is gated OFF by default.
+// There is no page-JavaScript tool (fast_evaluate exists only inside sealed calls to a
+// secure browser, which the relay never reads).
 //
 // See SPEC.md §3e, §7.
 
@@ -180,7 +181,7 @@ async function profileOnRelay(relay, args, browser) {
 // Mutating actions blocked when a site is in read-only consent mode (SAFETY §7).
 const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_type',
-  'fast_key_press', 'fast_nav', 'fast_evaluate',
+  'fast_key_press', 'fast_nav',
   'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close',
 ]);
 
@@ -346,18 +347,11 @@ async function dispatchTool(params, relay, trace) {
     if (bad) return textResult(bad);
   }
 
-  // Per-origin consent gate (M4) — applies to every page-touching tool, incl.
-  // fast_evaluate (in MUTATING_TOOLS). Batch steps are gated in runBatch.
+  // Per-origin consent gate (M4) — applies to every page-touching tool. Batch steps
+  // are gated in runBatch.
   {
     const verdict = await consentVerdict(relay, name, target, gateTab(name, args));
     if (verdict) return textResult(verdict);
-  }
-
-  // fast_evaluate: arbitrary in-page JS. Per-user ALLOWLIST gate (db.getEvalPolicy
-  // + the target browser's origin): enabled AND (operator allow-all OR allowlisted).
-  if (name === 'fast_evaluate') {
-    const verdict = await relay.checkEvalAllowed(target, gateTab(name, args));
-    if (!verdict.ok) return textResult({ error: verdict.error, evalBlocked: true });
   }
 
   if (name === 'fast_batch') {
@@ -443,7 +437,6 @@ async function relayStatus(relay, browser, lastBrowser) {
   const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen, version: d.version, ...(d.secure ? { secure: true, locked: d.secure.locked, ...(d.secure.mismatch ? { lockMismatch: true } : {}) } : {}) }));
   const target = await relay.resolveTarget(browser, lastBrowser);
   const connected = !!(target && target.ws);
-  const policy = await relay.evalPolicy();
   // Per-origin consent (M4): the decision for the ROUTED browser's last-known origin.
   const origin = connected ? relay.cachedOrigin(target, null) : '';
   const consentMode = origin ? await relay.consentFor(origin) : null;
@@ -456,7 +449,6 @@ async function relayStatus(relay, browser, lastBrowser) {
     routedBrowser: connected ? target.name : null,
     targetError: target && target.error ? target.error : null,
     drivingPaused,
-    evaluateAllowed: policy.allowEvaluate,
     consentDefault: relay.consentDefault(),
     activeOrigin: origin || null,
     // Effective decision for activeOrigin: an explicit row ('allow'|'readonly'|
@@ -485,12 +477,7 @@ const batchIo = (relay, target, tabId) => ({
     const eff = stepArgs(step.name, step.args, tabId);
     const bad = badTabId(eff);
     if (bad) return bad;
-    const stepTab = gateTab(step.name, eff);
-    if (step.name === 'fast_evaluate') {
-      const verdict = await relay.checkEvalAllowed(target, stepTab);
-      if (!verdict.ok) return { error: verdict.error };
-    }
-    return consentVerdict(relay, step.name, target, stepTab);
+    return consentVerdict(relay, step.name, target, gateTab(step.name, eff));
   },
   call: async (name, args) => {
     const a = stepArgs(name, args, tabId);
@@ -498,7 +485,7 @@ const batchIo = (relay, target, tabId) => ({
     if (tabId != null && name === 'fast_list' && Array.isArray(r?.result)) {
       r.result = r.result.map((t) => ({ ...t, targetTab: t.id === tabId }));
     }
-    const probe = name === 'fast_list' || (name === 'fast_evaluate' && a.fn === '() => document.readyState');
+    const probe = name === 'fast_list';
     if (!probe) relay.audit(name, a, !(r && r.error), target); // best-effort
     return r;
   },

@@ -246,6 +246,7 @@ async function listTabs() {
     const trail = await trailOf(t.id);
     return {
       id: t.id, windowId: t.windowId, url: t.url, title: t.title, active: t.active,
+      status: t.status,   // 'loading' | 'complete': the relay's batch waits on it after a navigation
       ...(t.id === pinnedId ? { targetTab: true } : {}),
       ...(trail.length ? { trail } : {}),
     };

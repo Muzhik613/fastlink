@@ -107,7 +107,6 @@ const VERB = {
   fast_nav: 'Navigating', fast_scroll: 'Scrolling',
   fast_wait: 'Waiting', fast_key_press: 'Pressing key', fast_tab: 'Switching tab',
   fast_switch: 'Switching tab', fast_list: 'Listing tabs', fast_close: 'Closing tab',
-  fast_evaluate: 'Running script',
 };
 const humanVerb = (a) => VERB[a] || String(a || '').replace(/^fast_/, '').replace(/_/g, ' ') || 'Working';
 

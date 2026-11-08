@@ -110,10 +110,8 @@ MAIL_FROM = "login@ytx.app"
 # NOTE: pending human ratification per SIGNUP-SPEC §7 Q1 (real working keypair;
 # webstore will re-notify if the key is swapped pre-launch).
 EXTENSION_ID = "ockcjadbkdfgfllidpcoamcepahfmlpf"
-# Optional (magiclink mode): the email marked is_operator=1 — enables the
-# operator-only fast_evaluate test mode (eval-allowlist delta, tasks #9/#10). In
-# shared mode the bootstrap user is operator automatically, so this is ignored.
-# OPERATOR_EMAIL = "you@example.com"
+# More ids (e.g. the Chrome Web Store copy): POST /admin/extension-ids {add: <id>} with
+# RELAY_ADMIN_TOKEN. No deploy needed.
 
 # Secrets to set with `wrangler secret put <NAME>` (do NOT commit values).
 # Names verified against oauth/auth.js + SPEC §8 (FINAL):
@@ -138,3 +136,7 @@ EXTENSION_ID = "ockcjadbkdfgfllidpcoamcepahfmlpf"
 # ---------------------------------------------------------------------------
 [observability]
 enabled = true
+
+# Daily retention: activity log > 30 days and expired pairing codes (src/db.js pruneOld).
+[triggers]
+crons = ["17 9 * * *"]

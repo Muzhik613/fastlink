@@ -27,7 +27,7 @@
 import { OAuthProvider } from '@cloudflare/workers-oauth-provider';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { makeDefaultHandler, registerRateLimit } from './auth.js'; // oauth owns this: /authorize,/oauth/*,/pair/*,/agent/pair,/ext
-import { lookupAgent } from './db.js';
+import { lookupAgent, pruneOld } from './db.js';
 
 // The Durable Object class MUST be exported from the Worker's main module so the
 // runtime can construct it for the USER_RELAY binding.
@@ -218,5 +218,10 @@ export default {
       }
     }
     return oauthProvider.fetch(request, env, ctx);
+  },
+  // Daily retention job (wrangler.toml [triggers]): activity log older than 30 days and
+  // expired pairing codes are deleted (the privacy policy states this period).
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(pruneOld(env.DB));
   },
 };

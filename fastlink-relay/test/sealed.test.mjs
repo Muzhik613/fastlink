@@ -60,9 +60,9 @@ test('the audit row of a sealed call holds no action, args or origin', async () 
   const p = mcpCall(r, 'fast_sealed', { ...FRAME, browser: 'aliya' }, AGENT);
   await reply(r, ws, (await sentCall(ws)).id, { sealed: { v: 1, keyId: FRAME.keyId, nonce: 'x', ct: 'y' } });
   await p;
-  await tick(); await tick();
-  const rows = db.raw.prepare(`SELECT action, detail FROM grants_audit`).all();
-  const row = rows.find((x) => x.action === 'fast_sealed');
+  // The audit write is fire-and-forget: wait for it rather than a fixed number of ticks.
+  let row;
+  for (let i = 0; i < 200 && !row; i++) { await tick(); row = db.raw.prepare(`SELECT action, detail FROM grants_audit`).all().find((x) => x.action === 'fast_sealed'); }
   assert.ok(row, 'audited');
   assert.deepEqual(JSON.parse(row.detail), { sealed: true, bytes: FRAME.ct.length, browser: 'aliya', ok: true });
 });

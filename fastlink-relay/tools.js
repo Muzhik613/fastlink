@@ -152,22 +152,6 @@ const BROWSER_TOOLS = [
     },
   },
   {
-    name: 'fast_evaluate',
-    description: 'Run a JS function in the page and return its JSON result. For reads that fast_snapshot and fast_text cannot do.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        fn: { type: 'string', description: 'Function source, e.g. "() => document.title".' },
-        args: {
-          type: 'array',
-          items: {},
-          description: 'Arguments passed to fn.',
-        },
-      },
-      required: ['fn'],
-    },
-  },
-  {
     name: 'fast_frame_read',
     description: 'Scorer only, never offered to a model: read labelled field values inside frames whose URL contains `frame`.',
     inputSchema: {

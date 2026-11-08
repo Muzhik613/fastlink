@@ -247,7 +247,7 @@ async function onDisconnectToggle() {
   renderControls();
 }
 
-// Advanced control = coordinate clicks/typing, running scripts, and background-
+// Advanced control = real (debugger) mouse/keyboard input and background-
 // tab capture (all via CDP/debugger). The `debugger` permission is REQUIRED in
 // the manifest (MV3 rejects it as optional), so this is a SOFT runtime toggle: a
 // chrome.storage.local `advancedControl` flag that the CDP gate reads. Default
@@ -270,7 +270,7 @@ async function renderDebugger() {
   if (on) {
     pill.textContent = 'On'; pill.className = 'pill ok badge';
     btn.textContent = 'Disable advanced control'; btn.dataset.act = 'disable';
-    detail.textContent = 'Advanced control grants coordinate clicks/typing, running scripts, and background-tab capture.';
+    detail.textContent = 'Advanced control gives real mouse/keyboard input and background-tab capture through Chrome\'s debugger.';
   } else {
     pill.textContent = 'Off'; pill.className = 'pill off badge';
     btn.textContent = 'Enable advanced control'; btn.dataset.act = 'enable';
@@ -285,7 +285,7 @@ async function onToggleDebugger() {
     const enable = btn.dataset.act === 'enable';
     await chrome.storage.local.set({ [ADVANCED_CONTROL_KEY]: enable });
     showMsg(enable
-      ? 'Advanced control enabled — coordinate clicks/typing, scripts, and background-tab capture are on.'
+      ? 'Advanced control enabled — real mouse/keyboard input and background-tab capture are on.'
       : 'Advanced control disabled — FastLink is back to DOM-only (selector clicks/fills still work).', 'ok');
   } catch (e) {
     showMsg(e?.message || String(e), 'err');
