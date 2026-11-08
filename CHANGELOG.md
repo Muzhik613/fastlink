@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-08 — extension 0.4.10 + relay: browser names
+- **What:** a new browser pairs as its device kind (mac, windows-pc, linux-pc, chromebook; relay adds -2…), never "FastLink Chrome" → fastlinkchrome; such defaults count as unnamed and the name box starts empty with a placeholder. Generic name examples. Onboarding step 3 "Use it from your AI" per client (Claude Code one-liner, claude.ai, others). Relay `renameDevice`: a name held by an OFFLINE browser of the account returns `name_taken_offline`; with `replace:true` that stale entry is revoked and this browser takes the name (never from an online browser).
+- **Why:** removing + reloading an unpacked extension wipes its storage, so the same browser re-pairs as a new device and its old name was "taken" (mac1, 11-08).
+- **Watch out:** the replace path needs the relay deploy that shipped with 0.4.10.
+
 ## 2026-11-07 — extension 0.4.9: fast_evaluate via chrome.userScripts only; activeTab dropped
 - **What:** `fast-ext/src/actions/evaluate.js` runs the function through `chrome.userScripts.execute` (MAIN world). The CDP `Runtime.evaluate` path and the `chrome.scripting` + `(0, eval)` fallback are deleted. Manifest: `userScripts` added, `activeTab` removed, `minimum_chrome_version` 135.
 - **Why:** Web Store review (no evaluated strings in the package; userScripts is the sanctioned API). It also works on strict-CSP pages where the old fallback failed.
