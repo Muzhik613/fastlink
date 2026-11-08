@@ -29,7 +29,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { handleMcpRequest } from './mcp.js';
 import { readTrace } from './timing.js';
-import { getUserDevices, renameDevice, maskToken, sanitizeDeviceName, RESERVED_DEVICE_NAMES } from './db.js';
+import { getUserDevices, renameDevice, maskToken, sanitizeDeviceName, RESERVED_DEVICE_NAMES, recordDeviceLock, getDeviceLock } from './db.js';
 
 // Call deadlines: 30 s from send; a {type:'queued'} frame extends the deadline to
 // QUEUE_MAX_MS after send; {type:'started'} resets it to 30 s from that moment.
@@ -78,6 +78,22 @@ const NATIVE_TAB_ACTIONS = new Set(['fast_switch', 'fast_close']);
 export const SEALED_ACTION = 'fast_sealed';
 function secureInfo(ws) {
   try { const a = ws.deserializeAttachment() || {}; return a.secure ? { locked: !!a.locked, keyId: a.keyId || null } : null; } catch { return null; }
+}
+
+// The lock as the RELAY knows it (devices.locked_key_id: recorded from the first locked
+// hello, read from D1 and stamped on every socket when it connects, so it holds even if a
+// client never says hello), combined with what the connected client says. The relay's
+// record wins: a client that no longer reports that same lock (another build that kept the
+// pairing, an unlock in the options page) gets nothing at all. Reset = revoke + pair again.
+function serverLockOf(ws) {
+  try { return (ws.deserializeAttachment() || {}).serverLock || null; } catch { return null; }
+}
+function lockState(ws) {
+  const sec = ws ? secureInfo(ws) : null;
+  const serverKey = ws ? serverLockOf(ws) : null;
+  if (!serverKey) return sec ? { secure: true, locked: sec.locked, mismatch: false } : null;
+  const ok = !!(sec && sec.locked && sec.keyId === serverKey);
+  return { secure: true, locked: true, mismatch: !ok };
 }
 
 // The version the extension announced in its hello on this socket ('' if none yet).
@@ -162,14 +178,21 @@ export class UserRelay extends DurableObject {
   // (connectedAt + its device token) via serializeAttachment so the stamp survives
   // hibernation; the device token is what makes a socket ADDRESSABLE by name
   // (token → devices.label in D1), and it is also what a targeted revoke matches.
-  #acceptExtension(request) {
+  async #acceptExtension(request) {
     if (request.headers.get('Upgrade') !== 'websocket') {
       return new Response('expected websocket upgrade', { status: 426 });
     }
     const token = new URL(request.url).searchParams.get('token') || null;
+    // The relay's record of this device's lock (secure browsers), before anything else.
+    let serverLock = null;
+    if (token && this.env.DB) {
+      try { serverLock = await getDeviceLock(this.env.DB, token); } catch {
+        return new Response('device lock unavailable', { status: 503 });   // fail closed; the extension retries
+      }
+    }
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server, ['ext']); // tag 'ext' survives hibernation
-    try { server.serializeAttachment({ connectedAt: Date.now(), deviceToken: token }); } catch { /* non-fatal */ }
+    try { server.serializeAttachment({ connectedAt: Date.now(), deviceToken: token, serverLock }); } catch { /* non-fatal */ }
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -270,8 +293,9 @@ export class UserRelay extends DurableObject {
       connectedAt: newestByToken.get(r.deviceToken)?.at || null,
       // FastLink extension version from that browser's hello (null when offline).
       version: newestByToken.has(r.deviceToken) ? (extVersion(newestByToken.get(r.deviceToken).ws) || null) : null,
-      // Secure build: { locked } (null for a normal browser or when offline).
-      secure: newestByToken.has(r.deviceToken) ? secureInfo(newestByToken.get(r.deviceToken).ws) : null,
+      // Secure browser: { secure, locked, mismatch } from the relay's record + the live
+      // client (null for a normal browser).
+      secure: lockState(newestByToken.get(r.deviceToken)?.ws || null),
       lastSeen: r.lastSeen,
     }));
   }
@@ -433,11 +457,23 @@ export class UserRelay extends DurableObject {
       // Diagnostics only. MERGE (never replace) — the attachment also carries the
       // connectedAt/deviceToken identity stamp that named routing and targeted
       // revoke depend on.
+      const keyId = typeof msg.keyId === 'string' ? msg.keyId.slice(0, 32) : null;
       this.#stamp(ws, {
         installId: msg.installId, version: msg.version,
-        secure: msg.secure === true, locked: msg.locked === true,
-        keyId: typeof msg.keyId === 'string' ? msg.keyId.slice(0, 32) : null,
+        secure: msg.secure === true, locked: msg.locked === true, keyId,
       });
+      // First locked hello: the relay records the lock and enforces it from then on.
+      if (msg.secure === true && msg.locked === true && keyId) {
+        let token = null;
+        try { token = (ws.deserializeAttachment() || {}).deviceToken || null; } catch { /* unstamped */ }
+        if (token && this.env.DB) {
+          try {
+            await recordDeviceLock(this.env.DB, token, keyId);
+            const rec = await getDeviceLock(this.env.DB, token);   // the first lock sticks
+            if (rec) this.#stamp(ws, { serverLock: rec });
+          } catch { /* non-fatal */ }
+        }
+      }
       // The extension re-asserts the user's pause toggle on (re)connect when it
       // carries one, so the durable relay flag converges with the popup's state.
       if (typeof msg.drivingPaused === 'boolean') {
@@ -520,12 +556,17 @@ export class UserRelay extends DurableObject {
       noDeviceConnected: true,
     });
     // A secure browser takes sealed calls only; a sealed call only goes to a secure one.
-    const sec = secureInfo(ws);
-    if (sec && action !== SEALED_ACTION) return Promise.resolve({
+    // The relay's own record of the lock decides, not the client's report (lockState).
+    const lock = lockState(ws);
+    if (lock?.mismatch) return Promise.resolve({
+      error: `Browser "${target.name || '?'}" was locked as a secure browser, but the connected FastLink no longer reports that lock, so nothing is sent to it. To reset: revoke this browser and pair it again.`,
+      locked: true, lockMismatch: true,
+    });
+    if (lock && action !== SEALED_ACTION) return Promise.resolve({
       error: `Browser "${target.name || '?'}" is a locked secure browser: it accepts only sealed calls from its driving machine.`,
       locked: true,
     });
-    if (!sec && action === SEALED_ACTION) return Promise.resolve({
+    if (!lock && action === SEALED_ACTION) return Promise.resolve({
       error: `Browser "${target.name || '?'}" is not a secure browser, so it can't take sealed calls.`,
     });
     // SAFETY (11-06): extensions before 0.4.8 ignore a per-call tabId and act on

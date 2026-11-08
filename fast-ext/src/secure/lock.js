@@ -119,8 +119,11 @@ export async function setAllowlist(allowlist, { remote = false, remoteAdd, allow
   return list;
 }
 
+// Unlocking also unpairs: a secure browser is never left paired AND unlocked. (The relay
+// keeps its own record of the lock anyway and refuses this pairing from then on; reset =
+// revoke the browser and pair it again.)
 export async function clearLock() {
-  await chrome.storage.local.remove([STORE_KEY, SEEN_KEY]);
+  await chrome.storage.local.remove([STORE_KEY, SEEN_KEY, 'deviceToken']);
   state = null;
 }
 

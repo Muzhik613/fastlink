@@ -181,6 +181,21 @@ export async function getUserDevices(db, userId) {
   }));
 }
 
+// The lock key id the relay recorded for a device, or null (not a locked secure browser).
+export async function getDeviceLock(db, deviceToken) {
+  const row = await db.prepare(`SELECT locked_key_id FROM devices WHERE device_token = ?`).bind(String(deviceToken)).first();
+  return row?.locked_key_id || null;
+}
+
+// Record that a device is locked (secure build) with lock key `keyId`. Only the first lock
+// sticks: a later report (another key, or "unlocked") never changes it.
+export async function recordDeviceLock(db, deviceToken, keyId) {
+  await db
+    .prepare(`UPDATE devices SET locked_key_id = ? WHERE device_token = ? AND locked_key_id IS NULL AND revoked = 0`)
+    .bind(String(keyId), String(deviceToken))
+    .run();
+}
+
 // Rename ONE of a user's devices. The new name is sanitized; a collision with
 // another live device of the SAME user is refused (never a silent overwrite —
 // two browsers answering to one name would resurrect the routing ambiguity this

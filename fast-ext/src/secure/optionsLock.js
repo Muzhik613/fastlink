@@ -38,10 +38,10 @@ async function onSave() {
 }
 
 async function onClear() {
-  if (!confirm('Unlock this browser? It will refuse every call until a lock code is saved again.')) return;
+  if (!confirm('Unlock this browser? This also unpairs it from the relay. To use it again it must be revoked and paired again (the relay keeps refusing the old pairing).')) return;
   await clearLock();
   paint();
-  msg('Unlocked.', 'ok');
+  msg('Unlocked and unpaired.', 'ok');
 }
 
 if (SECURE_BUILD) {

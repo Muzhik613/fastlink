@@ -144,8 +144,10 @@ test('sealed set_allowlist: removing is allowed, adding needs the owner; flags a
 
 test('unlocked: everything refused; unsealed calls refused while locked', async () => {
   assert.equal(L.refuseUnsealed().code, 'locked');
+  store.deviceToken = 'tok';
   await L.clearLock();
   assert.equal(L.isLocked(), false);
+  assert.equal(store.deviceToken, undefined, 'unlocking unpairs');
   assert.equal((await call('fast_list', {})).code, 'locked');
 });
 
