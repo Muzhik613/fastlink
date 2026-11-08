@@ -18,9 +18,9 @@ English (United States)
 ---
 
 ## Short description  (≤132 chars — used as manifest `description` too)
-> Let Claude read and control your active Chrome tab — snapshot the DOM, click, fill forms, capture console and network logs.
+> Let Claude read and control your active Chrome tab — snapshot the DOM, click, fill forms, and run multi-step batches.
 
-(123 characters.)
+(Same as the manifest `description`.)
 
 ---
 
@@ -31,8 +31,7 @@ English (United States)
 FastLink connects your own Claude assistant — Claude Code, Claude Desktop, or
 claude.ai on the web — to the Chrome tab you're working in, so Claude can
 actually *do* things instead of just describing them: read the page, click
-buttons, fill out forms, navigate, and pull console and network logs for
-debugging.
+buttons, fill out forms, and navigate.
 
 **What you can do**
 - 🔎 **Read any page** — Claude gets a structured snapshot of the DOM and visible
@@ -69,8 +68,8 @@ or automating multi-step tasks.
 ## Single-purpose statement  (Dashboard → Privacy)
 > FastLink has a single purpose: to let the user's own Claude assistant observe
 > and operate the user's active browser tab on the user's behalf — reading page
-> content and performing clicks, form fills, navigation, and console/network
-> capture that the user initiates through Claude.
+> content and performing clicks, form fills, and navigation that the user
+> initiates through Claude.
 
 ---
 
@@ -82,16 +81,17 @@ Paste the matching one-liners (full detail in `PERMISSIONS-JUSTIFICATION.md`):
 | `tabs` | Identify, navigate, reload, and read metadata for the tab Claude is driving. |
 | `scripting` | Inject the in-page bridge that builds DOM/accessibility snapshots and runs user-requested page reads. |
 | `activeTab` | Capture/script the currently focused tab on user action. |
-| `storage` | Store the user's relay device token, relay config, saved macros, and connection state locally. |
+| `storage` | Store the user's relay device token, relay config, browser name, and connection state locally. |
 | `alarms` | Revive the MV3 service worker to keep the relay connection alive and reconnect. |
-| `webRequest` | Observe (read-only) network request URLs/timing to show network logs and detect page idle. No blocking/modification. |
-| `debugger` *(OPTIONAL — `optional_permissions`, requested at runtime)* | Power-user feature: trusted input (CDP) for strict sites + screenshots of non-foreground tabs. Not granted at install; requested on explicit user opt-in. Falls back to captureVisibleTab + synthetic events without it. |
+| `webRequest` | Observe (read-only) request start/finish to detect when a page has gone idle. No blocking/modification. |
+| `debugger` | Trusted input (CDP) for strict sites, screenshots of non-foreground tabs, and the user-enabled page-JS tool. The "debugging this browser" bar shows while it is attached. |
 | `identity` | One-click sign-in to the user's own relay account (`launchWebAuthFlow`) to pair this browser without copy-pasting a code. Manual code paste is the fallback. |
 | `host_permissions <all_urls>` | The user points Claude at arbitrary sites; hosts can't be known in advance. Mitigated by per-origin consent + audit log. |
 
-**Remote code:** FastLink does **not** load or execute remote code. All extension
-logic ships in the package. (`fast_evaluate` runs only user-authored JS the user
-explicitly enables per origin — disclose this if asked.)
+**Remote code:** all extension logic ships in the package. `fast_evaluate` runs page
+JavaScript written by the user's own assistant, in the page (never in the extension),
+only when the account enables it and per origin. Declare this in the review notes. Risk
+assessment: `STORE-READINESS-2026-11.md`.
 
 ---
 
@@ -123,7 +123,6 @@ Host `PRIVACY-POLICY.md` at a public URL and paste it here (e.g. the relay site
   2. The options page (pair-a-relay screen).
   3. Claude driving a real page (e.g. a form being filled) with the FastLink
      activity overlay visible.
-  4. A console/network capture result.
 - [ ] **Small promo tile** — 440×280 PNG (optional but recommended).
 - [ ] **Marquee promo tile** — 1400×560 PNG (optional).
 - [ ] **Category:** Developer Tools.
