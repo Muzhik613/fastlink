@@ -80,18 +80,18 @@ Paste the matching one-liners (full detail in `PERMISSIONS-JUSTIFICATION.md`):
 |---|---|
 | `tabs` | Identify, navigate, reload, and read metadata for the tab Claude is driving. |
 | `scripting` | Inject the in-page bridge that builds DOM/accessibility snapshots and runs user-requested page reads. |
-| `activeTab` | Capture/script the currently focused tab on user action. |
 | `storage` | Store the user's relay device token, relay config, browser name, and connection state locally. |
 | `alarms` | Revive the MV3 service worker to keep the relay connection alive and reconnect. |
 | `webRequest` | Observe (read-only) request start/finish to detect when a page has gone idle. No blocking/modification. |
-| `debugger` | Trusted input (CDP) for strict sites, screenshots of non-foreground tabs, and the user-enabled page-JS tool. The "debugging this browser" bar shows while it is attached. |
+| `debugger` | Trusted input (CDP `Input.dispatch*`) for sites that ignore synthetic events, and screenshots of tabs that are not in front (`Page.captureScreenshot`). No script evaluation goes through it. The "debugging this browser" bar shows while it is attached. |
+| `userScripts` | The optional page-JavaScript tool (`fast_evaluate`). It runs code the user's own assistant writes, through `chrome.userScripts.execute`, only after the user turns on "Allow User Scripts" for FastLink. Off until then. |
 | `identity` | One-click sign-in to the user's own relay account (`launchWebAuthFlow`) to pair this browser without copy-pasting a code. Manual code paste is the fallback. |
 | `host_permissions <all_urls>` | The user points Claude at arbitrary sites; hosts can't be known in advance. Mitigated by per-origin consent + audit log. |
 
-**Remote code:** all extension logic ships in the package. `fast_evaluate` runs page
-JavaScript written by the user's own assistant, in the page (never in the extension),
-only when the account enables it and per origin. Declare this in the review notes. Risk
-assessment: `STORE-READINESS-2026-11.md`.
+**Remote code:** all extension logic ships in the package. The extension never evaluates
+strings (no `eval`, `new Function`, or CDP `Runtime.evaluate`). User-provided page
+JavaScript goes only through `chrome.userScripts`, behind Chrome's own "Allow User
+Scripts" toggle. Reviewer notes: `STORE-READINESS-2026-11.md`.
 
 ---
 

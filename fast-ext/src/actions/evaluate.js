@@ -1,60 +1,38 @@
-import { getInjectableTab, injectInTab } from '../util.js';
-import { cdp } from './input.js';
+// fast_evaluate: run a JS function the user's assistant wrote, in the page.
+//
+// ONE path: chrome.userScripts.execute (Chrome 135+), the Web Store's sanctioned API for
+// running user-provided code. The user turns it on per browser ("Allow User Scripts" on
+// FastLink's details page); until then this tool explains how and does nothing. The code
+// runs in the page's MAIN world, so it sees page variables. The extension itself never
+// evaluates strings (no eval / new Function / CDP Runtime.evaluate).
+import { getInjectableTab } from '../util.js';
+
+export const USER_SCRIPTS_OFF =
+  'fast_evaluate is off in this browser. To allow it: chrome://extensions → FastLink → Details → turn on "Allow User Scripts".';
+
+// true when the user has allowed user scripts for FastLink (the API throws otherwise).
+export function userScriptsAllowed() {
+  try { return typeof chrome.userScripts?.execute === 'function'; } catch { return false; }
+}
 
 export async function evaluate({ fn, args, tabId }) {
+  if (typeof fn !== 'string' || !fn.trim()) return { error: 'fast_evaluate: `fn` must be a function source string' };
+  if (!userScriptsAllowed()) return { error: USER_SCRIPTS_OFF, code: 'user_scripts_off' };
   const got = await getInjectableTab(tabId);
   if (got.error) return got;
   const userArgs = Array.isArray(args) ? args : [];
-
-  const cdp = await evaluateViaCDP(got.tab.id, fn, userArgs);
-  if (cdp.ok) return cdp.value;
-  if (cdp.userError) return { error: cdp.userError };
-  // CDP unavailable — fall back to an in-page eval. A page whose CSP forbids
-  // 'unsafe-eval' (web.whatsapp.com, github.com) blocks that, so the CSP message
-  // alone hides the real problem: report why CDP failed alongside it.
-  const r = await evaluateViaScripting(fn, userArgs, got.tab.id);
-  if (r && typeof r === 'object' && typeof r.error === 'string' && /unsafe-eval|Content Security Policy/i.test(r.error)) {
-    return { error: `fast_evaluate: the debugger path failed (${cdp.reason}), and this page's Content Security Policy blocks the in-page fallback`, code: cdp.code || 'cdp_unavailable' };
-  }
-  return r;
-}
-
-async function evaluateViaCDP(tabId, fnStr, userArgs) {
+  // The result crosses as a JSON string so the value comes back exactly (key order, nulls).
+  const code = `(async () => { try { const __fn = (${fn}); const v = await __fn(...${JSON.stringify(userArgs)}); return JSON.stringify({ ok: v === undefined ? null : v }); } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); } })()`;
+  let res;
   try {
-    // Use the SHARED persistent CDP session (input.js cdp helper) — no per-call
-    // attach/detach, so the "debugging Chrome" banner doesn't toggle and the
-    // viewport doesn't shift between a screenshot and a subsequent click.
-    const expr = `(async () => { const __fn = (${fnStr}); return await __fn(...${JSON.stringify(userArgs)}); })()`;
-    const res = await cdp(tabId, 'Runtime.evaluate', {
-      expression: expr,
-      awaitPromise: true,
-      returnByValue: true,
-      userGesture: true,
-    });
-    if (res?.exceptionDetails) {
-      const ex = res.exceptionDetails;
-      const msg = ex.exception?.description || ex.text || 'Evaluation threw';
-      return { ok: false, userError: msg };
-    }
-    return { ok: true, value: res?.result?.value ?? null };
+    res = await chrome.userScripts.execute({ target: { tabId: got.tab.id }, js: [{ code }], world: 'MAIN', injectImmediately: true });
   } catch (e) {
-    return { ok: false, reason: e?.message || String(e), code: e?.code }; // CDP unavailable → caller falls back to scripting
+    return { error: `fast_evaluate: ${e?.message || e}` };
   }
-}
-
-async function evaluateViaScripting(fnStr, userArgs, tabId) {
-  const r = await injectInTab({ world: 'MAIN', func: runUserFn, args: [fnStr, userArgs], tabId });
-  if (r.error) return r;
-  if (r.result?.err) return { error: r.result.err };
-  return r.result ? r.result.ok : null;
-}
-
-async function runUserFn(fnStr, userArgs) {
-  try {
-    const fn = (0, eval)(`(${fnStr})`);
-    const v = await fn(...userArgs);
-    return { ok: v };
-  } catch (e) {
-    return { err: String(e?.message || e) };
-  }
+  const r = res && res[0];
+  if (!r) return { error: 'fast_evaluate: no result from the page' };
+  if (r.error) return { error: String(r.error) };
+  let out;
+  try { out = JSON.parse(r.result); } catch { return { error: 'fast_evaluate: the result could not be read (not JSON-serializable?)' }; }
+  return out.err !== undefined ? { error: out.err } : out.ok;
 }

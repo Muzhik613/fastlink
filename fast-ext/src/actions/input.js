@@ -74,7 +74,7 @@ async function ensureAdvancedControl() {
 }
 
 // Send a CDP command on the persistent session (attach lazily, do NOT detach).
-// Exported so other actions (e.g. fast_evaluate) share ONE debugger session —
+// Exported so other actions (screenshots) share ONE debugger session —
 // critical: a separate attach/detach per call toggles the "debugging Chrome"
 // banner, which shifts the viewport ~35-50px and makes coordinate clicks miss.
 export async function cdp(tabId, method, params) {

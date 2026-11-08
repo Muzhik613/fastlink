@@ -5,19 +5,58 @@ Package: `bash fast-ext/scripts/package.sh` → `fast-ext/dist/fastlink-0.4.8.zi
 `key` and serves updates itself). Listing, permission and privacy text: `STORE-LISTING.md`,
 `PERMISSIONS-JUSTIFICATION.md`, `PRIVACY-POLICY.md`.
 
-## Risk per feature (estimate)
+## Design for approval (branch `store-ready`, 11-07; not released)
 
-| Feature | How it works | Estimate | To pass |
-|---|---|---|---|
-| `fast_evaluate` | JS source text arrives from the relay. Main path: `chrome.debugger` → CDP `Runtime.evaluate` in the page. Fallback: `chrome.scripting.executeScript` (MAIN world) running `(0, eval)(fnStr)` in the page (`src/actions/evaluate.js`). Nothing is evaluated in the extension's own context. | **High risk, about 50/50.** The policy bans running "a string fetched from a remote source" with eval or similar, and the `eval` in the fallback is easy for review to spot. The code runs in the page, not in the extension, and comes from the user's own assistant, but review may not accept that difference. | 1) Delete the `eval` fallback and keep the debugger path only, so no `eval`/`new Function` is left in the package. 2) Declare it in the review notes: user-initiated page JS, off per account (`allow_evaluate`) and gated per origin. 3) If it is still rejected, remove `fast_evaluate` from the extension altogether (no second build). |
-| `debugger` | Required permission today (trusted input, background-tab screenshots, evaluate). | **Likely pass**, with in-depth review (slower) and an install warning. | Justification text is ready. The listing calls it "optional"; that is wrong today. Either move it to `optional_permissions` or fix the text (fixed in the listing). |
-| `<all_urls>` host + content scripts on all URLs (one in the MAIN world) | Needed to act on any site the user points Claude at. | **Likely pass**, in-depth review. | Justification ready; per-origin consent and read-only/block modes help. |
-| Remote control as a whole (fixed commands from the relay: click, fill, nav…) | The policy also bans "an interpreter to run complex commands fetched from a remote source". | **Low to medium risk.** Comparable agent-driven extensions (Claude in Chrome, Browser MCP) are on the store. | Make the single purpose explicit: the user's own assistant drives the user's own tab. |
-| `webRequest` on `<all_urls>` | Read-only request start/end, used to detect page idle. | **Pass** | Fix the justification: it says "network logs" (that tool no longer exists). |
-| claude.ai content script (`claudeScrape.js`) | Reads the assistant's reply text on claude.ai and shows it in the side panel/overlay. | **Pass with disclosure** | Disclose "website content" under data use (already listed). |
-| `cookies` | Not requested. | n/a | — |
-| `identity`, `tabs`, `scripting`, `storage`, `alarms`, `webNavigation`, `notifications`, `sidePanel`, `activeTab` | All used (`activeTab` is redundant with `<all_urls>`). | **Pass** | Optionally drop `activeTab`, so it can't be flagged as an extra permission. |
-| Name "Claude" in the listing | Trademark. | **Low risk** | Keep the "not affiliated with Anthropic" line. |
+What changed for the store, and why:
+
+1. **`fast_evaluate` moved to `chrome.userScripts.execute`.** This is the Web Store's
+   sanctioned API for user-provided code. Both old paths are deleted: CDP `Runtime.evaluate`
+   and the `chrome.scripting` + `(0, eval)` fallback. The package now has no `eval`,
+   `new Function` or `Runtime.evaluate`. The tool is off until the user turns on **Allow User
+   Scripts** on FastLink's details page; until then it returns how to turn it on. Tested
+   11-07 on Chromium 156 (off before the toggle; async results; page variables; works on
+   github.com, whose CSP blocked the old fallback).
+2. **`activeTab` removed.** It was redundant with `<all_urls>`, and leftover permissions
+   draw rejections.
+3. **`minimum_chrome_version: 135`** (`userScripts.execute`).
+4. **Store package** drops `key` and `update_url` (`scripts/package.sh`).
+
+Kept, with reasons:
+- `debugger`: trusted input on sites that ignore synthetic events, and screenshots of
+  background tabs. No code evaluation goes through it any more. Making it optional (asked at
+  runtime) would lower the install warning, but every automation would silently lose
+  trusted input until someone clicks a button. Not done; it is Yaakov's call.
+- `<all_urls>` and content scripts on all sites: the user points the assistant at any site.
+  This draws in-depth review (days, not hours), not rejection.
+
+## Risk per feature (estimate after the redesign)
+
+| Feature | Estimate | Note |
+|---|---|---|
+| `fast_evaluate` via `userScripts` | **Medium-low risk** (was about 50/50) | It is the API built for this and the opt-in is Chrome's own toggle. Open point: `userScripts` is meant for code the *user* provides; ours is written by the user's own assistant and arrives through our relay. If review objects, drop `fast_evaluate` from the extension; nothing else depends on it. |
+| `debugger` | **Likely pass**, in-depth review, install warning | Justification states exactly which CDP domains (Input, Page.captureScreenshot). |
+| `<all_urls>` + content scripts | **Likely pass**, in-depth review | Single purpose: the user's own assistant drives the user's own tab. |
+| Remote commands (click, fill, nav) | **Low risk** | Fixed actions shipped in the package, not an interpreter; comparable agent extensions are listed. |
+| `webRequest` (read-only, idle detection) | **Pass** | |
+| claude.ai reader script | **Pass with disclosure** | "Website content" disclosed. |
+| `cookies` | n/a | Not requested. |
+| Name "Claude" | **Low risk** | Keep the "not affiliated" line. |
+
+Cost of the redesign: on every browser, fast_evaluate needs that one toggle once (svm-ytx,
+hvm-boss, the laptop profiles…). Everything else works without it.
+
+## Reviewer notes (paste into the dashboard's notes for the reviewer)
+
+> FastLink lets the user's own AI assistant (Claude) operate the user's own browser tab:
+> read the page, click, type, fill forms, navigate. Commands come from the user's own relay
+> account (relay.ytx.app), which the user pairs this browser to with a one-time code. Every
+> action is a fixed function shipped in the package. FastLink never evaluates strings: there
+> is no eval, no new Function and no CDP Runtime.evaluate. The one feature that runs
+> user-provided page JavaScript uses chrome.userScripts.execute, and only after the user
+> turns on "Allow User Scripts" for FastLink. The debugger permission is used only for
+> trusted input events (Input.dispatchMouseEvent / dispatchKeyEvent) and for screenshots of
+> background tabs (Page.captureScreenshot). Test account: pair with a code from
+> https://relay.ytx.app/pair/new (we can provide a reviewer account on request).
 
 ## Extension ID and pairings
 
@@ -52,7 +91,7 @@ Package: `bash fast-ext/scripts/package.sh` → `fast-ext/dist/fastlink-0.4.8.zi
 4. **Privacy policy URL:** host `PRIVACY-POLICY.md` (for example on the ytx site) and paste
    the URL.
 5. **Screenshots:** at least one at 1280×800.
-6. **Decide `fast_evaluate`:** remove the eval fallback (recommended before submitting), or
-   remove the tool.
+6. **Review the `store-ready` branch** (fast_evaluate on userScripts, activeTab gone) and
+   OK releasing it as 0.4.9 to all browsers first (so the store copy and ours stay one code).
 7. **OK the submission.** After approval, OK the relay change for the new ID (one-click
    sign-in), then the per-browser move.
