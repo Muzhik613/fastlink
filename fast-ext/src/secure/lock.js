@@ -149,9 +149,11 @@ export function refuseUnsealed() {
     : 'This secure browser is not locked yet: set the lock code in FastLink options first.', code: 'locked' };
 }
 
-// A tab's current URL and, during a navigation, the URL it is going to.
-async function tabUrls(tabId) {
-  try { const t = await chrome.tabs.get(tabId); return [t.url || '', ...(t.pendingUrl ? [t.pendingUrl] : [])]; } catch { return ['']; }
+// A tab's committed URL and, during a navigation, the URL it is going to. A just-created
+// tab has url '' (or about:blank) until its first navigation commits.
+const isBlank = (u) => !u || u === 'about:blank';
+async function tabState(tabId) {
+  try { const t = await chrome.tabs.get(tabId); return { url: t.url || '', pendingUrl: t.pendingUrl || '' }; } catch { return { url: '', pendingUrl: '' }; }
 }
 
 const offList = (st, urls) => urls.find((u) => !urlAllowed(u, st.allowlist));
@@ -179,11 +181,14 @@ async function prepare(st, action, args, targetTabId, deadline) {
   }
   const id = typeof args.tabId === 'number' ? args.tabId : await targetTabId();
   if (typeof id !== 'number') return { error: 'no target tab' };
-  const urls = await tabUrls(id);
-  const off = offList(st, urls);
+  // Acting on a page needs a committed page on the allowlist (and, mid-navigation, an
+  // allowed destination). A tab with no page yet is "not ready", not an allowlist matter.
+  const { url, pendingUrl } = await tabState(id);
+  if (isBlank(url)) return { error: 'the tab has no page yet (still loading); retry in a moment', code: 'not_ready' };
+  const off = offList(st, [url, ...(isBlank(pendingUrl) ? [] : [pendingUrl])]);
   if (off !== undefined) return refused(off);
   if (TAB_BY_ID.has(action) || action === 'fast_nav') return { args: { ...args, tabId: id, ...late } };
-  return { args: { ...args, tabId: id, expectOrigin: new URL(urls[0]).origin, ...late } };
+  return { args: { ...args, tabId: id, expectOrigin: new URL(url).origin, ...late } };
 }
 
 // After a call: drop anything about off-list pages from the reply.
@@ -194,7 +199,11 @@ async function afterRun(st, action, args, reply) {
   if (action === 'fast_close' || action === 'fast_list') return reply;
   const tabId = typeof reply?.tabId === 'number' ? reply.tabId : (typeof args.tabId === 'number' ? args.tabId : null);
   if (tabId == null) return reply;
-  const off = offList(st, await tabUrls(tabId));
+  // Blank URLs are skipped: a tab whose first navigation hasn't committed (fast_tab right
+  // after creating it) has shown nothing, so there is nothing to withhold. Its pending
+  // destination, and any committed page, must be on the allowlist.
+  const { url, pendingUrl } = await tabState(tabId);
+  const off = offList(st, [url, pendingUrl].filter((u) => !isBlank(u)));
   return off === undefined ? reply : { error: `left the allowlist: the tab is now on ${hostOf(off)}`, code: 'left_allowlist', tabId };
 }
 

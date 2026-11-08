@@ -127,6 +127,18 @@ test('round 2: match is refused on tab actions; the deadline travels to run time
   assert.ok(r.sealed, 'sealed with the snapshot taken at entry, no hang');
 });
 
+test('fb#20: a new tab whose navigation has not committed (url "", pendingUrl allowed) is fine; a blank tab is not ready', async () => {
+  const opener = (pending) => async (action, args) => { tabs.set(9, { url: '', ...(pending ? { pendingUrl: pending } : {}) }); return { result: { id: 9 }, tabId: 9 }; };
+  const ok = await open(await call('fast_tab', { url: 'https://www.bank.example/' }, {}, opener('https://www.bank.example/')));
+  assert.deepEqual(ok, { result: { id: 9 }, tabId: 9 }, 'pending allowed URL: no false left_allowlist');
+  const blank = await open(await call('fast_tab', { url: 'https://www.bank.example/' }, {}, opener(null)));
+  assert.ok(blank.result, 'nothing committed yet: nothing to withhold');
+  const off = await open(await call('fast_tab', { url: 'https://www.bank.example/' }, {}, opener('https://evil.example/')));
+  assert.equal(off.code, 'left_allowlist', 'a pending off-list destination is still caught');
+  tabs.set(9, { url: 'about:blank' });
+  assert.equal((await open(await call('fast_text', { tabId: 9 }))).code, 'not_ready');
+});
+
 test('a redirect off the allowlist never returns page content', async () => {
   const leaky = async (action, args) => { tabs.set(1, { url: 'https://evil.example/landing' }); return { result: { text: 'PAGE CONTENT' }, tabId: args.tabId }; };
   const r = await open(await call('fast_click', { selector: '#go' }, {}, leaky));
