@@ -135,6 +135,13 @@ export async function dispatchAction(action, rawArgs) {
     const id = await getTargetTabId();
     if (typeof id === 'number') args = { ...args, tabId: id };
   }
+  // A sealed call (secure build) carries the caller's deadline: if it only gets here after
+  // it (it waited in the tab queue), the caller has given up and may retry, so don't run it.
+  if ('notAfter' in args) {
+    const { notAfter, ...rest } = args;
+    args = rest;
+    if (Number.isFinite(notAfter) && Date.now() > notAfter) return await stampTab({ error: 'not run: the caller\'s deadline passed while this call waited', code: 'expired' }, args.tabId);
+  }
   // The relay approved this write for one site; refuse if the tab moved off it.
   {
     const guard = await checkExpectedSite(action, args, async (id) => (await chrome.tabs.get(id)).url);

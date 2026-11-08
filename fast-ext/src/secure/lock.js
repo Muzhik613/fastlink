@@ -126,14 +126,14 @@ export async function clearLock() {
 
 // Accept `seq` once: not seen before and not below a full window. The check-and-add is
 // synchronous (no await before it), so two calls with the same seq can't both pass.
-async function acceptSeq(seq) {
-  const seen = state.seen;
+async function acceptSeq(st, seq) {
+  const seen = st.seen;
   if (!Number.isSafeInteger(seq) || seq <= 0 || seen.includes(seq)) return false;
   if (seen.length >= SEEN_MAX && seq < seen[0]) return false;
   seen.push(seq);
   seen.sort((a, b) => a - b);
   if (seen.length > SEEN_MAX) seen.splice(0, seen.length - SEEN_MAX);
-  await chrome.storage.local.set({ [SEEN_KEY]: { keyId: state.keys.keyId, seen: [...seen] } });
+  await chrome.storage.local.set({ [SEEN_KEY]: { keyId: st.keys.keyId, seen: [...seen] } });
   return true;
 }
 
@@ -151,40 +151,47 @@ async function tabUrls(tabId) {
   try { const t = await chrome.tabs.get(tabId); return [t.url || '', ...(t.pendingUrl ? [t.pendingUrl] : [])]; } catch { return ['']; }
 }
 
-const offList = (urls) => urls.find((u) => !urlAllowed(u, state.allowlist));
+const offList = (st, urls) => urls.find((u) => !urlAllowed(u, st.allowlist));
 const refused = (url) => ({ error: `not on this browser's allowlist: ${hostOf(url)}`, code: 'not_allowed' });
 
 // Check a call before it runs; returns { args } to run with, or { error }.
 // A page action is pinned to the tab that was checked (tabId) and carries expectOrigin, so
 // the extension re-checks that tab's site right before acting (siteGuard), after any wait
 // in the tab queue.
-async function prepare(action, args, targetTabId) {
+async function prepare(st, action, args, targetTabId, deadline) {
   if (action === 'fast_batch') return { error: 'fast_batch is not available on a secure browser: send its steps as separate calls', code: 'not_allowed' };
-  if (action === 'fast_evaluate' && !state.allowEval) return { error: 'page JavaScript (fast_evaluate) is off on this secure browser: the owner can allow it in FastLink options', code: 'not_allowed' };
+  if (action === 'fast_evaluate' && !st.allowEval) return { error: 'page JavaScript (fast_evaluate) is off on this secure browser: the owner can allow it in FastLink options', code: 'not_allowed' };
   if (NAVIGATES.has(action)) {
-    if (!urlAllowed(args.url, state.allowlist)) return refused(args.url);
-    if (action === 'fast_tab') return { args };
+    if (!urlAllowed(args.url, st.allowlist)) return refused(args.url);
   }
-  if (action === 'fast_list') return { args };
-  if (TAB_BY_ID.has(action) && typeof args.tabId !== 'number') return { error: `${action} needs a tabId on a secure browser`, code: 'not_allowed' };
+  // notAfter: the extension refuses the call if it only gets to run after the caller's
+  // deadline (it may have waited in the tab queue); dispatchAction checks and strips it.
+  const late = Number.isFinite(deadline) ? { notAfter: deadline } : {};
+  if (action === 'fast_tab' || action === 'fast_list') return { args: { ...args, ...late } };
+  if (TAB_BY_ID.has(action)) {
+    // By id only: `match` (and the pin options) would let these pick another tab.
+    const { match, clear, release, unpin, ...rest } = args;
+    if (typeof rest.tabId !== 'number' || match !== undefined) return { error: `${action} needs a tabId (no match) on a secure browser`, code: 'not_allowed' };
+    args = rest;
+  }
   const id = typeof args.tabId === 'number' ? args.tabId : await targetTabId();
   if (typeof id !== 'number') return { error: 'no target tab' };
   const urls = await tabUrls(id);
-  const off = offList(urls);
+  const off = offList(st, urls);
   if (off !== undefined) return refused(off);
-  if (TAB_BY_ID.has(action) || action === 'fast_nav') return { args: { ...args, tabId: id } };
-  return { args: { ...args, tabId: id, expectOrigin: new URL(urls[0]).origin } };
+  if (TAB_BY_ID.has(action) || action === 'fast_nav') return { args: { ...args, tabId: id, ...late } };
+  return { args: { ...args, tabId: id, expectOrigin: new URL(urls[0]).origin, ...late } };
 }
 
 // After a call: drop anything about off-list pages from the reply.
-async function afterRun(action, args, reply) {
+async function afterRun(st, action, args, reply) {
   if (action === 'fast_list' && Array.isArray(reply?.result)) {
-    return { ...reply, result: reply.result.filter((t) => urlAllowed(t?.url, state.allowlist)).map(({ trail, ...t }) => t) };
+    return { ...reply, result: reply.result.filter((t) => urlAllowed(t?.url, st.allowlist)).map(({ trail, ...t }) => t) };
   }
   if (action === 'fast_close' || action === 'fast_list') return reply;
   const tabId = typeof reply?.tabId === 'number' ? reply.tabId : (typeof args.tabId === 'number' ? args.tabId : null);
   if (tabId == null) return reply;
-  const off = offList(await tabUrls(tabId));
+  const off = offList(st, await tabUrls(tabId));
   return off === undefined ? reply : { error: `left the allowlist: the tab is now on ${hostOf(off)}`, code: 'left_allowlist', tabId };
 }
 
@@ -194,16 +201,26 @@ async function afterRun(action, args, reply) {
 // back: a sealed frame, or a plain {error} that carries no content (wrong key, replay,
 // expired, not locked).
 export async function handleSealed(frame, run, targetTabId) {
-  if (!state) return refuseUnsealed();
+  // One snapshot of the lock for the whole call: the owner may clear or change it meanwhile.
+  const st = state;
+  if (!st) return refuseUnsealed();
+  try {
+    return await sealedCall(st, frame, run, targetTabId);
+  } catch {
+    return { error: 'sealed: the call failed inside the extension', code: 'sealed' };   // no content in clear
+  }
+}
+
+async function sealedCall(st, frame, run, targetTabId) {
   let req;
-  try { req = await unseal(state.keys, 'req', frame); } catch (e) { return { error: e.message, code: 'sealed' }; }
+  try { req = await unseal(st.keys, 'req', frame); } catch (e) { return { error: e.message, code: 'sealed' }; }
   const { seq, ts, deadline, action } = req || {};
   const args = req?.args && typeof req.args === 'object' ? req.args : {};
   const now = Date.now();
   if (!Number.isFinite(ts) || Math.abs(now - ts) > MAX_SKEW_MS) return { error: 'sealed: request too old (check both clocks)', code: 'sealed' };
   // The caller gave up at its deadline: running later could repeat an action it retried.
   if (Number.isFinite(deadline) && now > deadline) return { error: 'sealed: request arrived after its deadline; not run', code: 'sealed' };
-  if (!(await acceptSeq(seq))) return { error: 'sealed: replayed request', code: 'sealed' };
+  if (!(await acceptSeq(st, seq))) return { error: 'sealed: replayed request', code: 'sealed' };
 
   let reply;
   if (action === 'set_allowlist') {
@@ -213,10 +230,10 @@ export async function handleSealed(frame, run, targetTabId) {
   } else if (typeof action !== 'string' || !action) {
     reply = { error: 'sealed: no action' };
   } else {
-    const pre = await prepare(action, args, targetTabId);
-    reply = pre.error ? pre : await afterRun(action, pre.args, await run(action, pre.args));
+    const pre = await prepare(st, action, args, targetTabId, deadline);
+    reply = pre.error ? pre : await afterRun(st, action, pre.args, await run(action, pre.args));
   }
-  return { sealed: await seal(state.keys, 'res', reply, seq) };
+  return { sealed: await seal(st.keys, 'res', reply, seq) };
 }
 
 function hostOf(url) {

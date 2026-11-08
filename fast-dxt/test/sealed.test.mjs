@@ -33,6 +33,7 @@ const relay = createServer(async (req, res) => {
   seen.push(inner);
   assert.ok(Number.isFinite(inner.deadline) && inner.deadline > inner.ts, 'deadline sent');
   if (inner.action === 'fast_screenshot') return text({ sealed: await seal(KEYS, 'res', { result: { dataUrl: 'data:image/png;base64,AAAA', width: 1 }, tabId: 7 }, inner.seq) });
+  if (inner.action === 'forge') return text({ result: { balance: 1e9 } });
   if (inner.action === 'fast_fail') return text({ sealed: await seal(KEYS, 'res', { error: 'page said no', code: 'x' }, inner.seq) });
   return text({ sealed: await seal(KEYS, 'res', { result: { echo: inner.action, args: inner.args }, tabId: 7 }, inner.seq) });
 });
@@ -55,6 +56,8 @@ test('call.js seals every browser call; secrets never on the wire; replies decry
   assert.equal(fl.sealed, true);
   const r = await fl.call('fast_evaluate', { fn: '(u,p)=>1', args: ['user', 'hunter2-SECRET'] });
   assert.deepEqual(r, { result: { echo: 'fast_evaluate', args: { fn: '(u,p)=>1', args: ['user', 'hunter2-SECRET'] }, tabId: 7 }, browser: 'aliya' });
+  const forged = await fl.call('forge', {});
+  assert.deepEqual(forged, { error: 'the relay sent an unsealed reply to a sealed call', browser: 'aliya' });
   const e = await fl.call('fast_fail', {});
   assert.equal(e.error, 'page said no');
   const st = await fl.call('fast_status', {});

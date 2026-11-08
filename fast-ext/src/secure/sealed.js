@@ -74,5 +74,5 @@ export async function unseal(keys, dir, frame, seq) {
   } catch {
     throw new Error('sealed: frame failed authentication');
   }
-  return JSON.parse(td.decode(pt));
+  try { return JSON.parse(td.decode(pt)); } catch { throw new Error('sealed: bad plaintext'); }   // never echo it
 }

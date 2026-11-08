@@ -55,6 +55,7 @@ def load_agent():
 
 
 RELAY_NATIVE = {"fast_status", "fast_feedback"}  # answered by the relay, never sealed
+RELAY_CALL_CAP = 30  # seconds: the relay gives up on a browser call; a sealed request is never run later
 _SALT = b"fastlink-sealed-v1"
 
 
@@ -71,7 +72,7 @@ def load_lock_code(browser):
             code = f.read().strip()
     except OSError:
         return None
-    return code if len(code) == 43 and all(c.isalnum() or c in "-_" for c in code) else None
+    return code if re.match(r"^[A-Za-z0-9_-]{43}$", code) else None
 
 
 def _b64u_enc(b):
@@ -105,7 +106,7 @@ class Sealer:
 
     def seal(self, direction, obj, seq=None):
         nonce = os.urandom(12)
-        ct = self._aes.encrypt(nonce, json.dumps(obj, separators=(",", ":")).encode("utf-8"), self._aad(direction, seq))
+        ct = self._aes.encrypt(nonce, json.dumps(obj, separators=(",", ":"), allow_nan=False).encode("utf-8"), self._aad(direction, seq))
         return {"v": 1, "keyId": self.key_id, "nonce": _b64u_enc(nonce), "ct": _b64u_enc(ct)}
 
     def unseal(self, direction, frame, seq=None):
@@ -250,13 +251,13 @@ class Client:
         seq = self._next_seq()
         ts = int(time.time() * 1000)
         limit = timeout or self.timeout
-        frame = sealer.seal("req", {"seq": seq, "ts": ts, "deadline": ts + int(limit * 1000), "action": name, "args": inner})
+        frame = sealer.seal("req", {"seq": seq, "ts": ts, "deadline": ts + int(min(limit, RELAY_CALL_CAP) * 1000), "action": name, "args": inner})
         frame["browser"] = target
         _, body, _, served = self._send("fast_sealed", frame, limit)
         if not (isinstance(body, dict) and isinstance(body.get("sealed"), dict)):
-            out = dict(body) if isinstance(body, dict) else {"error": str(body)}
-            out["browser"] = served
-            return out
+            # In clear the relay may only report an error; a result must come sealed.
+            err = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), str) else "the relay sent an unsealed reply to a sealed call"
+            return {"error": err, "browser": served}
         try:
             reply = sealer.unseal("res", body["sealed"], seq)
         except FastLinkError as e:

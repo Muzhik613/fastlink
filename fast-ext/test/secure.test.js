@@ -117,6 +117,16 @@ test('tab actions: list is filtered to allowed tabs, switch/close need an allowe
   assert.ok((await open(await call('fast_close', { tabId: 1 }))).result);
 });
 
+test('round 2: match is refused on tab actions; the deadline travels to run time; clearing mid-call still replies', async () => {
+  assert.equal((await open(await call('fast_close', { tabId: 1, match: 'mail' }))).code, 'not_allowed');
+  const dl = Date.now() + 5000;
+  await call('fast_text', {}, { deadline: dl });
+  assert.equal(ran.at(-1).args.notAfter, dl, 'dispatchAction re-checks it after the queue');
+  const clearing = async (action, args) => { await L.clearLock(); return { result: { ok: 1 }, tabId: args.tabId }; };
+  const r = await call('fast_text', {}, {}, clearing);
+  assert.ok(r.sealed, 'sealed with the snapshot taken at entry, no hang');
+});
+
 test('a redirect off the allowlist never returns page content', async () => {
   const leaky = async (action, args) => { tabs.set(1, { url: 'https://evil.example/landing' }); return { result: { text: 'PAGE CONTENT' }, tabId: args.tabId }; };
   const r = await open(await call('fast_click', { selector: '#go' }, {}, leaky));

@@ -23,6 +23,8 @@ import { CLIENT_NAME, HELPER_VERSION } from './helper.js';
 
 // Answered by the relay itself, never by the browser: not sealed.
 const RELAY_NATIVE = new Set(['fast_status', 'fast_feedback']);
+// The relay gives up on a browser call after about 30 s; a sealed request is never run later.
+const RELAY_CALL_CAP_MS = 30_000;
 
 let sealedMod = null;
 const sealedLib = async () => (sealedMod ??= await import(SEALED_JS));
@@ -94,11 +96,13 @@ export async function connect({ browser = null, client = 'script', timeoutMs = D
     const seq = nextSeq();
     const ts = Date.now();
     const sealed = await sealedLib();
-    const frame = await sealed.seal(keys, 'req', { seq, ts, deadline: ts + ms, action: name, args: inner });
+    const frame = await sealed.seal(keys, 'req', { seq, ts, deadline: ts + Math.min(ms, RELAY_CALL_CAP_MS), action: name, args: inner });
     const { body, served } = await send('fast_sealed', { ...frame, browser: target }, ms);
-    // Relay-level errors (offline, timeout, refused) come back in clear and carry no content.
+    // In clear the relay may only report an error (offline, timeout, refused). Anything else
+    // unsealed is refused: a result must come from the browser, sealed.
     if (!body || typeof body !== 'object' || !body.sealed) {
-      return { ...(body && typeof body === 'object' ? body : { error: String(body) }), browser: served };
+      const error = body && typeof body === 'object' && typeof body.error === 'string' ? body.error : 'the relay sent an unsealed reply to a sealed call';
+      return { error, browser: served };
     }
     let reply;
     try { reply = await sealed.unseal(keys, 'res', body.sealed, seq); } catch (e) { return { error: e.message, browser: served }; }
