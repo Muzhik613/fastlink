@@ -13,6 +13,8 @@ OUT="$ROOT/dist/fastlink-secure"
 rm -rf "$OUT" && mkdir -p "$OUT"
 (cd "$ROOT/fast-ext" && tar cf - --exclude=./test --exclude=./store --exclude=./scripts --exclude=./dist --exclude=./node_modules --exclude='*.md' .) | tar xf - -C "$OUT"
 
+# Page JavaScript: the real fast_evaluate (the normal tree ships a stub without it).
+cp "$ROOT/fast-ext/secure-only/evaluate.js" "$OUT/src/actions/evaluate.js" && rm -rf "$OUT/secure-only"
 sed -i.bak 's/^export const SECURE_BUILD = false;$/export const SECURE_BUILD = true;/' "$OUT/src/secure/build.js" && rm -f "$OUT/src/secure/build.js.bak"
 grep -q '^export const SECURE_BUILD = true;$' "$OUT/src/secure/build.js" || { echo "could not turn secure mode on"; exit 1; }
 

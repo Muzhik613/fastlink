@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-08 — extension 0.4.13: no page-JavaScript code in the normal package
+- **What:** `src/actions/evaluate.js` is a stub; the real one lives in `fast-ext/secure-only/evaluate.js`, which only `scripts/build-secure.sh` installs. The normal CRX, the feed and the Web Store zip contain no `chrome.userScripts` code at all.
+- **Why:** 0.4.12 already gated it off, but the store's "no remote code" answer should be true of the package itself.
+
 ## 2026-11-08 — extension 0.4.12 + relay: Chrome Web Store readiness
 - **What:** `fast_evaluate` and the `userScripts` permission removed from the normal/store extension and the relay's tool list; page JavaScript now exists only in the secure build (`scripts/build-secure.sh` adds `userScripts` and Chrome 135). The relay's dead eval policy (`allow_evaluate`, `eval_allowed_origins`, operator flag) is no longer read or written (columns dropped in a later migration, so a rollback stays safe). `fast_list` reports each tab's `status`; the relay's batch settle waits on it instead of running `document.readyState` in the page. Manifest description names the user's assistant ("Claude or another MCP app"), not Claude as the actor. Advanced-control copy no longer claims "running scripts". Relay: extra extension ids for one-click sign-in via `POST /admin/extension-ids` (migration 0009, no deploy to add one); daily prune of the activity log (30 days) and expired pairing codes; privacy policy rewritten per the store audit.
 - **Why:** independent store audit (unused permission, remote-code answer, impersonation risk in the summary, policy claims that did not match the code).

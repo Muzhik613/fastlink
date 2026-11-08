@@ -23,7 +23,7 @@ MANV="$(git -C "$REPO" show HEAD:fast-ext/manifest.json | grep -oP '"version":\s
 
 rm -rf "$BUILD"; mkdir -p "$BUILD/ext"
 git -C "$REPO" archive HEAD fast-ext | tar -x -C "$BUILD/ext" --strip-components=1
-rm -rf "$BUILD/ext/dist" "$BUILD/ext/store" "$BUILD/ext/scripts"
+rm -rf "$BUILD/ext/dist" "$BUILD/ext/store" "$BUILD/ext/scripts" "$BUILD/ext/secure-only"
 printf '{ "sha": "%s", "syncedAt": "%s" }\n' "$(git -C "$REPO" rev-parse --short HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BUILD/ext/build.json"
 cp "$KEY" "$BUILD/key.pem"
 
