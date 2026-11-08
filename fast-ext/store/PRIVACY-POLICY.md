@@ -1,6 +1,6 @@
 # FastLink — Privacy Policy
 
-_Last updated: 2026-11-06_
+_Last updated: 2026-11-08_
 
 FastLink is a browser extension that lets **your own** Claude assistant (Claude
 Code, Claude Desktop, or claude.ai on the web) read and operate the browser tab
@@ -31,11 +31,17 @@ When you ask Claude to do something with a tab, FastLink may capture and send to
 your connected Claude assistant:
 - **DOM / accessibility snapshots and visible text** of the active/target tab.
 - **Screenshots** of the active/target tab.
-- **Console messages** from the page (for debugging tools).
-- **Network request metadata** — URLs and timing of requests the page makes
-  (used for the network log and "wait for idle"). FastLink observes this
-  read-only; it never blocks or alters requests.
+- **Results of page JavaScript** your assistant runs, only if you turned on
+  "Allow User Scripts" for FastLink in Chrome (see "Your controls").
 - **The current tab's URL and title.**
+
+FastLink also watches request start/finish events (read-only) to tell when a page
+has finished loading. It never blocks or alters requests, and it does not send
+this request data anywhere.
+
+On **claude.ai** tabs, FastLink reads the latest reply from your Claude chat to show
+it in FastLink's side panel and on-page indicator. That text stays on your device;
+it is not sent to the relay.
 
 This data is captured **on demand**, to fulfill the action you requested through
 Claude. FastLink does not continuously record your browsing.
@@ -45,8 +51,7 @@ Stored in `chrome.storage.local` / `chrome.storage.session` on your machine:
 - A **device token** — a bearer credential identifying this browser to your own
   relay account (once you pair).
 - Relay configuration (relay base URL, your relay user id).
-- **Macros** you save.
-- The pinned target-tab id and connection status for the toolbar UI.
+- Connection status for the toolbar UI.
 
 No page content is persisted in extension storage.
 
@@ -55,8 +60,7 @@ No page content is persisted in extension storage.
 ## Cloud relay: what it stores
 Once you pair a browser, the relay (Cloudflare D1 database) stores the
 following account/operational data:
-- **Account:** a user id (derived as a hash of your sign-in email),
-  your email, and account flags.
+- **Account:** your Google account's user id, your email, and account flags.
 - **Devices:** your device token(s), each browser's name, and last-seen
   time, so paired browsers can connect and so you can revoke them.
 - **Paired machines:** a hash (never the plaintext) of each FastLink helper
@@ -100,8 +104,9 @@ No other third parties receive your data.
   relay closes its connection.
 - **Unpair / disable:** turn off the cloud relay in the extension options; no
   Claude assistant can drive your browser until you turn it back on.
-- **Arbitrary-JS execution (`fast_evaluate`) is OFF by default** and must be
-  explicitly enabled per origin.
+- **Page JavaScript (`fast_evaluate`) is off by default.** It runs only after you
+  turn on Chrome's "Allow User Scripts" switch for FastLink, and only where your
+  account's settings allow it.
 
 ---
 
@@ -124,10 +129,3 @@ date above.
 
 ## Contact
 Questions or data requests: **support@ytx.app**
-
----
-
-> **Hosting note (not part of the published policy):** the Chrome Web Store
-> listing requires this policy at a public URL. Host this file at a stable URL
-> (e.g. a GitHub Pages / the relay site `/privacy`) and put that URL in the
-> Developer Dashboard → Privacy tab. Keep the hosted copy in sync with this file.
