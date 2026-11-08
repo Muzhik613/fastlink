@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-07 — extension 0.4.9: fast_evaluate via chrome.userScripts only; activeTab dropped
+- **What:** `fast-ext/src/actions/evaluate.js` runs the function through `chrome.userScripts.execute` (MAIN world). The CDP `Runtime.evaluate` path and the `chrome.scripting` + `(0, eval)` fallback are deleted. Manifest: `userScripts` added, `activeTab` removed, `minimum_chrome_version` 135.
+- **Why:** Web Store review (no evaluated strings in the package; userScripts is the sanctioned API). It also works on strict-CSP pages where the old fallback failed.
+- **Watch out:** fast_evaluate is off in a browser until "Allow User Scripts" is turned on for FastLink (chrome://extensions → FastLink → Details); the tool says so.
+
 ## 2026-09-15 — runner local transport pins its profile; bench passes the observed install to it
 - **What:** `fast-runner/fastlink-client.mjs` local branch calls `fast_profile {install: browser}` right after connect and throws if the pin errors; `bench/run.js` passes `install` as the runner's `browser` for local cells.
 - **Why:** since 8498cbe the broker refuses unpinned calls when >1 profile is connected. The runner's local session never pinned, so on the owner's machine (primary + secondary connected) the multipage cell died in 3.6s on 3 consecutive "has not pinned one" errors. hvm has one slot, so its local runs never showed it.
