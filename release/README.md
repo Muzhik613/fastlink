@@ -1,5 +1,7 @@
 # FastLink self-hosted auto-update (signed `.crx`)
 
+Installing through this feed (policy install, per OS): see `install/README.md`.
+
 The update channel for installs that are NOT on this machine and can't load the
 repo unpacked. Today that is the owner's father's laptop (Alex; corporate-managed),
 which force-installs extension `ockcjadbkdfgfllidpcoamcepahfmlpf` through an HKLM
