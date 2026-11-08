@@ -109,28 +109,12 @@ purpose; data is **not** used for creditworthiness/lending.
 ---
 
 ## Privacy policy URL
-Host `PRIVACY-POLICY.md` at a public URL and paste it here (e.g. the relay site
-`/privacy` or a GitHub Pages URL). **Required before submission.**
+https://github.com/Muzhik613/fastlink/blob/main/fast-ext/store/PRIVACY-POLICY.md
 
 ---
 
-## Assets checklist
-- [ ] **Store icon** — 128×128 PNG. ✅ have `icons/icon-128.png` (and 256/512 if a
-      larger source is needed).
-- [ ] **Screenshots** — 1280×800 (or 640×400), PNG/JPEG, **at least 1**, up to 5.
-      Suggested shots:
-  1. The toolbar popup showing "Cloud relay — Connected".
-  2. The options page (pair-a-relay screen).
-  3. Claude driving a real page (e.g. a form being filled) with the FastLink
-     activity overlay visible.
-- [ ] **Small promo tile** — 440×280 PNG (optional but recommended).
-- [ ] **Marquee promo tile** — 1400×560 PNG (optional).
-- [ ] **Category:** Developer Tools.
-- [ ] **Language:** English (US).
-
-> Note: FastLink uses the name "Claude". Anthropic trademark — keep the
-> "independent tool, not affiliated with/endorsed by Anthropic" disclaimer in the
-> description to reduce brand-impersonation review risk.
+## Assets
+Store icon `icons/icon-128.png`; screenshots (1280×800) in `screenshots/`. What goes where: `SUBMIT.md`.
 
 ---
 
