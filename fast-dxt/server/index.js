@@ -122,6 +122,6 @@ else if (cmd === 'unpair') await runUnpair();
 else if (cmd === 'machines') await runMachines().catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === 'revoke') await runRevoke(process.argv[3]).catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === 'lock') await runLock(process.argv[3], process.argv.includes('--replace')).catch((e) => { console.error(e.message); process.exit(1); });
-else if (cmd === 'unlock') await runUnlock(process.argv[3]);
+else if (cmd === 'unlock') await runUnlock(process.argv[3]).catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === undefined) serve();
 else { console.error(`unknown command "${cmd}". Commands: pair <CODE> [--name <machine>] [--relay <url>], unpair, machines, revoke <id|name>, lock <browser> [--replace], unlock <browser>`); process.exit(2); }

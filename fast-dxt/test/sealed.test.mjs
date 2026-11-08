@@ -31,6 +31,8 @@ const relay = createServer(async (req, res) => {
   if (name !== 'fast_sealed') return text({ error: 'the locked browser got an unsealed call' });
   const inner = await unseal(KEYS, 'req', { v: a.v, keyId: a.keyId, nonce: a.nonce, ct: a.ct });
   seen.push(inner);
+  assert.ok(Number.isFinite(inner.deadline) && inner.deadline > inner.ts, 'deadline sent');
+  if (inner.action === 'fast_screenshot') return text({ sealed: await seal(KEYS, 'res', { result: { dataUrl: 'data:image/png;base64,AAAA', width: 1 }, tabId: 7 }, inner.seq) });
   if (inner.action === 'fast_fail') return text({ sealed: await seal(KEYS, 'res', { error: 'page said no', code: 'x' }, inner.seq) });
   return text({ sealed: await seal(KEYS, 'res', { result: { echo: inner.action, args: inner.args }, tabId: 7 }, inner.seq) });
 });
@@ -52,7 +54,7 @@ test('call.js seals every browser call; secrets never on the wire; replies decry
   const fl = await connect({ browser: 'aliya', client: 'test' });
   assert.equal(fl.sealed, true);
   const r = await fl.call('fast_evaluate', { fn: '(u,p)=>1', args: ['user', 'hunter2-SECRET'] });
-  assert.deepEqual(r, { result: { echo: 'fast_evaluate', args: { fn: '(u,p)=>1', args: ['user', 'hunter2-SECRET'] } }, tabId: 7, browser: 'aliya' });
+  assert.deepEqual(r, { result: { echo: 'fast_evaluate', args: { fn: '(u,p)=>1', args: ['user', 'hunter2-SECRET'] }, tabId: 7 }, browser: 'aliya' });
   const e = await fl.call('fast_fail', {});
   assert.equal(e.error, 'page said no');
   const st = await fl.call('fast_status', {});
@@ -83,10 +85,20 @@ print(json.dumps([fl.call("fast_fill", {"fields": {"Password": "py-SECRET-9"}}),
   });
   assert.equal(out.status, 0, out.stderr);
   const [ok, fail] = JSON.parse(out.stdout);
-  assert.deepEqual(ok, { result: { echo: 'fast_fill', args: { fields: { Password: 'py-SECRET-9' } } }, tabId: 7, browser: 'aliya' });
+  assert.deepEqual(ok, { result: { echo: 'fast_fill', args: { fields: { Password: 'py-SECRET-9' } }, tabId: 7 }, browser: 'aliya' });
   assert.equal(fail.error, 'page said no');
   assert.equal(seen[0].action, 'fast_fill');
   assert.ok(!JSON.stringify(wire).includes('py-SECRET-9'));
+});
+
+test('screenshots come back as images; a per-call browser picks that browser\'s lock', async () => {
+  const { connect } = await import('../server/call.js');
+  const fl = await connect({ browser: 'other', client: 'test' });
+  const shot = await fl.call('fast_screenshot', { browser: 'aliya' });
+  assert.deepEqual(shot.images, [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }]);
+  assert.deepEqual(shot.result, { width: 1, tabId: 7 });
+  assert.equal(wire.at(-1).name, 'fast_sealed');
+  assert.equal(wire.at(-1).a.browser, 'aliya');
 });
 
 test('a browser without a lock code on this machine is not sealed', async () => {

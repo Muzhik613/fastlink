@@ -32,21 +32,18 @@ import { createTabQueue } from './tabQueue.js';
 import { createReplySender } from './replySender.js';
 import { defaultBaseName } from './browserName.js';
 import { SECURE_BUILD } from './secure/build.js';
-import { loadLock, isLocked, lockKeyId, handleSealed, refuseUnsealed } from './secure/lock.js';
-import { getTargetTabId } from './actions/targetTab.js';
+import { loadLock, isLocked, lockKeyId, handleSealed, refuseUnsealed, STORE_KEY as LOCK_STORE } from './secure/lock.js';
 
 // Secure build: the lock is read once at start and again whenever the options page (or a
 // sealed set_allowlist) changes it; the hello tells the relay whether this browser is locked.
+// The target-tab resolver background.js passes in (the same one unsealed calls use).
+let resolveTarget = async () => null;
 let lockReady = SECURE_BUILD ? loadLock() : Promise.resolve();
-const LOCK_STORE = 'fastlink.lock';
 if (SECURE_BUILD) {
   try {
     chrome.storage.onChanged.addListener((changes, area) => {
-      const c = area === 'local' && changes[LOCK_STORE];
-      if (!c) return;
-      // lastSeq is written on every sealed call; only a new code or allowlist matters here.
-      const was = c.oldValue || {}, now = c.newValue || {};
-      if (was.code === now.code && JSON.stringify(was.allowlist) === JSON.stringify(now.allowlist)) return;
+      // Any change to the lock settings (options page or a sealed set_allowlist) reloads them.
+      if (area !== 'local' || !changes[LOCK_STORE]) return;
       lockReady = loadLock().then(() => { if (socket && socket.readyState === WebSocket.OPEN) sendHello(socket); });
     });
   } catch {}
@@ -116,6 +113,7 @@ try {
 // args.tabId). Returns handler hooks for background.js to wire to the
 // synchronously-registered alarm/window listeners.
 export function startRelayConnection(handle, { wssUrl, deviceToken, onState, resolveTabId } = {}) {
+  resolveTarget = resolveTabId || (async () => null);
   queue = createTabQueue({ run: handle, resolveTabId, send: (f) => replies.sendProgress(f) });
   cfg = { wssUrl, deviceToken };
   report = onState || null;
@@ -221,7 +219,7 @@ async function onMessage(ws, e) {
     // origin/tabId in clear, so the relay learns nothing about the page.
     await lockReady;
     reply = msg.action === 'fast_sealed'
-      ? await handleSealed(msg.args, (action, args) => queue.submit({ id: msg.id, action, args }), getTargetTabId)
+      ? await handleSealed(msg.args, (action, args) => queue.submit({ id: msg.id, action, args }), resolveTarget)
       : refuseUnsealed();
   } else {
     reply = await queue.submit({ id: msg.id, action: msg.action, args: msg.args || {} });

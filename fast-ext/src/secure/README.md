@@ -5,12 +5,14 @@ ships these files too, but turned off (`build.js`: `SECURE_BUILD = false`).
 
 ## What is fixed, and what is a setting
 
-| Fixed (needs a code change) | Setting (no new build) |
+| Fixed (needs a code change) | Setting (options page; no new build) |
 |---|---|
-| Every call and reply sealed end to end (`sealed.js`) | Which machine drives it: whoever holds the lock code. `lock <browser> --replace` on another machine, paste the new code. |
-| No unsealed call is ever run; nothing until a lock is set | Allowed sites: options page, or a sealed `set_allowlist` call from the driving machine |
-| The relay logs only "sealed, size, ok" | |
-| The on-page panel never shows call arguments | |
+| Every call and reply sealed end to end (`sealed.js`) | **Driver**: whoever holds the lock code. `lock <browser> --replace` on another machine, paste the new code. |
+| No unsealed call is ever run; nothing until a lock is set | **Allowed sites** (https, default port). The driving machine may remove sites with a sealed `set_allowlist`; it may add sites only if the owner ticks "Let the driving machine add allowed sites". |
+| The relay logs only "sealed, size, ok" | **Page JavaScript** (`fast_evaluate`): off unless the owner ticks it. Page scripts can send data anywhere. Also needs Chrome's "Allow User Scripts" switch. |
+| The on-page panel never shows call arguments or error text | |
+| Each request carries a deadline; a late request is refused, not run. A timeout means "outcome unknown"; retrying is safe. | |
+| `fast_batch` is not available (send steps one by one); `fast_switch`/`fast_close` need a `tabId`; `fast_list` lists allowed tabs only | |
 
 ## Files
 

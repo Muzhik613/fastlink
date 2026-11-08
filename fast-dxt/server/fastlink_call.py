@@ -24,6 +24,7 @@ import base64
 import json
 import os
 import random
+import re
 import socket
 import time
 import urllib.error
@@ -63,7 +64,7 @@ def lock_dir():
 
 def load_lock_code(browser):
     """This machine's lock code for `browser` (a secure browser), or None."""
-    if not browser:
+    if not browser or not re.match(r"^[a-z0-9][a-z0-9_-]{0,31}$", browser):
         return None
     try:
         with open(os.path.join(lock_dir(), browser + ".key")) as f:
@@ -135,6 +136,31 @@ def _pick_from_sse(body, rpc_id):
     return last
 
 
+def _shape_result(result, tab_id):
+    """The shapes the relay gives unsealed calls (mcp.js): a reply's tabId rides into an
+    object result, and a screenshot's dataUrl becomes an MCP image."""
+    images = []
+
+    def to_image(data_url):
+        m = re.match(r"^data:(image/[\w.+-]+);base64,(.*)$", str(data_url or ""), re.S)
+        if m:
+            images.append({"type": "image", "data": m.group(2), "mimeType": m.group(1)})
+        return bool(m)
+
+    r = result
+    if isinstance(r, dict):
+        if r.get("dataUrl") and to_image(r["dataUrl"]):
+            r = {k: v for k, v in r.items() if k != "dataUrl"}
+        elif isinstance(r.get("screenshot"), dict) and r["screenshot"].get("dataUrl") and to_image(r["screenshot"]["dataUrl"]):
+            r = dict(r, screenshot={k: v for k, v in r["screenshot"].items() if k != "dataUrl"})
+        if isinstance(tab_id, int) and "tabId" not in r:
+            r = dict(r, tabId=tab_id)
+    out = {"result": r}
+    if images:
+        out["images"] = images
+    return out
+
+
 class Client:
     def __init__(self, agent, browser=None, client="script", timeout=DEFAULT_TIMEOUT):
         self.url = agent["relay"].rstrip("/") + "/mcp"
@@ -143,8 +169,7 @@ class Client:
         self.timeout = timeout
         self.session_id = None
         self._next = 1
-        code = load_lock_code(browser)
-        self._sealer = Sealer(code) if code else None
+        self._sealers = {}
         self._last_seq = 0
         self._request("initialize", {
             "protocolVersion": "2024-11-05",
@@ -190,9 +215,16 @@ class Client:
             raise FastLinkError("relay error %s: %s" % (msg["error"].get("code"), msg["error"].get("message")))
         return msg.get("result")
 
+    def _sealer_for(self, browser):
+        """The Sealer for a secure browser this machine holds a lock code for, else None."""
+        if browser not in self._sealers:
+            code = load_lock_code(browser)
+            self._sealers[browser] = Sealer(code) if code else None
+        return self._sealers[browser]
+
     @property
     def sealed(self):
-        return self._sealer is not None
+        return self._sealer_for(self.browser) is not None
 
     def _send(self, name, arguments, timeout):
         r = self._request("tools/call", {"name": name, "arguments": arguments}, timeout or self.timeout) or {}
@@ -206,33 +238,43 @@ class Client:
         return r, body, content, (r.get("_meta") or {}).get("fastlink/browser")
 
     def _next_seq(self):
-        # Unique and increasing in this process; time-based across processes.
-        self._last_seq = max(self._last_seq + 1, int(time.time() * 1000) * 1000 + random.randrange(1000))
+        # Seconds * 2^20 + 20 random bits (as call.js): unique across processes in practice,
+        # increasing within this one.
+        self._last_seq = max(self._last_seq + 1, int(time.time()) * 2 ** 20 + random.randrange(2 ** 20))
         return self._last_seq
 
-    def _sealed_call(self, name, args, timeout):
+    def _sealed_call(self, name, args, timeout, target, sealer):
+        # A relay timeout means the outcome is unknown; the browser refuses the request
+        # after its deadline, so a retry can't make it run twice later.
         inner = {k: v for k, v in (args or {}).items() if k != "browser"}
         seq = self._next_seq()
-        frame = self._sealer.seal("req", {"seq": seq, "ts": int(time.time() * 1000), "action": name, "args": inner})
-        frame["browser"] = self.browser
-        _, body, _, served = self._send("fast_sealed", frame, timeout)
+        ts = int(time.time() * 1000)
+        limit = timeout or self.timeout
+        frame = sealer.seal("req", {"seq": seq, "ts": ts, "deadline": ts + int(limit * 1000), "action": name, "args": inner})
+        frame["browser"] = target
+        _, body, _, served = self._send("fast_sealed", frame, limit)
         if not (isinstance(body, dict) and isinstance(body.get("sealed"), dict)):
             out = dict(body) if isinstance(body, dict) else {"error": str(body)}
             out["browser"] = served
             return out
-        reply = self._sealer.unseal("res", body["sealed"], seq)
+        try:
+            reply = sealer.unseal("res", body["sealed"], seq)
+        except FastLinkError as e:
+            return {"error": str(e), "browser": served}
         if isinstance(reply, dict) and "error" in reply:
             out = dict(reply)
             out["browser"] = served
             return out
-        out = {"result": reply.get("result") if isinstance(reply, dict) else None, "browser": served}
-        if isinstance(reply, dict) and isinstance(reply.get("tabId"), int):
-            out["tabId"] = reply["tabId"]
+        out = _shape_result(reply.get("result") if isinstance(reply, dict) else None,
+                            reply.get("tabId") if isinstance(reply, dict) else None)
+        out["browser"] = served
         return out
 
     def call(self, name, args=None, timeout=None):
-        if self._sealer is not None and name not in RELAY_NATIVE:
-            return self._sealed_call(name, args, timeout)
+        target = (args or {}).get("browser") or self.browser
+        sealer = None if name in RELAY_NATIVE else self._sealer_for(target)
+        if sealer is not None:
+            return self._sealed_call(name, args, timeout, target, sealer)
         a = dict(args or {})
         if self.browser and a.get("browser") is None:
             a["browser"] = self.browser

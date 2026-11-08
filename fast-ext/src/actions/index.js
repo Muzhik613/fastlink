@@ -154,7 +154,7 @@ export async function dispatchAction(action, rawArgs) {
     if (r && typeof r === 'object' && r._debug && typeof r._debug === 'object') r._debug = { ...r._debug, swTotalMs: Date.now() - tRun };
     // Pass error payloads through whole — diagnostics/available/etc. must survive to the LLM.
     if (r && typeof r === 'object' && 'error' in r && r.error !== undefined) {
-      notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: r.error });
+      notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: SECURE_BUILD ? 'failed' : r.error });
       return await stampTab(r, actedTabId(r, args));
     }
     let result = r;
@@ -174,7 +174,7 @@ export async function dispatchAction(action, rawArgs) {
     return await stampTab({ result }, actedTabId(result, args));
   } catch (e) {
     const msg = e?.message || String(e);
-    notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: msg });
+    notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: SECURE_BUILD ? 'failed' : msg });
     return await stampTab({ error: msg }, args.tabId);
   }
 }
