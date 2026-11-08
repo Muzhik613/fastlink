@@ -300,7 +300,7 @@
             <h2>Name this browser</h2>
           </div>
         </div>
-        <p class="desc">Give it a name you'll recognise, like <strong>Home laptop</strong> or <strong>Shuli's Chromebook</strong>. If you use FastLink on more than one browser, this is how you tell the AI which one to use.</p>
+        <p class="desc">Give it a name you'll recognise, like <strong>work-laptop</strong> or <strong>office-pc</strong>. If you use FastLink on more than one browser, this is how you tell the AI which one to use.</p>
         <label for="name-input">Name</label>
         <div class="row" style="margin-top:0;">
           <input id="name-input" type="text" maxlength="40" autocomplete="off" spellcheck="false" style="flex:1; min-width:0;" disabled />
@@ -316,28 +316,33 @@
           <span class="num" id="num3">3</span>
           <div class="step-titles">
             <span class="kicker">Your AI</span>
-            <h2>Connect your AI to FastLink</h2>
+            <h2>Use it from your AI</h2>
           </div>
         </div>
-        <p class="desc">You add FastLink to your AI <strong>once</strong>, using this web address:</p>
-        <div class="connector">
-          <code id="connector-url">https://relay.ytx.app/mcp</code>
-          <button id="copy-btn" class="ghost small">Copy</button>
+        <p class="desc">Set up whichever AI you use. One is enough.</p>
+
+        <div class="ai-block">
+          <h3>Claude Code</h3>
+          <p class="fine">Get a code at <a class="linkbtn" href="https://relay.ytx.app/pair/new" target="_blank" rel="noopener">relay.ytx.app/pair/new</a>, then run in a terminal (needs git and Node.js):</p>
+          <div class="connector">
+            <code id="cc-cmd">git clone https://github.com/Muzhik613/fastlink.git ~/fastlink &amp;&amp; node ~/fastlink/fast-dxt/server/index.js pair CODE &amp;&amp; claude mcp add -s user fastlink -- node ~/fastlink/fast-dxt/server/index.js</code>
+            <button id="cc-copy-btn" class="ghost small">Copy</button>
+          </div>
+          <p class="fine">Replace <code>CODE</code> with your code. Then start Claude Code and say: <em>“Use FastLink to read my current tab.”</em></p>
         </div>
 
         <div class="ai-block">
-          <h3>Claude (claude.ai)</h3>
+          <h3>claude.ai</h3>
           <ol class="howto big">
-            <li>Open <a id="claude-connectors" class="linkbtn" href="https://claude.ai/settings/connectors" target="_blank" rel="noopener">claude.ai → Settings → Connectors</a>.</li>
-            <li>Click <span class="ui">Add custom connector</span>. Name: <span class="ui">FastLink</span>. URL: paste the address above. Click <span class="ui">Add</span>.</li>
-            <li>Click <span class="ui">Connect</span> next to FastLink and sign in with the <strong>same Google account</strong> you used in step 1.</li>
-            <li>In a new chat, type: <em>“Use FastLink to read my current tab.”</em></li>
+            <li>Open <a id="claude-connectors" class="linkbtn" href="https://claude.ai/settings/connectors" target="_blank" rel="noopener">claude.ai → Settings → Connectors</a> and click <span class="ui">Add custom connector</span>.</li>
+            <li>Name: <span class="ui">FastLink</span>. URL: <code id="connector-url">https://relay.ytx.app/mcp</code> <button id="copy-btn" class="ghost small">Copy</button>. Click <span class="ui">Add</span>.</li>
+            <li>Click <span class="ui">Connect</span> and sign in with the <strong>same Google account</strong> as step 1.</li>
           </ol>
         </div>
 
         <div class="ai-block">
-          <h3>Other AI apps</h3>
-          <p class="fine">Any app that can add a <strong>custom connector</strong> or <strong>remote MCP server</strong>: add the same address and sign in with the same Google account.</p>
+          <h3>Other AI apps (Grok and others)</h3>
+          <p class="fine">Add a <strong>custom connector</strong> (remote MCP server) with the same URL, <code>https://relay.ytx.app/mcp</code>, and sign in with the same Google account.</p>
         </div>
       </div>
 

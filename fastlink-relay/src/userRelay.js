@@ -327,7 +327,8 @@ export class UserRelay extends DurableObject {
   // --- device management (options page, via auth.js /devices) ---------------
 
   // GET  → { devices:[{name,connected,lastSeen,deviceToken(masked),self}], self }
-  // POST { name }               → rename THIS device (the token that authed)
+  // POST { name, replace? }     → rename THIS device (the token that authed); `replace`
+  //                                takes the name from an OFFLINE browser of the account
   async #devicesRequest(request) {
     const token = request.headers.get('X-Fastlink-Device-Token') || '';
     const reply = (obj, status = 200) =>
@@ -336,8 +337,9 @@ export class UserRelay extends DurableObject {
     if (request.method === 'POST') {
       let body = {};
       try { body = await request.json(); } catch { return reply({ error: 'invalid_json' }, 400); }
-      const res = await renameDevice(this.env.DB, this.userId, token, body.name);
-      if (!res.ok) return reply({ error: res.error }, res.error === 'unknown_device' ? 404 : 400);
+      const liveTokens = new Set(this.#liveSockets().map((x) => x.token).filter(Boolean));
+      const res = await renameDevice(this.env.DB, this.userId, token, body.name, { replace: body.replace === true, liveTokens });
+      if (!res.ok) return reply({ error: res.error, lastSeen: res.lastSeen }, res.error === 'unknown_device' ? 404 : 400);
       this._devices = null; // names changed → drop the cache
     } else if (request.method !== 'GET') {
       return reply({ error: 'method_not_allowed' }, 405);

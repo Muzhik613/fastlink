@@ -4,7 +4,7 @@
 // notifications, and per-origin site permissions.
 
 import { claimPairingCode, authorizeViaWebAuthFlow, authorizeViaTabPoll } from './src/relayClient.js';
-import { RELAY_NAME_ERRORS, devicesFetch, slugifyName, suggestName, isAutoName } from './src/browserName.js';
+import { RELAY_NAME_ERRORS, devicesFetch, saveBrowserName, slugifyName, suggestName, isAutoName } from './src/browserName.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -331,7 +331,8 @@ function paintRelayDevices(data) {
     input.disabled = false;
     // Don't clobber what the user is mid-way through typing. An auto name
     // (browser-N) gets a sensible suggestion to save instead.
-    if (document.activeElement !== input) input.value = unnamed ? suggestName(data.devices) : data.self;
+    input.placeholder = `e.g. ${suggestName(data.devices)}`;
+    if (document.activeElement !== input) input.value = unnamed ? '' : data.self;
   }
   $('relay-name-card')?.classList.toggle('attention', unnamed);
 
@@ -395,10 +396,10 @@ async function onSaveRelayName() {
   btn.disabled = true;
   relayNameMsg('Saving…', 'info');
   try {
-    const data = await devicesFetch('POST', { name });
+    const data = await saveBrowserName(name);
     if (!data) { relayNameMsg('Pair this browser with the cloud relay first.', 'err'); return; }
     paintRelayDevices(data);
-    relayNameMsg(`This browser is now “${data.self}”. Tell a chat to drive it with fast_profile install:"${data.self}".`, 'ok');
+    relayNameMsg(`This browser is now “${data.self}”. Tell a chat to drive it with: use browser ${data.self}.`, 'ok');
   } catch (e) {
     relayNameMsg(e?.message || String(e), 'err');
     renderRelayDevices();   // revert the field to what the relay actually holds

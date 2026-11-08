@@ -16,7 +16,8 @@ export const RELAY_NAME_ERRORS = {
   invalid_device_token: 'This browser is no longer paired — pair it again above.',
   invalid_name: 'Use letters, digits, spaces, "-" or "_" (e.g. "Home laptop").',
   reserved_name: '“auto”, “default” and “none” are reserved words — pick another name.',
-  name_taken: 'Another browser on your account already uses that name. Pick a different one.',
+  name_taken: 'Another browser on your account is online with that name. Pick a different one.',
+  name_taken_offline: 'An offline browser on your account has that name.',
   unknown_device: 'The relay doesn’t recognise this browser — pair it again above.',
   invalid_json: 'The relay rejected the request.',
 };
@@ -78,6 +79,27 @@ export async function devicesFetch(method, body) {
       });
   let b = {};
   try { b = await res.json(); } catch {}
-  if (!res.ok) throw new Error(RELAY_NAME_ERRORS[b?.error] || b?.error || `Request failed (HTTP ${res.status}).`);
+  if (!res.ok) {
+    const err = new Error(RELAY_NAME_ERRORS[b?.error] || b?.error || `Request failed (HTTP ${res.status}).`);
+    err.code = b?.error || null;
+    err.lastSeen = b?.lastSeen || null;
+    throw err;
+  }
   return b;
+}
+
+// Save this browser's name. If an OFFLINE browser on the account holds it (usually this
+// same browser before it was removed and loaded again, which re-pairs it), ask the user
+// and, on yes, take the name over: the relay revokes that stale entry. A name held by a
+// browser that is online right now is never taken.
+export async function saveBrowserName(name) {
+  try {
+    return await devicesFetch('POST', { name });
+  } catch (e) {
+    if (e?.code !== 'name_taken_offline') throw e;
+    const when = e.lastSeen ? new Date(e.lastSeen).toLocaleString() : 'a while ago';
+    const ok = confirm(`"${name}" belongs to a browser on your account that is offline (last seen ${when}).\n\nIf that was this browser before an update or reinstall, replace it: the old entry is removed and this browser takes the name.\n\nReplace it?`);
+    if (!ok) throw new Error('Name not changed. Pick a different name, or replace the offline browser.');
+    return await devicesFetch('POST', { name, replace: true });
+  }
 }

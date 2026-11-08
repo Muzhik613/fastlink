@@ -187,7 +187,13 @@ export async function getUserDevices(db, userId) {
 // whole feature exists to remove). Scoped by user_id, so a device token can only
 // ever touch devices belonging to its own account.
 // Returns { ok:true, name } | { ok:false, error }.
-export async function renameDevice(db, userId, deviceToken, requestedName) {
+// `opts.liveTokens`: device tokens with a live socket right now. A name held by another
+// of the user's browsers is never taken from it while it is online. When that browser is
+// OFFLINE the result is name_taken_offline (with its lastSeen) so the UI can offer to
+// replace it, the usual case being this same browser before a remove + reload: Chrome
+// wipes an extension's storage on removal, so it re-pairs as a new device. With
+// `opts.replace` the offline holder is revoked and this browser takes the name.
+export async function renameDevice(db, userId, deviceToken, requestedName, opts = {}) {
   const name = sanitizeDeviceName(requestedName);
   if (!name) return { ok: false, error: 'invalid_name' };
   if (RESERVED_DEVICE_NAMES.has(name)) return { ok: false, error: 'reserved_name' };
@@ -198,10 +204,16 @@ export async function renameDevice(db, userId, deviceToken, requestedName) {
   if (!own) return { ok: false, error: 'unknown_device' };
   if (own.label === name) return { ok: true, name };
   const clash = await db
-    .prepare(`SELECT 1 AS x FROM devices WHERE user_id = ? AND label = ? AND revoked = 0`)
+    .prepare(`SELECT device_token, last_seen FROM devices WHERE user_id = ? AND label = ? AND revoked = 0`)
     .bind(String(userId), name)
     .first();
-  if (clash) return { ok: false, error: 'name_taken' };
+  if (clash) {
+    const live = opts.liveTokens instanceof Set && opts.liveTokens.has(clash.device_token);
+    if (live) return { ok: false, error: 'name_taken' };
+    if (!opts.replace) return { ok: false, error: 'name_taken_offline', lastSeen: clash.last_seen || null };
+    await revokeDevice(db, clash.device_token);
+    await logAudit(db, userId, 'device_replace', { name, tokenSuffix: String(clash.device_token).slice(-4) });
+  }
   await db
     .prepare(`UPDATE devices SET label = ? WHERE device_token = ? AND user_id = ?`)
     .bind(name, String(deviceToken), String(userId))

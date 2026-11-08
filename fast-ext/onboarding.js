@@ -11,7 +11,7 @@
 // Step 3: plain steps to add the connector URL to claude.ai / other AI apps.
 
 import { authorizeViaWebAuthFlow, authorizeViaTabPoll, claimPairingCode } from './src/relayClient.js';
-import { devicesFetch, slugifyName, suggestName, isAutoName } from './src/browserName.js';
+import { devicesFetch, saveBrowserName, slugifyName, suggestName, isAutoName } from './src/browserName.js';
 
 const $ = (id) => document.getElementById(id);
 const DEFAULT_RELAY_BASE = 'https://relay.ytx.app';
@@ -144,14 +144,15 @@ async function loadName({ prompt = false } = {}) {
   if (!data) return;
   const input = $('name-input');
   const unnamed = !data.self || isAutoName(data.self);
-  if (!nameDirty) input.value = unnamed ? suggestName(data.devices) : data.self;
+  input.placeholder = `e.g. ${suggestName(data.devices)}`;
+  if (!nameDirty) input.value = unnamed ? '' : data.self;
   paintPreview();
   markNamed(!unnamed);
   if (unnamed && prompt) {
     $('step2').scrollIntoView({ behavior: 'smooth', block: 'center' });
     input.focus();
     input.select();
-    showMsg('Now give this browser a name — edit the suggestion or keep it, then Save.', 'info', 'name-msg');
+    showMsg('Now give this browser a name, then Save.', 'info', 'name-msg');
   }
 }
 
@@ -162,7 +163,7 @@ async function onSaveName() {
   btn.disabled = true;
   showMsg('Saving…', 'info', 'name-msg');
   try {
-    const data = await devicesFetch('POST', { name });
+    const data = await saveBrowserName(name);
     if (!data) { showMsg('Pair this browser first (step 1).', 'err', 'name-msg'); return; }
     $('name-input').value = data.self;
     nameDirty = false;
@@ -177,15 +178,16 @@ async function onSaveName() {
   }
 }
 
-async function onCopy() {
-  const url = $('connector-url').textContent;
+// Copy the text of element `srcId` and flash the button `btnId`.
+async function copyText(srcId, btnId) {
+  const text = $(srcId).textContent;
   try {
-    await navigator.clipboard.writeText(url);
-    const b = $('copy-btn');
+    await navigator.clipboard.writeText(text);
+    const b = $(btnId);
     b.textContent = 'Copied';
     setTimeout(() => { b.textContent = 'Copy'; }, 1500);
   } catch {
-    showMsg(`Copy failed — select and copy manually: ${url}`, 'err');
+    showMsg(`Copy failed — select and copy manually: ${text}`, 'err');
   }
 }
 
@@ -203,7 +205,8 @@ $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') onManualPa
 $('name-btn').addEventListener('click', onSaveName);
 $('name-input').addEventListener('input', () => { nameDirty = true; paintPreview(); });
 $('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') onSaveName(); });
-$('copy-btn').addEventListener('click', onCopy);
+$('copy-btn').addEventListener('click', () => copyText('connector-url', 'copy-btn'));
+$('cc-copy-btn').addEventListener('click', () => copyText('cc-cmd', 'cc-copy-btn'));
 $('relayBase').addEventListener('input', syncGenCodeLink);
 
 // Live-refresh if the relay connects/drops while this page is open.

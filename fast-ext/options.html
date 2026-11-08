@@ -329,10 +329,10 @@
       <div class="card" id="relay-name-card">
       <h2>This browser's name <span class="badge fine" style="font-weight:400;">cloud relay · multi-browser</span></h2>
       <p class="desc">Every paired browser gets its own name, so you can tell claude.ai (or any other chat) which one to drive. A chat that doesn't pick one drives the only browser online; with several online, Claude Code uses the one it used last, and claude.ai names one.</p>
-      <p class="desc" style="margin-top:2px;">Type any name (“Home laptop”); it's stored in chat-friendly form (<code>home-laptop</code>), which is exactly what you hand the chat: <code>fast_profile install:"home-laptop"</code>. Each browser on your account needs a different name.</p>
+      <p class="desc" style="margin-top:2px;">Type any name (“Work laptop”); it's stored in chat-friendly form (<code>work-laptop</code>), which is what you tell the chat (“use browser work-laptop”). Each browser on your account needs a different name.</p>
       <label for="relay-name">Name for this browser</label>
       <div class="row" style="gap:8px; align-items:center;">
-        <input type="text" id="relay-name" placeholder="e.g. Home laptop" maxlength="40"
+        <input type="text" id="relay-name" placeholder="e.g. work-laptop" maxlength="40"
                autocomplete="off" spellcheck="false"
                style="flex:1; min-width:0;" />
         <button type="button" id="relay-name-btn">Save name</button>
