@@ -55,7 +55,7 @@ test('call.js seals every browser call; secrets never on the wire; replies decry
   const fl = await connect({ browser: 'aliya', client: 'test' });
   assert.equal(fl.sealed, true);
   const r = await fl.call('fast_evaluate', { fn: '(u,p)=>1', args: ['user', 'hunter2-SECRET'] });
-  assert.deepEqual(r, { result: { echo: 'fast_evaluate', args: { fn: '(u,p)=>1', args: ['user', 'hunter2-SECRET'] }, tabId: 7 }, browser: 'aliya' });
+  assert.deepEqual(r, { result: { echo: 'fast_evaluate', args: { fn: '(u,p)=>1', args: ['user', 'hunter2-SECRET'] } }, browser: 'aliya' }, 'fast_evaluate: the bare value');
   const forged = await fl.call('forge', {});
   assert.deepEqual(forged, { error: 'the relay sent an unsealed reply to a sealed call', browser: 'aliya' });
   const e = await fl.call('fast_fail', {});

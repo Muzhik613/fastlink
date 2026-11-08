@@ -266,8 +266,9 @@ class Client:
             out = dict(reply)
             out["browser"] = served
             return out
+        # fast_evaluate returns the function's value as is (no tabId merged into a dict).
         out = _shape_result(reply.get("result") if isinstance(reply, dict) else None,
-                            reply.get("tabId") if isinstance(reply, dict) else None)
+                            None if name == "fast_evaluate" else (reply.get("tabId") if isinstance(reply, dict) else None))
         out["browser"] = served
         return out
 

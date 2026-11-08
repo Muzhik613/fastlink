@@ -107,7 +107,8 @@ export async function connect({ browser = null, client = 'script', timeoutMs = D
     let reply;
     try { reply = await sealed.unseal(keys, 'res', body.sealed, seq); } catch (e) { return { error: e.message, browser: served }; }
     if (reply && typeof reply === 'object' && 'error' in reply) return { ...reply, browser: served };
-    return { ...shapeResult(reply?.result ?? null, reply?.tabId), browser: served };
+    // fast_evaluate returns the function's value as is (no tabId merged into an object).
+    return { ...shapeResult(reply?.result ?? null, name === 'fast_evaluate' ? undefined : reply?.tabId), browser: served };
   }
 
   async function call(name, args = {}, { timeoutMs: ms = timeoutMs } = {}) {
