@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-08 — extension 0.4.12 + relay: Chrome Web Store readiness
+- **What:** `fast_evaluate` and the `userScripts` permission removed from the normal/store extension and the relay's tool list; page JavaScript now exists only in the secure build (`scripts/build-secure.sh` adds `userScripts` and Chrome 135). The relay's dead eval policy (`allow_evaluate`, `eval_allowed_origins`, operator flag) is no longer read or written (columns dropped in a later migration, so a rollback stays safe). `fast_list` reports each tab's `status`; the relay's batch settle waits on it instead of running `document.readyState` in the page. Manifest description names the user's assistant ("Claude or another MCP app"), not Claude as the actor. Advanced-control copy no longer claims "running scripts". Relay: extra extension ids for one-click sign-in via `POST /admin/extension-ids` (migration 0009, no deploy to add one); daily prune of the activity log (30 days) and expired pairing codes; privacy policy rewritten per the store audit.
+- **Why:** independent store audit (unused permission, remote-code answer, impersonation risk in the summary, policy claims that did not match the code).
+- **Watch out:** the bench harness (`fast-runner`) used `fast_evaluate` as a scorer instrument; it needs a non-eval read.
+
 ## 2026-11-08 — extension 0.4.11 + helper: fast_tab no longer moves another session's target (bug #21)
 - **What:** `openTab` treats `scoped:true` like a call that carries its own `tabId`: the new tab does not become the browser's global target and no window is focused. The Claude Code helper sends `scoped:true` on every `fast_tab`, and now shows `tabId` in every tool schema (never required; omitted = this session's tab).
 - **Why:** two agents on one browser (win1, 11-08): agent A's `fast_tab` silently pinned A's new tab as the target, so agent B's untargeted `fast_nav` landed in A's tab. The helper also hid `tabId`, so an agent could not name a tab explicitly.
