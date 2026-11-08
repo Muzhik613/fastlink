@@ -24,6 +24,7 @@ m.name = "FastLink (secure)";
 fs.writeFileSync(f, JSON.stringify(m, null, 2) + "\n");
 ' "$OUT/manifest.json"
 
-SHA="$(git -C "$ROOT" rev-parse --short HEAD)$( [ -n "$(git -C "$ROOT" status --porcelain -- fast-ext)" ] && echo '+local' )"
+SHA="$(git -C "$ROOT" rev-parse --short HEAD)"
+[ -n "$(git -C "$ROOT" status --porcelain -- fast-ext)" ] && SHA="$SHA+local"   # if-form: no set -e exit on a clean tree
 printf '{ "sha": "%s", "builtAt": "%s", "secure": true }\n' "$SHA" "$(date -u +%FT%TZ)" > "$OUT/build.json"
 echo "built $OUT ($(node -p "require('$OUT/manifest.json').version_name"), $SHA)"
