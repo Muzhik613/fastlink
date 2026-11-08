@@ -219,12 +219,15 @@ export async function renameDevice(db, userId, deviceToken, requestedName, opts 
   if (!own) return { ok: false, error: 'unknown_device' };
   if (own.label === name) return { ok: true, name };
   const clash = await db
-    .prepare(`SELECT device_token, last_seen FROM devices WHERE user_id = ? AND label = ? AND revoked = 0`)
+    .prepare(`SELECT device_token, last_seen, locked_key_id FROM devices WHERE user_id = ? AND label = ? AND revoked = 0`)
     .bind(String(userId), name)
     .first();
   if (clash) {
     const live = opts.liveTokens instanceof Set && opts.liveTokens.has(clash.device_token);
     if (live) return { ok: false, error: 'name_taken' };
+    // A locked secure browser's name is never taken over: routing is by name, so a new
+    // pairing under that name could receive calls meant for the locked one.
+    if (clash.locked_key_id) return { ok: false, error: 'name_locked' };
     if (!opts.replace) return { ok: false, error: 'name_taken_offline', lastSeen: clash.last_seen || null };
     await revokeDevice(db, clash.device_token);
     await logAudit(db, userId, 'device_replace', { name, tokenSuffix: String(clash.device_token).slice(-4) });

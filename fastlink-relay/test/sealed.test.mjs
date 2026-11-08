@@ -116,3 +116,17 @@ test('server-side lock: a locked device stays sealed-only even when a client rep
   assert.equal((await mcpCall(r4, 'fast_list', { browser: 'aliya' }, AGENT)).data.lockMismatch, true);
   assert.equal(silent.sent.filter((m) => m.type === 'call').length, 0);
 });
+
+test('review fixes: recording a lock marks every live socket of that pairing; a locked name is never taken over', async () => {
+  const db = fakeD1();
+  const a = fakeSocket('tokS'); const b = fakeSocket('tokS', Date.now() + 5);
+  const { r } = await makeRelay({ devices: [{ name: 'aliya', token: 'tokS' }, { name: 'new', token: 'tokN' }], sockets: [a, b], db });
+  await r.webSocketMessage(a, JSON.stringify({ type: 'hello', version: '0.4.10', secure: true, locked: true, keyId: FRAME.keyId }));
+  assert.equal(b.deserializeAttachment().serverLock, FRAME.keyId, 'the other socket of the same pairing is locked too');
+  await r.webSocketMessage(b, JSON.stringify({ type: 'hello', version: '0.4.6' }));
+  assert.equal((await mcpCall(r, 'fast_list', { browser: 'aliya' }, AGENT)).data.lockMismatch, true);
+
+  const { renameDevice } = await import('../src/db.js');
+  const res = await renameDevice(db, 'u1', 'tokN', 'aliya', { replace: true, liveTokens: new Set() });
+  assert.deepEqual(res, { ok: false, error: 'name_locked' });
+});

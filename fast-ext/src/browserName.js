@@ -18,6 +18,7 @@ export const RELAY_NAME_ERRORS = {
   reserved_name: '“auto”, “default” and “none” are reserved words — pick another name.',
   name_taken: 'Another browser on your account is online with that name. Pick a different one.',
   name_taken_offline: 'An offline browser on your account has that name.',
+  name_locked: 'That name belongs to a locked secure browser; it can only be freed by revoking that browser.',
   unknown_device: 'The relay doesn’t recognise this browser — pair it again above.',
   invalid_json: 'The relay rejected the request.',
 };

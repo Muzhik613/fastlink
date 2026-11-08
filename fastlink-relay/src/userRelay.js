@@ -121,6 +121,9 @@ export class UserRelay extends DurableObject {
     // while a call is in flight (the /__mcp fetch promise is awaiting), so the
     // map is never lost mid-call; when fully idle there is nothing pending.
     this.pending = new Map();
+    // deviceToken -> recorded lock key id, for sockets accepted while a lock is being
+    // recorded (#recordLock). The durable truth is D1 + each socket's serverLock stamp.
+    this.locks = new Map();
     // Best-effort identity label for status/audit (set from the forwarded
     // X-Fastlink-User-Id header on /__mcp). NOT used for isolation.
     this.userId = null;
@@ -190,10 +193,29 @@ export class UserRelay extends DurableObject {
         return new Response('device lock unavailable', { status: 503 });   // fail closed; the extension retries
       }
     }
+    // A lock recorded while that read was in flight (#recordLock sets the map first).
+    // No await between here and acceptWebSocket, so #recordLock's stamping pass either
+    // sees this socket or ran before this check saw the map entry.
+    serverLock = serverLock || (token ? this.locks.get(token) : null) || null;
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server, ['ext']); // tag 'ext' survives hibernation
     try { server.serializeAttachment({ connectedAt: Date.now(), deviceToken: token, serverLock }); } catch { /* non-fatal */ }
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // Record a device's lock (first one sticks), then mark EVERY live socket of that device
+  // token, not only the one that said hello: a second socket for the same pairing must not
+  // stay unlocked. this.locks covers sockets being accepted while this runs.
+  async #recordLock(token, keyId) {
+    await recordDeviceLock(this.env.DB, token, keyId);
+    const rec = await getDeviceLock(this.env.DB, token);
+    if (!rec) return;
+    this.locks.set(token, rec);
+    for (const s of this.ctx.getWebSockets('ext')) {
+      let a = {};
+      try { a = s.deserializeAttachment() || {}; } catch { /* unstamped */ }
+      if (a.deviceToken === token && a.serverLock !== rec) this.#stamp(s, { serverLock: rec });
+    }
   }
 
   // Merge into a socket's hibernation-surviving attachment. serializeAttachment
@@ -467,11 +489,7 @@ export class UserRelay extends DurableObject {
         let token = null;
         try { token = (ws.deserializeAttachment() || {}).deviceToken || null; } catch { /* unstamped */ }
         if (token && this.env.DB) {
-          try {
-            await recordDeviceLock(this.env.DB, token, keyId);
-            const rec = await getDeviceLock(this.env.DB, token);   // the first lock sticks
-            if (rec) this.#stamp(ws, { serverLock: rec });
-          } catch { /* non-fatal */ }
+          try { await this.#recordLock(token, keyId); } catch { /* non-fatal */ }
         }
       }
       // The extension re-asserts the user's pause toggle on (re)connect when it
