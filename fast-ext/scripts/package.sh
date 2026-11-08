@@ -83,6 +83,9 @@ for path in "${INCLUDE[@]}"; do
   cp -R "$path" "$STAGE/$(dirname "$path")/"
 done
 
+# --- store manifest: the Web Store rejects "key" and owns updates (no update_url) ---
+node -e "const f='$STAGE/manifest.json',m=JSON.parse(require('fs').readFileSync(f,'utf8'));delete m.key;delete m.update_url;require('fs').writeFileSync(f,JSON.stringify(m,null,2)+'\\n')"
+
 # --- belt-and-suspenders: drop anything that should never ship ---------------
 find "$STAGE" \( -name '*.md' -o -name '*.sh' -o -name '.DS_Store' \) -delete 2>/dev/null || true
 
