@@ -7,7 +7,9 @@
 //   node index.js unpair                           revoke this machine on the relay and forget it
 //   node index.js machines                         list this account's paired machines
 //   node index.js revoke <id|name>                 revoke another machine (e.g. a lost laptop)
-//   node index.js lock <browser> [--replace]       make the lock code for a secure browser (fast-ext/src/secure/)
+//   node index.js lock <browser> [--replace] [--quiet]
+//                                                  make the lock code for a secure browser (fast-ext/src/secure/);
+//                                                  --quiet saves it without printing it (remote/automated setup)
 //   node index.js unlock <browser>                 forget this machine's lock code for it
 import { createInterface } from 'node:readline';
 import { hostname } from 'node:os';
@@ -102,9 +104,10 @@ function serve() {
   log(`helper up (${loadAgent() ? 'paired' : `unpaired: ${agentFilePath()} missing`})`);
 }
 
-async function runLock(browser, replace) {
+async function runLock(browser, replace, quiet) {
   const { createLock } = await import('./lockFile.js');
   const { file, code } = await createLock(browser, { replace });
+  if (quiet) { console.log(`Lock code for "${browser}" saved in ${file} (not printed). Paste that file's content into the browser's FastLink options.`); return; }
   console.log(`Lock code for "${browser}" (saved in ${file}; it never goes to the relay):\n\n  ${code}\n`);
   console.log(`Paste it into that browser's FastLink options -> "Secure browser lock", with its allowed sites.`);
   console.log('Scripts on this machine then seal every call to that browser automatically.');
@@ -121,7 +124,7 @@ if (cmd === 'pair') await runPair(process.argv.slice(2));
 else if (cmd === 'unpair') await runUnpair();
 else if (cmd === 'machines') await runMachines().catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === 'revoke') await runRevoke(process.argv[3]).catch((e) => { console.error(e.message); process.exit(1); });
-else if (cmd === 'lock') await runLock(process.argv[3], process.argv.includes('--replace')).catch((e) => { console.error(e.message); process.exit(1); });
+else if (cmd === 'lock') await runLock(process.argv[3], process.argv.includes('--replace'), process.argv.includes('--quiet')).catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === 'unlock') await runUnlock(process.argv[3]).catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === undefined) serve();
-else { console.error(`unknown command "${cmd}". Commands: pair <CODE> [--name <machine>] [--relay <url>], unpair, machines, revoke <id|name>, lock <browser> [--replace], unlock <browser>`); process.exit(2); }
+else { console.error(`unknown command "${cmd}". Commands: pair <CODE> [--name <machine>] [--relay <url>], unpair, machines, revoke <id|name>, lock <browser> [--replace] [--quiet], unlock <browser>`); process.exit(2); }
