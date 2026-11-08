@@ -1,8 +1,10 @@
 # FastLink — Stable Extension ID
 
-The extension ships a fixed `"key"` in `manifest.json` so its ID is **identical
-across dev (load-unpacked) and the published Chrome Web Store build**. Everything
-in the auto-pair flow depends on this ID being stable.
+The extension ships a fixed `"key"` in `manifest.json` so its ID is identical across
+unpacked loads, the signed CRX on the self-hosted feed, and the secure build. The Chrome
+Web Store copy is the exception: the store zip has no `key` (the store rejects it), so the
+store assigns its own ID. The relay accepts that one too once it is added with
+`POST /admin/extension-ids` (see LISTING.md).
 
 ## The values
 
@@ -15,11 +17,9 @@ in the auto-pair flow depends on this ID being stable.
 ## Who depends on it
 - **ext-auth** — `chrome.identity.getRedirectURL()` resolves to the redirect URI
   above; passed to the relay as `redirect_uri`.
-- **relay-auth** — the relay's `/ext/authorize` `redirect_uri` allowlist must
-  accept `https://ockcjadbkdfgfllidpcoamcepahfmlpf.chromiumapp.org/` (and the
-  dev ID if a different key is used in dev — but we use ONE key, so dev == prod).
-- **webstore** — the same key is used to sign/upload to CWS so the published ID
-  matches.
+- **relay-auth** — the relay's `/ext/authorize` `redirect_uri` allowlist accepts
+  `EXTENSION_ID` (wrangler.toml, this ID) plus any ID added with `/admin/extension-ids`
+  (the store copy's).
 
 ## Where the private key lives
 - Private key (PEM): `<repo>/fastlink-extension-signing-key.pem`
