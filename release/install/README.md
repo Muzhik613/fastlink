@@ -36,6 +36,8 @@ unpacked → policy, storage intact).
    storage and the pairing). Just restart the browser without the flag.
 3. Restart the browser. `chrome://extensions` shows FastLink "Installed by your
    administrator"; `fast_status` shows the browser connected on the feed's version.
+   FastLink's welcome page opens once (Chrome counts it as a fresh install); it says
+   "This browser is paired". Close it. (svm-ytx moved this way on 11-07.)
 4. Delete the unpacked folder (it is no longer used).
 
 If the pairing was lost anyway (for example the unpacked copy was removed first): revoke
