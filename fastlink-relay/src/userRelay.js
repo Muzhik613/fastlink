@@ -72,6 +72,14 @@ export const STALE_SOCKET_MS = 60_000;
 // Per-call tabId is honoured from this extension version on (PIN-REDESIGN §3).
 export const TABID_MIN_VERSION = '0.4.8';
 const NATIVE_TAB_ACTIONS = new Set(['fast_switch', 'fast_close']);
+// Secure FastLink build (its hello says {secure:true, locked, keyId}): that browser takes
+// SEALED calls only — `fast_sealed`, whose args are ciphertext the relay can't read
+// (fast-ext/src/secure/sealed.js). null for a normal browser.
+export const SEALED_ACTION = 'fast_sealed';
+function secureInfo(ws) {
+  try { const a = ws.deserializeAttachment() || {}; return a.secure ? { locked: !!a.locked, keyId: a.keyId || null } : null; } catch { return null; }
+}
+
 // The version the extension announced in its hello on this socket ('' if none yet).
 function extVersion(ws) {
   try { return String((ws.deserializeAttachment() || {}).version || ''); } catch { return ''; }
@@ -262,6 +270,8 @@ export class UserRelay extends DurableObject {
       connectedAt: newestByToken.get(r.deviceToken)?.at || null,
       // FastLink extension version from that browser's hello (null when offline).
       version: newestByToken.has(r.deviceToken) ? (extVersion(newestByToken.get(r.deviceToken).ws) || null) : null,
+      // Secure build: { locked } (null for a normal browser or when offline).
+      secure: newestByToken.has(r.deviceToken) ? secureInfo(newestByToken.get(r.deviceToken).ws) : null,
       lastSeen: r.lastSeen,
     }));
   }
@@ -423,7 +433,11 @@ export class UserRelay extends DurableObject {
       // Diagnostics only. MERGE (never replace) — the attachment also carries the
       // connectedAt/deviceToken identity stamp that named routing and targeted
       // revoke depend on.
-      this.#stamp(ws, { installId: msg.installId, version: msg.version });
+      this.#stamp(ws, {
+        installId: msg.installId, version: msg.version,
+        secure: msg.secure === true, locked: msg.locked === true,
+        keyId: typeof msg.keyId === 'string' ? msg.keyId.slice(0, 32) : null,
+      });
       // The extension re-asserts the user's pause toggle on (re)connect when it
       // carries one, so the durable relay flag converges with the popup's state.
       if (typeof msg.drivingPaused === 'boolean') {
@@ -504,6 +518,15 @@ export class UserRelay extends DurableObject {
     if (!ws || ws.readyState !== 1) return Promise.resolve({
       error: NO_DEVICE_ERROR,
       noDeviceConnected: true,
+    });
+    // A secure browser takes sealed calls only; a sealed call only goes to a secure one.
+    const sec = secureInfo(ws);
+    if (sec && action !== SEALED_ACTION) return Promise.resolve({
+      error: `Browser "${target.name || '?'}" is a locked secure browser: it accepts only sealed calls from its driving machine.`,
+      locked: true,
+    });
+    if (!sec && action === SEALED_ACTION) return Promise.resolve({
+      error: `Browser "${target.name || '?'}" is not a secure browser, so it can't take sealed calls.`,
     });
     // SAFETY (11-06): extensions before 0.4.8 ignore a per-call tabId and act on
     // whatever tab is current. A call that names a tab must never land on another
@@ -680,7 +703,10 @@ export class UserRelay extends DurableObject {
       const { logAudit } = await import('./db.js');
       // Log argument KEYS only, never their values (could carry secrets/PII).
       // Include the active-tab origin (T4) so the log answers "what, and where".
-      const detail = JSON.stringify({ args: Object.keys(args || {}), browser: target?.name || null, origin: this.cachedOrigin(target, typeof args?.tabId === 'number' ? args.tabId : null) || null, ok: !!ok });
+      // A sealed call is logged as metadata only: no action, no args, no origin.
+      const detail = action === SEALED_ACTION
+        ? JSON.stringify({ sealed: true, bytes: String(args?.ct || '').length, browser: target?.name || null, ok: !!ok })
+        : JSON.stringify({ args: Object.keys(args || {}), browser: target?.name || null, origin: this.cachedOrigin(target, typeof args?.tabId === 'number' ? args.tabId : null) || null, ok: !!ok });
       await logAudit(this.env.DB, this.userId, action, detail);
     } catch { /* auditing must never break a tool call */ }
   }

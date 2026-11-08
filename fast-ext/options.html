@@ -290,6 +290,22 @@
       </div>
     </div>
 
+      <!-- SECURE BUILD ONLY: the lock (src/secure/). Hidden in the normal extension. -->
+      <div class="card" id="lock-card" hidden>
+      <h2>Secure browser lock</h2>
+      <p class="desc">This is the secure FastLink build. It accepts only encrypted calls from the one machine that holds the lock code, and only on the sites listed below. The relay never sees the code, the commands or the pages.</p>
+      <p class="desc" id="lock-status"></p>
+      <label for="lock-code">Lock code (from <code>node fast-dxt/server/index.js lock &lt;browser&gt;</code> on the driving machine)</label>
+      <input type="password" id="lock-code" placeholder="43 characters; leave empty to keep the current one" autocomplete="off" spellcheck="false" />
+      <label for="lock-allow" style="margin-top:10px;">Allowed sites (one per line: <code>www.bank.com</code>, or <code>*.bank.com</code> for the site and its subdomains)</label>
+      <textarea id="lock-allow" rows="7" spellcheck="false" style="width:100%; font-family:monospace;"></textarea>
+      <div class="row" style="gap:8px; margin-top:10px;">
+        <button type="button" id="lock-save" class="primary">Save lock</button>
+        <button type="button" id="lock-clear">Unlock</button>
+      </div>
+      <div id="lock-msg" class="msg"></div>
+    </div>
+
       <!-- 1b. PAIR -->
       <div class="card" id="pair-card">
       <h2>Pair with the cloud relay</h2>
@@ -414,5 +430,6 @@
   </div>
 
   <script type="module" src="options.js"></script>
+  <script type="module" src="src/secure/optionsLock.js"></script>
 </body>
 </html>

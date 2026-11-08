@@ -7,6 +7,8 @@
 //   node index.js unpair                           revoke this machine on the relay and forget it
 //   node index.js machines                         list this account's paired machines
 //   node index.js revoke <id|name>                 revoke another machine (e.g. a lost laptop)
+//   node index.js lock <browser> [--replace]       make the lock code for a secure browser (fast-ext/src/secure/)
+//   node index.js unlock <browser>                 forget this machine's lock code for it
 import { createInterface } from 'node:readline';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -100,10 +102,26 @@ function serve() {
   log(`helper up (${loadAgent() ? 'paired' : `unpaired: ${agentFilePath()} missing`})`);
 }
 
+async function runLock(browser, replace) {
+  const { createLock } = await import('./lockFile.js');
+  const { file, code } = await createLock(browser, { replace });
+  console.log(`Lock code for "${browser}" (saved in ${file}; it never goes to the relay):\n\n  ${code}\n`);
+  console.log(`Paste it into that browser's FastLink options -> "Secure browser lock", with its allowed sites.`);
+  console.log('Scripts on this machine then seal every call to that browser automatically.');
+}
+
+async function runUnlock(browser) {
+  const { removeLock } = await import('./lockFile.js');
+  const { file, had } = removeLock(browser);
+  console.log(had ? `Removed ${file}. This machine can no longer drive "${browser}".` : `No lock code for "${browser}" on this machine.`);
+}
+
 const cmd = process.argv[2];
 if (cmd === 'pair') await runPair(process.argv.slice(2));
 else if (cmd === 'unpair') await runUnpair();
 else if (cmd === 'machines') await runMachines().catch((e) => { console.error(e.message); process.exit(1); });
 else if (cmd === 'revoke') await runRevoke(process.argv[3]).catch((e) => { console.error(e.message); process.exit(1); });
+else if (cmd === 'lock') await runLock(process.argv[3], process.argv.includes('--replace')).catch((e) => { console.error(e.message); process.exit(1); });
+else if (cmd === 'unlock') await runUnlock(process.argv[3]);
 else if (cmd === undefined) serve();
-else { console.error(`unknown command "${cmd}". Commands: pair <CODE> [--name <machine>] [--relay <url>], unpair, machines, revoke <id|name>`); process.exit(2); }
+else { console.error(`unknown command "${cmd}". Commands: pair <CODE> [--name <machine>] [--relay <url>], unpair, machines, revoke <id|name>, lock <browser> [--replace], unlock <browser>`); process.exit(2); }

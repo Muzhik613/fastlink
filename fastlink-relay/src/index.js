@@ -79,6 +79,10 @@ export class FastlinkApiHandler extends WorkerEntrypoint {
     // never trusts this for isolation (that's the idFromName keying above) — it's
     // purely informational.
     try { fwd.headers.set('X-Fastlink-User-Id', String(userId)); } catch { /* immutable headers — non-fatal */ }
+    // Who is calling: a paired machine helper ('agent') or an OAuth connector. ALWAYS set
+    // here (overwriting anything the client sent): sealed calls trust it (mcp.js sealedCall).
+    const isAgent = (this.ctx?.props?.agent ?? this.props?.agent) === true;
+    fwd.headers.set('X-Fastlink-Caller', isAgent ? 'agent' : 'oauth'); // must not fail silently: a client-sent value would survive
     const res = await stub.fetch(fwd);
     return withCors(res, cors);
   }

@@ -17,6 +17,7 @@ import { TOOLS } from '../tools.js';
 import { runBatch } from './batch.js';
 import { resolveTraceSession, startTraceSession, recordTiming, traceClient } from './timing.js';
 import { sanitizeDeviceName, getUserEmail, insertFeedback } from './db.js';
+import { SEALED_ACTION } from './userRelay.js';
 
 // Guidance the client sees in the initialize result — steers it toward the FAST
 // tools instead of its default "screenshot + read it myself" instinct.
@@ -288,6 +289,24 @@ async function consentVerdict(relay, name, target, tabId = null) {
   return { consentRequired: true, origin, modesOffered, message };
 }
 
+// A sealed call for a locked secure browser (fast-ext/src/secure/). The relay can't read
+// it, so none of the per-tool gates apply: it only checks who sends it (a paired machine
+// helper, never a claude.ai/Grok connector) and that the target is a secure browser
+// (userRelay.callExtension), then forwards the ciphertext and logs metadata only.
+// X-Fastlink-Caller is set by the worker for every request (src/index.js), never by the client.
+async function sealedCall(relay, args, browser, lastBrowser, trace) {
+  if (trace.request.headers.get('X-Fastlink-Caller') !== 'agent') {
+    return { error: 'Sealed calls are accepted only from a paired FastLink helper (machine pairing), not from a connector.' };
+  }
+  const target = await relay.resolveTarget(browser, lastBrowser);
+  if (target.error) return target;
+  trace.routed = target.name;
+  const frame = { v: args.v, keyId: args.keyId, nonce: args.nonce, ct: args.ct };
+  const payload = await relay.callExtension(SEALED_ACTION, frame, undefined, target);
+  relay.audit(SEALED_ACTION, frame, !(payload && typeof payload === 'object' && 'error' in payload), target);
+  return payload;
+}
+
 async function dispatchTool(params, relay, trace) {
   const name = params?.name;
   // `browser` / `lastBrowser` are routing-only: consumed here, never forwarded.
@@ -309,6 +328,7 @@ async function dispatchTool(params, relay, trace) {
   // calls it (a tool list cached from before 11-06) gets a clear answer, not a routing error.
   if (name === 'fast_profile') return textResult(await profileOnRelay(relay, args, browser));
   // Only the relay's own tools are forwarded; anything else is refused by name.
+  if (name === SEALED_ACTION) return textResult(await sealedCall(relay, args, browser, lastBrowser, trace));
   if (!KNOWN_TOOLS.has(name)) return textResult({ error: `Unknown FastLink tool "${name}". Tools: ${[...KNOWN_TOOLS].join(', ')}.`, unknownTool: true });
 
   // Relay-native tools that answer without needing a live browser.
@@ -420,7 +440,7 @@ function imageResult(result) {
 // `browser` (or none → the only online one, else `lastBrowser`) would be routed.
 async function relayStatus(relay, browser, lastBrowser) {
   const devices = await relay.deviceList();
-  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen, version: d.version }));
+  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen, version: d.version, ...(d.secure ? { secure: true, locked: d.secure.locked } : {}) }));
   const target = await relay.resolveTarget(browser, lastBrowser);
   const connected = !!(target && target.ws);
   const policy = await relay.evalPolicy();

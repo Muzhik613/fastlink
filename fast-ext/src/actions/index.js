@@ -1,4 +1,5 @@
 import { handleTabAction, getTargetTab, getTargetTabId } from './tab.js';
+import { SECURE_BUILD } from '../secure/build.js';
 import { takeScreenshot }  from './screenshot.js';
 import { getText }         from './text.js';
 import { evaluate }        from './evaluate.js';
@@ -142,7 +143,8 @@ export async function dispatchAction(action, rawArgs) {
   }
   const evtId = ++__evtSeq;
   const overlayTab = typeof args.tabId === 'number' ? args.tabId : await getTargetTabId();
-  notifyOverlay(overlayTab, { phase: 'start', id: evtId, action, args });
+  // The panel lives in the page's DOM; the secure build never puts call arguments there.
+  notifyOverlay(overlayTab, { phase: 'start', id: evtId, action, args: SECURE_BUILD ? undefined : args });
   try {
     // card numbers are masked to their last 4 digits in every result (frames.js)
     const tRun = Date.now();

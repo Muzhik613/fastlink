@@ -31,6 +31,31 @@
 import { createTabQueue } from './tabQueue.js';
 import { createReplySender } from './replySender.js';
 import { defaultBaseName } from './browserName.js';
+import { SECURE_BUILD } from './secure/build.js';
+import { loadLock, isLocked, lockKeyId, handleSealed, refuseUnsealed } from './secure/lock.js';
+import { getTargetTabId } from './actions/targetTab.js';
+
+// Secure build: the lock is read once at start and again whenever the options page (or a
+// sealed set_allowlist) changes it; the hello tells the relay whether this browser is locked.
+let lockReady = SECURE_BUILD ? loadLock() : Promise.resolve();
+const LOCK_STORE = 'fastlink.lock';
+if (SECURE_BUILD) {
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      const c = area === 'local' && changes[LOCK_STORE];
+      if (!c) return;
+      // lastSeq is written on every sealed call; only a new code or allowlist matters here.
+      const was = c.oldValue || {}, now = c.newValue || {};
+      if (was.code === now.code && JSON.stringify(was.allowlist) === JSON.stringify(now.allowlist)) return;
+      lockReady = loadLock().then(() => { if (socket && socket.readyState === WebSocket.OPEN) sendHello(socket); });
+    });
+  } catch {}
+}
+
+function sendHello(ws) {
+  const lock = SECURE_BUILD ? { secure: true, locked: isLocked(), keyId: lockKeyId() } : {};
+  try { ws.send(JSON.stringify({ type: 'hello', version: VERSION, drivingPaused, ...lock })); } catch {}
+}
 
 const RECONNECT_ALARM = 'fastlink-relay-reconnect';
 const PING_MS = 20_000;
@@ -141,7 +166,7 @@ async function connect() {
   ws.onopen = () => {
     backoffMs = BACKOFF_MIN_MS;                       // healthy connection — reset backoff
     lastRxTs = Date.now();
-    try { ws.send(JSON.stringify({ type: 'hello', version: VERSION, drivingPaused })); } catch {}
+    if (SECURE_BUILD) lockReady.then(() => sendHello(ws)); else sendHello(ws);
     replies.flush();                                  // results finished while no socket was open
     startPingLoop(ws);
     setBadgeForState('connected');
@@ -190,7 +215,17 @@ async function onMessage(ws, e) {
     return;
   }
   if (msg.type !== 'call' || msg.id == null || !msg.action) return;   // events/hello/etc. — ignore inbound
-  const reply = await queue.submit({ id: msg.id, action: msg.action, args: msg.args || {} });
+  let reply;
+  if (SECURE_BUILD) {
+    // Secure build: sealed calls only (src/secure/lock.js). The sealed reply carries no
+    // origin/tabId in clear, so the relay learns nothing about the page.
+    await lockReady;
+    reply = msg.action === 'fast_sealed'
+      ? await handleSealed(msg.args, (action, args) => queue.submit({ id: msg.id, action, args }), getTargetTabId)
+      : refuseUnsealed();
+  } else {
+    reply = await queue.submit({ id: msg.id, action: msg.action, args: msg.args || {} });
+  }
   // Spread reply so {result} or {error, ...extras} (plus origin/tabId) reach the relay verbatim.
   replies.sendResult({ type: 'result', id: msg.id, ...reply }, ws);
 }
