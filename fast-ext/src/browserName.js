@@ -34,20 +34,30 @@ export function slugifyName(raw) {
     .replace(/-+$/, '');
 }
 
-// The relay's auto-assigned default for a fresh pairing (browser-1, browser-2…).
-export function isAutoName(name) {
-  return /^browser-\d+$/.test(String(name || ''));
-}
-
-// A sensible pre-fill: the device kind, made unique against the account's
-// other browsers (chromebook, chromebook-2, …).
-export function suggestName(devices) {
-  const p = String(navigator.userAgentData?.platform || navigator.platform || '').toLowerCase();
-  const base = /cros|chrome ?os/.test(p) ? 'chromebook'
+// The default name a browser pairs with: the device kind. The relay makes it unique
+// (mac, mac-2, …). It is only a suggestion: until the user saves a name, the
+// onboarding and options pages treat it as unnamed and ask for one.
+const DEFAULT_BASES = ['chromebook', 'windows-pc', 'mac', 'linux-pc', 'my-browser'];
+export function defaultBaseName() {
+  let p = '';
+  try { p = String(navigator.userAgentData?.platform || navigator.platform || '').toLowerCase(); } catch {}
+  return /cros|chrome ?os/.test(p) ? 'chromebook'
     : /win/.test(p) ? 'windows-pc'
     : /mac/.test(p) ? 'mac'
     : /linux/.test(p) ? 'linux-pc'
     : 'my-browser';
+}
+
+// Not yet named by the user: the relay's generic browser-N, or a device-kind default.
+export function isAutoName(name) {
+  const n = String(name || '');
+  return /^browser-\d+$/.test(n) || DEFAULT_BASES.some((b) => n === b || new RegExp(`^${b}-\\d+$`).test(n));
+}
+
+// A pre-fill for the name box: the device kind, made unique against the account's
+// other browsers (chromebook, chromebook-2, …).
+export function suggestName(devices) {
+  const base = defaultBaseName();
   const taken = new Set((devices || []).filter((d) => !d.self).map((d) => d.name));
   if (!taken.has(base)) return base;
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;

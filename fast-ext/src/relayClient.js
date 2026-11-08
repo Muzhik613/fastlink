@@ -30,6 +30,7 @@
 
 import { createTabQueue } from './tabQueue.js';
 import { createReplySender } from './replySender.js';
+import { defaultBaseName } from './browserName.js';
 
 const RECONNECT_ALARM = 'fastlink-relay-reconnect';
 const PING_MS = 20_000;
@@ -320,7 +321,7 @@ export async function claimPairingCode(code, relayBase) {
     res = await fetch(`${base}/pair/claim`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ code: clean, label: deviceLabel() }),
+      body: JSON.stringify({ code: clean, label: defaultBaseName() }),
     });
   } catch (e) {
     throw new Error(`Could not reach the relay at ${base} (${e?.message || e}).`);
@@ -366,7 +367,7 @@ export async function authorizeViaWebAuthFlow(relayBase) {
   const url = `${base}/ext/authorize`
     + `?redirect_uri=${encodeURIComponent(redirectUri)}`
     + `&state=${encodeURIComponent(state)}`
-    + `&label=${encodeURIComponent(deviceLabel())}`;
+    + `&label=${encodeURIComponent(defaultBaseName())}`;
 
   let ret;
   try {
@@ -431,7 +432,7 @@ export async function authorizeViaTabPoll(relayBase) {
   const url = `${base}/ext/authorize`
     + `?redirect_uri=${encodeURIComponent(redirectUri)}`
     + `&state=${encodeURIComponent(randomState())}`
-    + `&label=${encodeURIComponent(deviceLabel())}`
+    + `&label=${encodeURIComponent(defaultBaseName())}`
     + `&poll=${encodeURIComponent(pollId)}`;
 
   let tab;
@@ -534,9 +535,3 @@ function normalizeCode(code) {
   return String(code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
-function deviceLabel() {
-  let ua = '';
-  try { ua = navigator.userAgent || ''; } catch {}
-  const browser = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : 'Browser';
-  return `FastLink ${browser}`;
-}
