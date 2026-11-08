@@ -100,7 +100,11 @@ test('a redirect off the allowlist never returns page content', async () => {
   assert.ok(!JSON.stringify(r).includes('PAGE CONTENT'));
 });
 
-test('set_allowlist is a sealed setting; the stored lock survives a reload', async () => {
+test('sealed set_allowlist: removing is allowed, adding needs the owner (remoteAdd)', async () => {
+  const add = await open(await L.handleSealed(await req('set_allowlist', { allowlist: ['www.bank.example', 'new.bank.example'] }), run, target));
+  assert.equal(add.code, 'not_allowed');
+  assert.deepEqual(L.currentAllowlist(), ['www.bank.example', '*.mail.example']);
+  await L.setAllowlist(L.currentAllowlist(), { remoteAdd: true });   // owner allows adding
   const r = await open(await L.handleSealed(await req('set_allowlist', { allowlist: ['https://new.bank.example/login', 'junk'] }), run, target));
   assert.deepEqual(r.result.allowlist, ['new.bank.example']);
   await L.loadLock();

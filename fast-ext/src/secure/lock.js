@@ -1,14 +1,15 @@
 // lock.js — the secure build's lock: which helper may drive this browser (the holder
 // of the lock key) and which sites it may use (the allowlist). Both are SETTINGS: the
-// owner changes them in the options page, and the driving helper can change the
-// allowlist with a sealed `set_allowlist` call. Nothing here needs a new build.
+// owner changes them in the options page. The driving helper may REMOVE sites with a
+// sealed `set_allowlist` call; it may add sites only if the owner allowed that in the
+// options (`remoteAdd`). Nothing here needs a new build.
 //
 // Fixed behaviour in the secure build (SECURE_BUILD, ./build.js — checked by the callers,
 // not here): every call must be sealed with the lock key. Unsealed calls, and all calls
 // before a lock is set, are refused. Format: ./sealed.js. Owner notes: ./README.md.
 import { deriveKeys, seal, unseal } from './sealed.js';
 
-const STORE_KEY = 'fastlink.lock';        // chrome.storage.local: { code, allowlist[], seen[] }
+const STORE_KEY = 'fastlink.lock';        // chrome.storage.local: { code, allowlist[], remoteAdd, seen[] }
 export const MAX_SKEW_MS = 60_000;        // a sealed request older/newer than this is refused
 // Replay window: the last SEEN_MAX request numbers. A number already seen, or below the
 // window, is refused; numbers may arrive out of order (two scripts driving at once).
@@ -19,7 +20,7 @@ const NO_PAGE = new Set(['fast_list', 'fast_switch', 'fast_close']);
 // Actions whose `url` argument is a navigation target.
 const NAVIGATES = new Set(['fast_nav', 'fast_tab']);
 
-let state = null;   // { keys, allowlist, seen } while locked, else null
+let state = null;   // { keys, allowlist, remoteAdd, seen } while locked, else null
 
 // --- allowlist ---------------------------------------------------------------
 
@@ -57,30 +58,39 @@ export function urlAllowed(url, allowlist) {
 export function isLocked() { return !!state; }
 export function lockKeyId() { return state ? state.keys.keyId : null; }
 export function currentAllowlist() { return state ? [...state.allowlist] : []; }
+export function remoteAddAllowed() { return !!state?.remoteAdd; }
 
 export async function loadLock() {
   const saved = (await chrome.storage.local.get(STORE_KEY))[STORE_KEY];
   if (!saved?.code) { state = null; return; }
   try {
-    state = { keys: await deriveKeys(saved.code), allowlist: normalizeAllowlist(saved.allowlist), seen: Array.isArray(saved.seen) ? saved.seen.filter(Number.isSafeInteger) : [] };
+    state = { keys: await deriveKeys(saved.code), allowlist: normalizeAllowlist(saved.allowlist), remoteAdd: saved.remoteAdd === true, seen: Array.isArray(saved.seen) ? saved.seen.filter(Number.isSafeInteger) : [] };
   } catch { state = null; }
 }
 
 // Options page: set (or replace) the lock. A new code starts a new replay window.
-export async function setLock(code, allowlist) {
+export async function setLock(code, allowlist, { remoteAdd = false } = {}) {
   const keys = await deriveKeys(code);   // validates the code
   const list = normalizeAllowlist(allowlist);
-  await chrome.storage.local.set({ [STORE_KEY]: { code: String(code).trim(), allowlist: list, seen: [] } });
-  state = { keys, allowlist: list, seen: [] };
+  await chrome.storage.local.set({ [STORE_KEY]: { code: String(code).trim(), allowlist: list, remoteAdd: !!remoteAdd, seen: [] } });
+  state = { keys, allowlist: list, remoteAdd: !!remoteAdd, seen: [] };
   return { keyId: keys.keyId, allowlist: list };
 }
 
-export async function setAllowlist(allowlist) {
+// Owner (options page): any list, and whether the driving machine may add sites.
+// Driving machine (sealed set_allowlist, `remote`): may only remove sites unless remoteAdd.
+export async function setAllowlist(allowlist, { remote = false, remoteAdd } = {}) {
   if (!state) throw new Error('not locked');
-  const saved = (await chrome.storage.local.get(STORE_KEY))[STORE_KEY];
   const list = normalizeAllowlist(allowlist);
-  await chrome.storage.local.set({ [STORE_KEY]: { ...saved, allowlist: list } });
+  if (remote && !state.remoteAdd) {
+    const added = list.filter((e) => !state.allowlist.includes(e));
+    if (added.length) throw new Error(`adding sites (${added.join(', ')}) needs the owner: FastLink options, or allow it there`);
+  }
+  const saved = (await chrome.storage.local.get(STORE_KEY))[STORE_KEY];
+  const flag = remote || remoteAdd === undefined ? state.remoteAdd : !!remoteAdd;
+  await chrome.storage.local.set({ [STORE_KEY]: { ...saved, allowlist: list, remoteAdd: flag } });
   state.allowlist = list;
+  state.remoteAdd = flag;
   return list;
 }
 
@@ -147,7 +157,7 @@ export async function handleSealed(frame, run, targetTabId) {
 
   let reply;
   if (action === 'set_allowlist') {
-    reply = { result: { allowlist: await setAllowlist(args.allowlist) } };
+    try { reply = { result: { allowlist: await setAllowlist(args.allowlist, { remote: true }) } }; } catch (e) { reply = { error: e.message, code: 'not_allowed' }; }
   } else if (action === 'get_allowlist') {
     reply = { result: { allowlist: currentAllowlist() } };
   } else if (typeof action !== 'string' || !action) {
