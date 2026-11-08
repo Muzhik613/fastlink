@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-08 — extension 0.4.11 + helper: fast_tab no longer moves another session's target (bug #21)
+- **What:** `openTab` treats `scoped:true` like a call that carries its own `tabId`: the new tab does not become the browser's global target and no window is focused. The Claude Code helper sends `scoped:true` on every `fast_tab`, and now shows `tabId` in every tool schema (never required; omitted = this session's tab).
+- **Why:** two agents on one browser (win1, 11-08): agent A's `fast_tab` silently pinned A's new tab as the target, so agent B's untargeted `fast_nav` landed in A's tab. The helper also hid `tabId`, so an agent could not name a tab explicitly.
+- **Watch out:** connectors (claude.ai) that don't send `scoped` keep the old behaviour (fast_tab pins the new tab), which their single-agent flows rely on.
+
 ## 2026-11-08 — extension 0.4.10 + relay: browser names
 - **What:** a new browser pairs as its device kind (mac, windows-pc, linux-pc, chromebook; relay adds -2…), never "FastLink Chrome" → fastlinkchrome; such defaults count as unnamed and the name box starts empty with a placeholder. Generic name examples. Onboarding step 3 "Use it from your AI" per client (Claude Code one-liner, claude.ai, others). Relay `renameDevice`: a name held by an OFFLINE browser of the account returns `name_taken_offline`; with `replace:true` that stale entry is revoked and this browser takes the name (never from an online browser).
 - **Why:** removing + reloading an unpacked extension wipes its storage, so the same browser re-pairs as a new device and its old name was "taken" (mac1, 11-08).

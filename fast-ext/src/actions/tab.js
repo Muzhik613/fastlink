@@ -111,14 +111,15 @@ async function settleLoaded(tabId, waitMs, askedUrl) {
   }
 }
 
-// A call carrying its own `tabId` (a per-session client that tracks "my tab",
-// PIN-REDESIGN §3) is scoped: the new tab opens in that tab's window, the global
-// target pin is left alone and no window is focused — the caller learns the new
-// tab from the result's `tabId`. Unscoped calls pin the new tab and focus it.
-async function openTab({ url, background, waitMs, tabId: callTabId }) {
-  if (typeof callTabId === 'number') {
+// A SCOPED call — one carrying its own `tabId`, or `scoped:true` (the per-session helper
+// always sends it: PIN-REDESIGN §3, bug #21) — leaves the browser's global target alone
+// and focuses no window: the caller learns the new tab from the result's `tabId`, so a
+// second session's untargeted calls can't land in it. With a `tabId` the new tab opens in
+// that tab's window. Unscoped calls (connectors that rely on the target) pin it and focus it.
+async function openTab({ url, background, waitMs, tabId: callTabId, scoped }) {
+  if (typeof callTabId === 'number' || scoped === true) {
     let windowId;
-    try { windowId = (await chrome.tabs.get(callTabId)).windowId; } catch {}
+    if (typeof callTabId === 'number') { try { windowId = (await chrome.tabs.get(callTabId)).windowId; } catch {} }
     const tab = await chrome.tabs.create({ url, active: !background, ...(windowId !== undefined ? { windowId } : {}) });
     const landed = await settleLoaded(tab.id, waitMs, url);
     return { id: tab.id, tabId: tab.id, url: landed.url || tab.pendingUrl || tab.url, ...(landed.redirected.length ? { redirected: landed.redirected } : {}) };

@@ -145,7 +145,8 @@ test('initialize forwards with the helper clientInfo; tools/list hides routing a
   const { tools } = (await h.rpc('tools/list', {})).result;
   assert.equal(sessionSeen.at(-1), 'sess-1', 'keeps the relay Mcp-Session-Id');
   const byName = Object.fromEntries(tools.map((x) => [x.name, x]));
-  assert.deepEqual(Object.keys(byName.fast_snapshot.inputSchema.properties), ['depth']);
+  assert.deepEqual(Object.keys(byName.fast_snapshot.inputSchema.properties), ['tabId', 'depth'], 'tabId visible (bug #21), browser hidden');
+  assert.match(byName.fast_snapshot.inputSchema.properties.tabId.description, /this session/);
   assert.deepEqual(byName.fast_snapshot.inputSchema.required, []);
   assert.ok(!('browser' in byName.fast_status.inputSchema.properties));
   assert.ok('tabId' in byName.fast_switch.inputSchema.properties, 'fast_switch keeps its own tabId');
@@ -165,7 +166,7 @@ test('pin, auto, and myTab learn/forget', async (t) => {
 
   // fast_tab result teaches the default browser's tab.
   const opened = h.json(await h.call('fast_tab', { url: 'https://a.test' }));
-  assert.deepEqual(calls.at(-1).arguments, { url: 'https://a.test' }, 'fast_tab never gets a tabId');
+  assert.deepEqual(calls.at(-1).arguments, { url: 'https://a.test', scoped: true }, 'fast_tab: no tabId, always scoped (never moves the shared target)');
   await h.call('fast_snapshot');
   assert.deepEqual(calls.at(-1).arguments, { tabId: opened.tabId });
 

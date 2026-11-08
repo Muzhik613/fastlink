@@ -55,12 +55,18 @@ function resultJson(result) {
 export function stripRoutingArgs(tool) {
   const schema = tool.inputSchema;
   if (!schema?.properties) return tool;
-  const drop = NATIVE_TAB_ARG.has(tool.name) ? ['browser'] : ['browser', 'tabId'];
-  if (!drop.some((k) => k in schema.properties)) return tool;
+  // `tabId` stays visible: a session may name any tab explicitly (bug #21); when it
+  // doesn't, its own tab is filled in below. `browser` is the helper's job (pin/hint).
+  const drop = ['browser'];
+  if (!drop.some((k) => k in schema.properties) && !('tabId' in schema.properties)) return tool;
   const properties = { ...schema.properties };
   for (const k of drop) delete properties[k];
+  if (properties.tabId && !NATIVE_TAB_ARG.has(tool.name)) {
+    properties.tabId = { ...properties.tabId, description: 'Tab id to act on (from fast_tab / fast_list). Omitted: the tab this session opened or switched to last.' };
+  }
   const out = { ...schema, properties };
-  if (Array.isArray(schema.required)) out.required = schema.required.filter((k) => !drop.includes(k));
+  // Never required: the helper fills `tabId` (this session's tab) when the model omits it.
+  if (Array.isArray(schema.required)) out.required = schema.required.filter((k) => !drop.includes(k) && k !== 'tabId');
   return { ...tool, inputSchema: out };
 }
 
@@ -166,6 +172,9 @@ export function createHelper({ loadAgent, pairCommand, lastBrowserStore = { get:
     if (args.browser == null && pin) args.browser = pin;
     if (args.browser == null && h) args.lastBrowser = h;
     const key = args.browser ?? h ?? '?';
+    // fast_tab is always scoped: the new tab becomes THIS session's tab (learned from the
+    // result) and never the browser's shared target, which other sessions rely on (bug #21).
+    if (name === 'fast_tab') args.scoped = true;
     let injectedTab = null;
     if (!NO_TAB.has(name) && args.tabId == null && myTab.has(key)) {
       injectedTab = myTab.get(key);
