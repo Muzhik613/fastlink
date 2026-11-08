@@ -51,22 +51,24 @@ function resultJson(result) {
   try { return JSON.parse(t); } catch { return null; }
 }
 
-// Hide the args the helper fills in itself.
+// Describe the routing args the helper fills in when they're omitted.
 export function stripRoutingArgs(tool) {
   const schema = tool.inputSchema;
   if (!schema?.properties) return tool;
-  // `tabId` stays visible: a session may name any tab explicitly (bug #21); when it
-  // doesn't, its own tab is filled in below. `browser` is the helper's job (pin/hint).
-  const drop = ['browser'];
-  if (!drop.some((k) => k in schema.properties) && !('tabId' in schema.properties)) return tool;
+  // `browser` and `tabId` stay visible (the helper replaces the direct relay connector, so
+  // a session can still name any browser or tab per call; bug #21). When omitted, the
+  // helper fills them: this session's pinned / last-used browser, and its own tab.
+  if (!('browser' in schema.properties) && !('tabId' in schema.properties)) return tool;
   const properties = { ...schema.properties };
-  for (const k of drop) delete properties[k];
+  if (properties.browser) {
+    properties.browser = { ...properties.browser, description: 'Browser name to drive (see fast_status). Omitted: this session\'s browser (fast_profile), else the one it used last, else the only one online.' };
+  }
   if (properties.tabId && !NATIVE_TAB_ARG.has(tool.name)) {
     properties.tabId = { ...properties.tabId, description: 'Tab id to act on (from fast_tab / fast_list). Omitted: the tab this session opened or switched to last.' };
   }
   const out = { ...schema, properties };
   // Never required: the helper fills `tabId` (this session's tab) when the model omits it.
-  if (Array.isArray(schema.required)) out.required = schema.required.filter((k) => !drop.includes(k) && k !== 'tabId');
+  if (Array.isArray(schema.required)) out.required = schema.required.filter((k) => k !== 'browser' && k !== 'tabId');
   return { ...tool, inputSchema: out };
 }
 

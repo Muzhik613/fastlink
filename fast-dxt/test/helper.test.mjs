@@ -145,12 +145,11 @@ test('initialize forwards with the helper clientInfo; tools/list hides routing a
   const { tools } = (await h.rpc('tools/list', {})).result;
   assert.equal(sessionSeen.at(-1), 'sess-1', 'keeps the relay Mcp-Session-Id');
   const byName = Object.fromEntries(tools.map((x) => [x.name, x]));
-  assert.deepEqual(Object.keys(byName.fast_snapshot.inputSchema.properties), ['tabId', 'depth'], 'tabId visible (bug #21), browser hidden');
+  assert.deepEqual(Object.keys(byName.fast_snapshot.inputSchema.properties), ['browser', 'tabId', 'depth'], 'browser and tabId visible (bug #21)');
+  assert.match(byName.fast_snapshot.inputSchema.properties.browser.description, /this session/);
   assert.match(byName.fast_snapshot.inputSchema.properties.tabId.description, /this session/);
   assert.deepEqual(byName.fast_snapshot.inputSchema.required, []);
-  assert.ok(!('browser' in byName.fast_status.inputSchema.properties));
   assert.ok('tabId' in byName.fast_switch.inputSchema.properties, 'fast_switch keeps its own tabId');
-  assert.ok(!('browser' in byName.fast_switch.inputSchema.properties));
   assert.equal(tools.filter((x) => x.name === 'fast_profile').length, 1);
   assert.match(byName.fast_profile.description, /auto/);
 });
