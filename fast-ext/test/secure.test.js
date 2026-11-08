@@ -137,6 +137,12 @@ test('fb#20: a new tab whose navigation has not committed (url "", pendingUrl al
   assert.equal(off.code, 'left_allowlist', 'a pending off-list destination is still caught');
   tabs.set(9, { url: 'about:blank' });
   assert.equal((await open(await call('fast_text', { tabId: 9 }))).code, 'not_ready');
+  // Fail closed outside that case: a page action whose tab ends blank or is gone after the call.
+  const blanker = async (action, args) => { tabs.set(1, { url: '' }); return { result: { text: 'X' }, tabId: args.tabId }; };
+  assert.equal((await open(await call('fast_text', {}, {}, blanker))).code, 'left_allowlist');
+  tabs.set(1, { url: 'https://www.bank.example/' });
+  const closer = async (action, args) => { tabs.delete(1); return { result: { text: 'X' }, tabId: args.tabId }; };
+  assert.equal((await open(await call('fast_text', {}, {}, closer))).code, 'left_allowlist');
 });
 
 test('a redirect off the allowlist never returns page content', async () => {

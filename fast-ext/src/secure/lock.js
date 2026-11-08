@@ -153,7 +153,7 @@ export function refuseUnsealed() {
 // tab has url '' (or about:blank) until its first navigation commits.
 const isBlank = (u) => !u || u === 'about:blank';
 async function tabState(tabId) {
-  try { const t = await chrome.tabs.get(tabId); return { url: t.url || '', pendingUrl: t.pendingUrl || '' }; } catch { return { url: '', pendingUrl: '' }; }
+  try { const t = await chrome.tabs.get(tabId); return { url: t.url || '', pendingUrl: t.pendingUrl || '' }; } catch { return { gone: true, url: '', pendingUrl: '' }; }
 }
 
 const offList = (st, urls) => urls.find((u) => !urlAllowed(u, st.allowlist));
@@ -199,11 +199,14 @@ async function afterRun(st, action, args, reply) {
   if (action === 'fast_close' || action === 'fast_list') return reply;
   const tabId = typeof reply?.tabId === 'number' ? reply.tabId : (typeof args.tabId === 'number' ? args.tabId : null);
   if (tabId == null) return reply;
-  // Blank URLs are skipped: a tab whose first navigation hasn't committed (fast_tab right
-  // after creating it) has shown nothing, so there is nothing to withhold. Its pending
-  // destination, and any committed page, must be on the allowlist.
-  const { url, pendingUrl } = await tabState(tabId);
-  const off = offList(st, [url, pendingUrl].filter((u) => !isBlank(u)));
+  // Fail closed: a tab that can't be read, or (except below) a blank one, can't be shown
+  // to be on the allowlist. The one exemption: fast_tab right after creating its tab,
+  // whose first navigation hasn't committed (url ''/about:blank): it has shown nothing, so
+  // only its pending destination is judged (fb#20).
+  const { gone, url, pendingUrl } = await tabState(tabId);
+  if (gone) return { error: 'could not verify the tab after the call (it is gone)', code: 'left_allowlist', tabId };
+  const urls = action === 'fast_tab' && isBlank(url) ? [pendingUrl].filter((u) => !isBlank(u)) : [url, ...(isBlank(pendingUrl) ? [] : [pendingUrl])];
+  const off = offList(st, urls);
   return off === undefined ? reply : { error: `left the allowlist: the tab is now on ${hostOf(off)}`, code: 'left_allowlist', tabId };
 }
 
