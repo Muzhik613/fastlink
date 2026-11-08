@@ -44,3 +44,4 @@ Thumbs.db
 *.bak.*
 release/build/
 dist/
+__pycache__/
