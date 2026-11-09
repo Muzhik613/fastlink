@@ -270,11 +270,11 @@ async function renderDebugger() {
   if (on) {
     pill.textContent = 'On'; pill.className = 'pill ok badge';
     btn.textContent = 'Disable advanced control'; btn.dataset.act = 'disable';
-    detail.textContent = 'Advanced control gives real mouse/keyboard input and background-tab capture through Chrome\'s debugger.';
+    detail.textContent = 'Advanced control uses Chrome\'s debugger input API for controls that don\'t respond to scripted events, and to screenshot background tabs.';
   } else {
     pill.textContent = 'Off'; pill.className = 'pill off badge';
     btn.textContent = 'Enable advanced control'; btn.dataset.act = 'enable';
-    detail.textContent = 'DOM-only mode — clicks/fills by selector still work. Enable for coordinate clicks/typing, scripts, and background-tab capture.';
+    detail.textContent = 'DOM-only mode — clicks/fills by selector still work. Enable for coordinate clicks/typing and background-tab screenshots.';
   }
 }
 
@@ -285,7 +285,7 @@ async function onToggleDebugger() {
     const enable = btn.dataset.act === 'enable';
     await chrome.storage.local.set({ [ADVANCED_CONTROL_KEY]: enable });
     showMsg(enable
-      ? 'Advanced control enabled — real mouse/keyboard input and background-tab capture are on.'
+      ? 'Advanced control enabled — debugger input and background-tab screenshots are on.'
       : 'Advanced control disabled — FastLink is back to DOM-only (selector clicks/fills still work).', 'ok');
   } catch (e) {
     showMsg(e?.message || String(e), 'err');
@@ -475,7 +475,7 @@ async function renderPermissions() {
   if (origins.length === 0) {
     const p = document.createElement('div');
     p.className = 'perm-empty';
-    p.textContent = 'No site decisions yet. They appear here as Claude touches sites, or add one below.';
+    p.textContent = 'No site rules yet. Sites without a rule are allowed; add one below to set it to Read-only or Block.';
     list.append(p);
     return;
   }

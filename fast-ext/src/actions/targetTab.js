@@ -1,11 +1,11 @@
 // Designated target tab.
 //
 // Problem: in the cloud-relay model the user watches the claude.ai chat tab
-// while Claude drives ANOTHER tab. If actions resolve their tab via
+// while the assistant drives ANOTHER tab. If actions resolve their tab via
 // chrome.tabs.query({active:true}), the moment focus snaps back to claude.ai
 // (which it does, repeatedly) every snapshot/action reads the WRONG tab.
 //
-// Fix: once Claude targets a tab (by id OR url match), we PIN that concrete
+// Fix: once the assistant targets a tab (by id OR url match), we PIN that concrete
 // tabId here. All subsequent snapshot/actions route to THAT id via the
 // chrome.tabs APIs — never falling back to the active tab — until the pin is
 // cleared or the tab is closed. The pin survives the active tab changing AND

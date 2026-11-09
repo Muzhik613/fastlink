@@ -1,6 +1,6 @@
-// lock.js — the secure build's lock (owner notes: ./README.md, format: ./sealed.js).
+// lock.js — the secure build's lock (owner notes: secure-only/README.md, format: ./sealed.js).
 //
-// Fixed behaviour in the secure build (SECURE_BUILD in ./build.js, checked by the callers):
+// Fixed behaviour in the secure build (wired in by ../callHooks.js, the secure version):
 // every call must be sealed with the lock key; unsealed calls, and all calls before a
 // lock is set, are refused.
 //

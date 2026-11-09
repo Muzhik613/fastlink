@@ -814,7 +814,7 @@ const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? pe
 // Yield the main thread for one macrotask so the page can paint / handle input
 // between work slices. MessageChannel is used (not setTimeout) because timers
 // are clamped to ≥1s in BACKGROUND tabs — which is exactly the relay case where
-// Claude drives a backgrounded tab — and requestAnimationFrame is paused there
+// The assistant drives a backgrounded tab — and requestAnimationFrame is paused there
 // entirely. MessageChannel postMessage is not throttled, so a heavy snapshot in
 // a background tab still progresses promptly. scheduler.yield() is preferred
 // when available (keeps us ahead of the line on re-entry).
@@ -1605,7 +1605,7 @@ const isEmptyFillable = (el, entry) => {
 // interactive controls + on-screen / above-the-fold elements come first and the
 // long tail (dozens of footer/nav links far down the page) comes last, then CAPS
 // to keep the payload small. A `truncated` count tells the model more exist;
-// fast_snapshot's `full`/`limit` args bypass the cap for the complete set.
+// fast_snapshot's `full`/`limit` args lift the cap for the complete set.
 const ITEM_CAP_DEFAULT    = 70;   // explicit fast_snapshot default
 const CONTENT_CAP_DEFAULT = 30;   // content text array default
 const AUTO_ITEM_CAP       = 20;   // action-result preview: the controls around the action, not the page
@@ -2913,7 +2913,7 @@ async function runPageAction(action, args) {
       }
       if (ariaHidden) out.push(`${ariaHidden}${more} match(es) sit under aria-hidden="true" — usually behind an active modal/overlay.`);
       if (offScreen) out.push(`${offScreen}${more} interactive match(es) have 0×0 / off-screen bounds. Try fast_scroll to bring them into view.`);
-      if (nonInteractiveHits) out.push(`${nonInteractiveHits}${more} non-interactive match(es) — fast_click only fires on buttons/links/inputs/[role]/[onclick]/etc. Use fast_evaluate to dispatch a click on a plain element if needed.`);
+      if (nonInteractiveHits) out.push(`${nonInteractiveHits}${more} non-interactive match(es) — fast_click only fires on buttons/links/inputs/[role]/[onclick]/etc. Use fast_click_xy on its coordinates if needed.`);
       if (stopped) out.push(`(diagnostic stopped early at ${examined} elements / ${DIAG_BUDGET_MS}ms — counts are partial.)`);
     }
     return out;
@@ -2956,7 +2956,7 @@ async function runPageAction(action, args) {
   }
 
   if (action === 'fast_key_press') {
-    // Untrusted DOM key events on the focused element (a real chord is fast_key).
+    // DOM key events on the focused element (a debugger-input chord is fast_key).
     // Returns what the key did: target, url change and a settled snapshot.
     const key = args.key;
     if (!key) return { error: 'key required' };
@@ -3991,7 +3991,7 @@ async function runPageAction(action, args) {
       }
       if (matches.length) break;
       // Not an index entry: an entry of the OPEN suggestion list (autocomplete
-      // rows on Google Maps) — commit it with a real mousedown/click sequence.
+      // rows on Google Maps) — commit it with a mousedown/click sequence.
       const sOpt = suggestionByText(args.text);
       if (sOpt) {
         const urlBefore0 = location.href;
@@ -4001,8 +4001,8 @@ async function runPageAction(action, args) {
           ...(sr ? { x: Math.round(sr.x + off0.ox + sr.width / 2), y: Math.round(sr.y + off0.oy + sr.height / 2), w: Math.round(sr.width), h: Math.round(sr.height) } : {}) };
         const how = await commitSuggestion(sOpt);
         if (!how.committed) {
-          // Synthetic events did not take: say so (never a false "clicked") and hand over the trusted path.
-          return { error: `suggestion "${clicked.text}" is on screen but the control did not accept a synthetic pick (still open, value unchanged). Nothing changed.`, suggestion: clicked, hint: `fast_click_xy at x:${clicked.x}, y:${clicked.y} (trusted click) commits it; or press the control's own search/go button` };
+          // The DOM events did not take: say so (never a false "clicked") and hand over the debugger-input path.
+          return { error: `suggestion "${clicked.text}" is on screen but the control did not accept a DOM pick (still open, value unchanged). Nothing changed.`, suggestion: clicked, hint: `fast_click_xy at x:${clicked.x}, y:${clicked.y} (debugger input) commits it; or press the control's own search/go button` };
         }
         const out0 = await withSnap({ clicked, fromSuggestions: true }, snap);
         const head0 = { clicked, fromSuggestions: true, via: how.via, url: location.href, urlChanged: location.href !== urlBefore0, value: maskIfPassword(sOpt.input, String(liveValueOf(sOpt.input) || '').slice(0, 200)) };

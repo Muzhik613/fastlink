@@ -4,10 +4,6 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>FastLink — Settings</title>
-  <!-- Brand fonts (match fastlink-site): Bricolage Grotesque + Hanken Grotesk + JetBrains Mono -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="src/theme.css" />
   <style>
     :root { color-scheme: dark; }
@@ -258,7 +254,7 @@
       </span>
       <div>
         <h1><span class="fl-wordmark">Fast<span class="lk">Link</span></span> Settings</h1>
-        <p class="lead">FastLink connects this browser to Claude through the cloud relay, so Claude can drive your own browser.</p>
+        <p class="lead">FastLink connects this browser to your AI assistant through the cloud relay, so the assistant can drive your own browser.</p>
       </div>
       <span id="version" class="ver"></span>
     </div>
@@ -288,24 +284,6 @@
         <button id="pause-btn" class="stop">⏸ Stop driving</button>
         <button id="disconnect-btn" class="ghost" style="display:none;">Disconnect relay</button>
       </div>
-    </div>
-
-      <!-- SECURE BUILD ONLY: the lock (src/secure/). Hidden in the normal extension. -->
-      <div class="card" id="lock-card" hidden>
-      <h2>Secure browser lock</h2>
-      <p class="desc">This is the secure FastLink build. It accepts only encrypted calls from the one machine that holds the lock code, and only on the sites listed below. The relay never sees the code, the commands or the pages.</p>
-      <p class="desc" id="lock-status"></p>
-      <label for="lock-code">Lock code (from <code>node fast-dxt/server/index.js lock &lt;browser&gt;</code> on the driving machine)</label>
-      <input type="password" id="lock-code" placeholder="43 characters; leave empty to keep the current one" autocomplete="off" spellcheck="false" />
-      <label for="lock-allow" style="margin-top:10px;">Allowed sites (one per line: <code>www.bank.com</code>, or <code>*.bank.com</code> for the site and its subdomains)</label>
-      <textarea id="lock-allow" rows="7" spellcheck="false" style="width:100%; font-family:monospace;"></textarea>
-      <label style="margin-top:8px; display:flex; gap:8px; align-items:center;"><input type="checkbox" id="lock-remote-add" style="width:auto;" /> Let the driving machine add allowed sites (it can always remove them)</label>
-      <label style="margin-top:4px; display:flex; gap:8px; align-items:center;"><input type="checkbox" id="lock-eval" style="width:auto;" /> Allow page JavaScript (fast_evaluate). Page scripts can send data to any site; allow it only if the driving scripts need it. It also needs Chrome's "Allow User Scripts" switch on FastLink's Details page.</label>
-      <div class="row" style="gap:8px; margin-top:10px;">
-        <button type="button" id="lock-save" class="primary">Save lock</button>
-        <button type="button" id="lock-clear">Unlock</button>
-      </div>
-      <div id="lock-msg" class="msg"></div>
     </div>
 
       <!-- 1b. PAIR -->
@@ -343,7 +321,7 @@
     </div>
 
       <!-- 1c. THIS BROWSER'S NAME — one unique name per browser, and that name
-           is what you hand Claude. -->
+           is what you tell the assistant. -->
       <div class="card" id="relay-name-card">
       <h2>This browser's name <span class="badge fine" style="font-weight:400;">cloud relay · multi-browser</span></h2>
       <p class="desc">Every paired browser gets its own name, so you can tell claude.ai (or any other chat) which one to drive. A chat that doesn't pick one drives the only browser online; with several online, Claude Code uses the one it used last, and claude.ai names one.</p>
@@ -368,7 +346,7 @@
       <!-- 3. ADVANCED CONTROL -->
       <div class="card" id="advanced-card">
       <h2>Advanced control <span id="dbg-pill" class="pill off badge">…</span></h2>
-      <p class="desc">FastLink works out of the box with DOM-based reading, clicking, and form-filling. <strong>Advanced control</strong> is an on/off setting (default on) that uses Chrome's debugger to send real mouse and keyboard input (for sites that ignore simulated clicks) and to <strong>capture tabs that aren't in front</strong> (so your assistant can work in a background tab while you stay on the chat). While it is attached, Chrome shows its "debugging this browser" bar. Turn it off to limit FastLink to DOM-based reading, clicking and form-filling.</p>
+      <p class="desc">FastLink works out of the box with DOM-based reading, clicking, and form-filling. <strong>Advanced control</strong> is an on/off setting (default on) that uses Chrome's debugger input API for controls that don't respond to scripted events (for example canvas-based editors and custom widgets), and to <strong>screenshot a tab that isn't in front</strong> (so your assistant can work in a background tab while you stay on the chat). While it is attached, Chrome shows its "debugging this browser" bar. Turn it off to limit FastLink to DOM-based reading, clicking and form-filling.</p>
       <p class="fine">This is a setting, not a Chrome permission grant — toggling it doesn't add or remove any browser permission.</p>
       <div class="row">
         <button id="dbg-btn" class="ghost">Enable advanced control</button>
@@ -379,10 +357,10 @@
       <!-- 4. NOTIFICATIONS -->
       <div class="card" id="notify-card">
       <h2>Notifications</h2>
-      <p class="desc">Get a desktop alert when Claude finishes a task or appears to be stuck, so you don't have to watch the tab.</p>
+      <p class="desc">Get a desktop alert when your assistant finishes a task or appears to be stuck, so you don't have to watch the tab.</p>
       <label class="toggle-row">
         <input type="checkbox" id="notify-toggle" />
-        <span class="t-text">Desktop alerts when Claude finishes or gets stuck
+        <span class="t-text">Desktop alerts when your assistant finishes or gets stuck
           <span class="t-sub">Same setting as the toolbar popup's toggle.</span>
         </span>
       </label>
@@ -396,13 +374,13 @@
       <!-- 6. SITE PERMISSIONS -->
       <div class="card" id="perm-card">
       <h2>Site permissions</h2>
-      <p class="desc">Control what Claude can do on each website when it drives this browser from claude.ai.</p>
+      <p class="desc">Control what your assistant can do on each website when it drives this browser from claude.ai or another web chat.</p>
       <ul class="unlocks">
-        <li><b>Allow</b> — Claude can read the page and act on it (click, type, navigate).</li>
-        <li><b>Read-only</b> — Claude can read the page but not click or type.</li>
-        <li><b>Block</b> — Claude can't see or touch the site.</li>
+        <li><b>Allow</b> — the assistant can read the page and act on it (click, type, navigate).</li>
+        <li><b>Read-only</b> — the assistant can read the page but not click or type.</li>
+        <li><b>Block</b> — the assistant can't see or touch the site.</li>
       </ul>
-      <p class="desc">Sites appear here automatically the first time Claude tries to use them (you'll get an Allow/Deny prompt), or add one yourself below. Removing a row (×) just forgets the choice — you'll be asked again next time.</p>
+      <p class="desc">Sites without a rule are allowed. Add a site below to set it to Allow, Read-only or Block. Removing a row (×) deletes the rule, so the site is allowed again.</p>
       <div id="perm-list" class="perm-list"></div>
       <div class="perm-add">
         <input id="perm-origin" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false" />
@@ -419,7 +397,7 @@
       <!-- 7. ABOUT -->
       <div class="card" id="about-card">
       <h2>About</h2>
-      <p class="desc">FastLink <span id="about-version">—</span> — bridges Claude to your active Chrome tab.</p>
+      <p class="desc">FastLink <span id="about-version">—</span> — connects your AI assistant to your Chrome tabs.</p>
       <div class="row">
         <button id="reload-btn" class="ghost">Reload extension</button>
       </div>
@@ -432,6 +410,5 @@
   </div>
 
   <script type="module" src="options.js"></script>
-  <script type="module" src="src/secure/optionsLock.js"></script>
 </body>
 </html>

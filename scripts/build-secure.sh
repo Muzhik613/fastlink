@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# build-secure.sh — the secure FastLink build (one locked browser; src/secure/README.md).
+# build-secure.sh — the secure FastLink build (one locked browser; fast-ext/secure-only/README.md).
 # Copies the WORKING TREE of fast-ext/ (so local edits are included) to dist/fastlink-secure/,
-# turns secure mode on, and removes update_url so that browser never auto-updates.
+# copies fast-ext/secure-only/src/ over its src/ (the secure callHooks.js replaces the normal one;
+# adds the lock, the sealed format, fast_evaluate and the options card), and removes update_url
+# so that browser never auto-updates.
 # The extension id is unchanged (same manifest key), so loading it in place keeps storage.
 # Usage: scripts/build-secure.sh            → dist/fastlink-secure/  (load unpacked / push to the VM)
 set -euo pipefail
@@ -11,12 +13,13 @@ OUT="$ROOT/dist/fastlink-secure"
 (cd "$ROOT/fast-ext" && node --test test/*.test.js >/dev/null) || { echo "fast-ext tests failed; not building"; exit 1; }
 
 rm -rf "$OUT" && mkdir -p "$OUT"
-(cd "$ROOT/fast-ext" && tar cf - --exclude=./test --exclude=./store --exclude=./scripts --exclude=./dist --exclude=./node_modules --exclude='*.md' .) | tar xf - -C "$OUT"
+(cd "$ROOT/fast-ext" && tar cf - --exclude=./test --exclude=./store --exclude=./scripts --exclude=./dist --exclude=./secure-only --exclude=./node_modules --exclude='*.md' .) | tar xf - -C "$OUT"
 
-# Page JavaScript: the real fast_evaluate (the normal tree ships a stub without it).
-cp "$ROOT/fast-ext/secure-only/evaluate.js" "$OUT/src/actions/evaluate.js" && rm -rf "$OUT/secure-only"
-sed -i.bak 's/^export const SECURE_BUILD = false;$/export const SECURE_BUILD = true;/' "$OUT/src/secure/build.js" && rm -f "$OUT/src/secure/build.js.bak"
-grep -q '^export const SECURE_BUILD = true;$' "$OUT/src/secure/build.js" || { echo "could not turn secure mode on"; exit 1; }
+# The secure-only code over the normal tree, and the lock card's script on the options page.
+cp -R "$ROOT/fast-ext/secure-only/src/." "$OUT/src/"
+grep -q 'handleSealed' "$OUT/src/callHooks.js" || { echo "secure callHooks.js not installed"; exit 1; }
+sed -i 's#^</body>$#  <script type="module" src="src/secure/optionsLock.js"></script>\n</body>#' "$OUT/options.html"
+grep -q 'src/secure/optionsLock.js' "$OUT/options.html" || { echo "could not add the lock card to options.html"; exit 1; }
 
 node -e '
 const f = process.argv[1], fs = require("fs"), m = JSON.parse(fs.readFileSync(f, "utf8"));

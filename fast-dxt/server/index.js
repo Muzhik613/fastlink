@@ -8,7 +8,7 @@
 //   node index.js machines                         list this account's paired machines
 //   node index.js revoke <id|name>                 revoke another machine (e.g. a lost laptop)
 //   node index.js lock <browser> [--replace] [--quiet]
-//                                                  make the lock code for a secure browser (fast-ext/src/secure/);
+//                                                  make the lock code for a secure browser (fast-ext/secure-only/);
 //                                                  --quiet saves it without printing it (remote/automated setup)
 //   node index.js unlock <browser>                 forget this machine's lock code for it
 import { createInterface } from 'node:readline';

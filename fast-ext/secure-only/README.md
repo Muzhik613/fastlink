@@ -1,7 +1,8 @@
 # Secure build: owner notes
 
-A special FastLink build for ONE browser that handles sensitive sites. The normal extension
-ships these files too, but turned off (`build.js`: `SECURE_BUILD = false`).
+A special FastLink build for ONE browser that handles sensitive sites. Everything here lives
+only in `fast-ext/secure-only/`: the normal extension (CRX, feed, Web Store zip) contains none
+of it. `scripts/build-secure.sh` copies `secure-only/src/` over the normal tree.
 
 ## What is fixed, and what is a setting
 
@@ -14,19 +15,24 @@ ships these files too, but turned off (`build.js`: `SECURE_BUILD = false`).
 | Each request carries a deadline; a late request is refused, not run. A timeout means "outcome unknown"; retrying is safe. | |
 | `fast_batch` is not available (send steps one by one); `fast_switch`/`fast_close` need a `tabId`; `fast_list` lists allowed tabs only | |
 
-## Files
+## Files (`secure-only/src/`, copied over the normal `src/`)
 
-- `sealed.js`: the format. AES-256-GCM, keys from HKDF-SHA256 over the 32-byte lock key.
+- `callHooks.js`: replaces the normal `src/callHooks.js` (same exports): sealed calls only,
+  the lock state in the hello, no call details in the on-page panel, and `fast_evaluate`.
+- `secure/sealed.js`: the format. AES-256-GCM, keys from HKDF-SHA256 over the 32-byte lock key.
   - Request: `{seq, ts, action, args}`. Response: the tool's normal reply.
   - The Python twin is `fast-dxt/server/fastlink_call.py` (`Sealer`).
   - If you change one side, change both: `fast-dxt/test/sealed.test.mjs` checks them
     against each other.
-- `lock.js`: the lock state and the call gate.
+- `secure/lock.js`: the lock state and the call gate.
   - replay window: the last 64 request numbers, plus a ±60 s clock check;
   - allowlist checks, before the call and again after it (redirects);
   - `set_allowlist` and `get_allowlist`.
-- `optionsLock.js`: the "Secure browser lock" card on the options page.
-- `build.js`: the build flag.
+- `secure/optionsLock.js`: the "Secure browser lock" card on the options page (the build adds
+  its script tag to `options.html`; it inserts the card itself).
+- `secure/evaluate.js`: `fast_evaluate` (page JavaScript via `chrome.userScripts.execute`; the
+  build adds the `userScripts` permission).
+- Tests: `fast-ext/test/secure.test.js`.
 
 ## Build, install, change
 

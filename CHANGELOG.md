@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-09 — extension 0.4.14: secure build fully out of the normal tree; neutral wording; no web fonts
+- **What:** all secure-build code (lock, sealed format, options lock card, `fast_evaluate`) moved to `fast-ext/secure-only/src/` (owner notes `secure-only/README.md`, tests `fast-ext/test/secure.test.js`). The normal tree has one neutral hook module, `src/callHooks.js` (run every relay call as sent, no hello extras, show call details, no extra actions); `scripts/build-secure.sh` copies `secure-only/src/` over `src/` (the secure `callHooks.js` replaces it) and adds the lock card's script to `options.html`. `src/secure/build.js` (`SECURE_BUILD`) and the `src/actions/evaluate.js` stub are gone. UI says "your assistant" instead of "Claude" except where it names claude.ai or Claude Code. Advanced-control copy describes Chrome's debugger input API neutrally. Google Fonts removed (system font stacks in `src/theme.css`): the extension contacts only the relay. `src/claudeScrape.js` renamed `src/claudeReply.js`; the dead `src/transcriptOverlay.js` deleted. Options → Sites no longer promises a first-use Allow/Deny prompt (sites without a rule are allowed, the relay default). Web Store zip: `fast-ext/scripts/package.sh`.
+- **Why:** Web Store review: nothing in the store package should read as hidden functionality, encrypted command channels, page-JS evaluation, anti-bot evasion or Anthropic affiliation.
+- **Watch out:** `fast-dxt/server/lockFile.js` (`SEALED_JS`) and `fast-dxt/test/sealed.test.mjs` now import `fast-ext/secure-only/src/secure/sealed.js`. fast_click's `_debug.phases` stays (fast-runner logs it).
+
 ## 2026-11-08 — extension 0.4.13: no page-JavaScript code in the normal package
 - **What:** `src/actions/evaluate.js` is a stub; the real one lives in `fast-ext/secure-only/evaluate.js`, which only `scripts/build-secure.sh` installs. The normal CRX, the feed and the Web Store zip contain no `chrome.userScripts` code at all.
 - **Why:** 0.4.12 already gated it off, but the store's "no remote code" answer should be true of the package itself.

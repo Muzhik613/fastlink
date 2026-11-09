@@ -1,8 +1,7 @@
 import { handleTabAction, getTargetTab, getTargetTabId } from './tab.js';
-import { SECURE_BUILD } from '../secure/build.js';
+import { showCallDetails, extraActions } from '../callHooks.js';
 import { takeScreenshot }  from './screenshot.js';
 import { getText }         from './text.js';
-import { evaluate }        from './evaluate.js';
 import { clickXY, typeText } from './input.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
@@ -121,7 +120,7 @@ const SELF_TARGETING = new Set([...TAB_ACTIONS, 'fast_screenshot']);
 export async function dispatchAction(action, rawArgs) {
   let args = rawArgs || {};
   // Hard stop: the user paused driving from the popup. Refuse every action with
-  // a clear, Claude-relayable message until they resume. Checked before the
+  // a clear, assistant-relayable message until they resume. Checked before the
   // action runs so nothing touches the page while paused.
   if (drivingPaused) {
     return await stampTab({ error: 'Paused by the user — driving is stopped. Resume it from the FastLink popup to continue.' }, args.tabId);
@@ -135,8 +134,8 @@ export async function dispatchAction(action, rawArgs) {
     const id = await getTargetTabId();
     if (typeof id === 'number') args = { ...args, tabId: id };
   }
-  // A sealed call (secure build) carries the caller's deadline: if it only gets here after
-  // it (it waited in the tab queue), the caller has given up and may retry, so don't run it.
+  // A call may carry the caller's deadline (notAfter): if it only gets here after it (it
+  // waited in the tab queue), the caller has given up and may retry, so don't run it.
   if ('notAfter' in args) {
     const { notAfter, ...rest } = args;
     args = rest;
@@ -150,8 +149,7 @@ export async function dispatchAction(action, rawArgs) {
   }
   const evtId = ++__evtSeq;
   const overlayTab = typeof args.tabId === 'number' ? args.tabId : await getTargetTabId();
-  // The panel lives in the page's DOM; the secure build never puts call arguments there.
-  notifyOverlay(overlayTab, { phase: 'start', id: evtId, action, args: SECURE_BUILD ? undefined : args });
+  notifyOverlay(overlayTab, { phase: 'start', id: evtId, action, args: showCallDetails ? args : undefined });
   try {
     // card numbers are masked to their last 4 digits in every result (frames.js)
     const tRun = Date.now();
@@ -161,7 +159,7 @@ export async function dispatchAction(action, rawArgs) {
     if (r && typeof r === 'object' && r._debug && typeof r._debug === 'object') r._debug = { ...r._debug, swTotalMs: Date.now() - tRun };
     // Pass error payloads through whole — diagnostics/available/etc. must survive to the LLM.
     if (r && typeof r === 'object' && 'error' in r && r.error !== undefined) {
-      notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: SECURE_BUILD ? 'failed' : r.error });
+      notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: showCallDetails ? r.error : 'failed' });
       return await stampTab(r, actedTabId(r, args));
     }
     let result = r;
@@ -181,7 +179,7 @@ export async function dispatchAction(action, rawArgs) {
     return await stampTab({ result }, actedTabId(result, args));
   } catch (e) {
     const msg = e?.message || String(e);
-    notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: SECURE_BUILD ? 'failed' : msg });
+    notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: showCallDetails ? msg : 'failed' });
     return await stampTab({ error: msg }, args.tabId);
   }
 }
@@ -215,9 +213,7 @@ async function runOne(action, args) {
   if (TAB_ACTIONS.has(action))      return handleTabAction(action, args);
   if (action === 'fast_screenshot') return takeScreenshot(args);
   if (action === 'fast_text')       return getText(args);
-  // Page JavaScript exists only in the secure build (one owner-controlled browser; it adds
-  // the userScripts permission). The normal/store extension has no such tool.
-  if (action === 'fast_evaluate' && SECURE_BUILD) return evaluate(args);
+  if (Object.hasOwn(extraActions, action)) return extraActions[action](args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
   if (action === 'fast_frame_read') return frameRead(args);
@@ -386,7 +382,7 @@ async function probePageState(tabId, frameId = 0) {
 async function injectPageAction(action, args, frameId = 0) {
   // Resolve the tab to act on through the single source of truth (the call's own
   // tabId, else the pinned target if set & alive, else the active tab) and inject
-  // by explicit id, so snapshots/clicks/fills land on the tab Claude is driving
+  // by explicit id, so snapshots/clicks/fills land on the tab the assistant is driving
   // even when the user's focus has snapped back to another tab.
   const target = await getTargetTab(args?.tabId);
   if (!target?.id) return { error: typeof args?.tabId === 'number' ? missingTabError(args.tabId) : 'No tab to act on (no pinned target and no active tab).' };
@@ -406,7 +402,7 @@ async function injectPageAction(action, args, frameId = 0) {
     if (ok) result = await runBridge(target.id, action, args, frameId);
     // Still not attached (restricted URL, crashed renderer, inject blocked) →
     // return a DISTINCT, machine-readable error instead of a silent empty
-    // result, so Claude/the relay can tell the user to reload the tab.
+    // result, so the assistant/the relay can tell the user to reload the tab.
     if (!ok || (result && result.__fastlinkMissing)) {
       return {
         error: 'content_script_not_live',

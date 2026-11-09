@@ -31,27 +31,14 @@
 import { createTabQueue } from './tabQueue.js';
 import { createReplySender } from './replySender.js';
 import { defaultBaseName } from './browserName.js';
-import { SECURE_BUILD } from './secure/build.js';
-import { loadLock, isLocked, lockKeyId, handleSealed, refuseUnsealed, STORE_KEY as LOCK_STORE } from './secure/lock.js';
+import { initCallHooks, whenReady, helloFields, runCall } from './callHooks.js';
 
-// Secure build: the lock is read once at start and again whenever the options page (or a
-// sealed set_allowlist) changes it; the hello tells the relay whether this browser is locked.
-// The target-tab resolver background.js passes in (the same one unsealed calls use).
+// The target-tab resolver background.js passes in (the same one every call uses).
 let resolveTarget = async () => null;
-let lockReady = SECURE_BUILD ? loadLock() : Promise.resolve();
-if (SECURE_BUILD) {
-  try {
-    chrome.storage.onChanged.addListener((changes, area) => {
-      // Any change to the lock settings (options page or a sealed set_allowlist) reloads them.
-      if (area !== 'local' || !changes[LOCK_STORE]) return;
-      lockReady = loadLock().then(() => { if (socket && socket.readyState === WebSocket.OPEN) sendHello(socket); });
-    });
-  } catch {}
-}
+initCallHooks(() => { if (socket && socket.readyState === WebSocket.OPEN) sendHello(socket); });
 
 function sendHello(ws) {
-  const lock = SECURE_BUILD ? { secure: true, locked: isLocked(), keyId: lockKeyId() } : {};
-  try { ws.send(JSON.stringify({ type: 'hello', version: VERSION, drivingPaused, ...lock })); } catch {}
+  try { ws.send(JSON.stringify({ type: 'hello', version: VERSION, drivingPaused, ...helloFields() })); } catch {}
 }
 
 const RECONNECT_ALARM = 'fastlink-relay-reconnect';
@@ -164,7 +151,7 @@ async function connect() {
   ws.onopen = () => {
     backoffMs = BACKOFF_MIN_MS;                       // healthy connection — reset backoff
     lastRxTs = Date.now();
-    if (SECURE_BUILD) lockReady.then(() => sendHello(ws)); else sendHello(ws);
+    whenReady(() => sendHello(ws));
     replies.flush();                                  // results finished while no socket was open
     startPingLoop(ws);
     setBadgeForState('connected');
@@ -213,17 +200,7 @@ async function onMessage(ws, e) {
     return;
   }
   if (msg.type !== 'call' || msg.id == null || !msg.action) return;   // events/hello/etc. — ignore inbound
-  let reply;
-  if (SECURE_BUILD) {
-    // Secure build: sealed calls only (src/secure/lock.js). The sealed reply carries no
-    // origin/tabId in clear, so the relay learns nothing about the page.
-    await lockReady;
-    reply = msg.action === 'fast_sealed'
-      ? await handleSealed(msg.args, (action, args) => queue.submit({ id: msg.id, action, args }), resolveTarget)
-      : refuseUnsealed();
-  } else {
-    reply = await queue.submit({ id: msg.id, action: msg.action, args: msg.args || {} });
-  }
+  const reply = await runCall(msg, (action, args) => queue.submit({ id: msg.id, action, args }), resolveTarget);
   // Spread reply so {result} or {error, ...extras} (plus origin/tabId) reach the relay verbatim.
   replies.sendResult({ type: 'result', id: msg.id, ...reply }, ws);
 }
@@ -281,7 +258,7 @@ function onAuthFailure() {
 // User-initiated hard disconnect (SAFETY N2 "Disconnect relay"). Stops dialing,
 // closes the socket, drops the keepalive alarm — claude.ai can no longer drive
 // this browser until the relay is re-enabled (background sets relayEnabled=false
-// and a reconnect re-evaluates the module with stopped reset). Distinct from
+// and a reconnect re-runs the module with stopped reset). Distinct from
 // onAuthFailure: no re-pair prompt, no stored error — this is intentional.
 export function stopRelay() {
   stopped = true;

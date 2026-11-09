@@ -3,12 +3,12 @@
  * spacing and shadow across every extension surface.
  *
  * Linked by the HTML pages: popup.html, onboarding.html, sidepanel.html
- * (relative path `src/theme.css`). Injected shadow-DOM overlays (src/overlay.js
- * and src/transcriptOverlay.js) build their CSS in JS and therefore INLINE the
+ * (relative path `src/theme.css`). The injected shadow-DOM overlay (src/overlay.js)
+ * builds its CSS in JS and therefore INLINES the
  * same dark-palette hex values — keep those literals in sync with the DARK
  * block below. options.html/options.js should adopt these same variables.
  *
- * Brand idea: FastLink is a precision relay between Claude and your browser.
+ * Brand idea: FastLink is a precision relay between your AI assistant and your browser.
  * Electric indigo = the trusted link/action; cyan "signal" = live data moving.
  * Cool slate neutrals = a calm, technical instrument. Functional state colors
  * keep their meaning everywhere: green=connected, amber=connecting,
@@ -42,15 +42,10 @@
   --fl-stuck:     #E5731F;  --fl-stuck-bg: #FCEEE4;  --fl-stuck-text: #B85718;
   --fl-read:      #232D3F;  --fl-read-bg:  #E5E6E8;  --fl-read-text:  #1A2331;
 
-  /* Type — matched to the marketing site (fastlink-site) so the extension and
-   * the site read as one brand. Display = Bricolage Grotesque (headings/wordmark),
-   * body = Hanken Grotesk, mono = JetBrains Mono (uppercase labels). Each keeps a
-   * system fallback for offline / pre-webfont-load paint. The HTML pages load these
-   * three families from Google Fonts; injected shadow-DOM overlays cannot easily
-   * pull a webfont, so they fall back to these system stacks. */
-  --fl-font-display: "Bricolage Grotesque", "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --fl-font: "Hanken Grotesk", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --fl-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
+  /* Type — system font stacks only (the extension loads no web fonts). */
+  --fl-font-display: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --fl-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --fl-mono: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
 
   /* Radius */
   --fl-r-sm:   6px;

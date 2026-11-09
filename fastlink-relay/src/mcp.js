@@ -290,7 +290,7 @@ async function consentVerdict(relay, name, target, tabId = null) {
   return { consentRequired: true, origin, modesOffered, message };
 }
 
-// A sealed call for a locked secure browser (fast-ext/src/secure/). The relay can't read
+// A sealed call for a locked secure browser (fast-ext/secure-only/). The relay can't read
 // it, so none of the per-tool gates apply: it only checks who sends it (a paired machine
 // helper, never a claude.ai/Grok connector) and that the target is a secure browser
 // (userRelay.callExtension), then forwards the ciphertext and logs metadata only.

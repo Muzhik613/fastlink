@@ -1,4 +1,4 @@
-// Secure build: the sealed format and the lock's call gate (src/secure/).
+// Secure build: the sealed format and the lock's call gate (secure-only/src/secure/).
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -14,8 +14,8 @@ globalThis.chrome = {
   tabs: { async get(id) { if (!tabs.has(id)) throw new Error('no tab'); return { id, ...tabs.get(id) }; } },
 };
 
-const S = await import('../src/secure/sealed.js');
-const L = await import('../src/secure/lock.js');
+const S = await import('../secure-only/src/secure/sealed.js');
+const L = await import('../secure-only/src/secure/lock.js');
 
 const CODE = S.newLockCode();
 let keys;

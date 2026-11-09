@@ -74,7 +74,7 @@ export const TABID_MIN_VERSION = '0.4.8';
 const NATIVE_TAB_ACTIONS = new Set(['fast_switch', 'fast_close']);
 // Secure FastLink build (its hello says {secure:true, locked, keyId}): that browser takes
 // SEALED calls only — `fast_sealed`, whose args are ciphertext the relay can't read
-// (fast-ext/src/secure/sealed.js). null for a normal browser.
+// (fast-ext/secure-only/src/secure/sealed.js). null for a normal browser.
 export const SEALED_ACTION = 'fast_sealed';
 function secureInfo(ws) {
   try { const a = ws.deserializeAttachment() || {}; return a.secure ? { locked: !!a.locked, keyId: a.keyId || null } : null; } catch { return null; }

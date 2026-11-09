@@ -1,4 +1,4 @@
-// The relay approved a write for `expectOrigin` (per-site consent / eval allowlist,
+// The relay approved a write for `expectOrigin` (per-site consent,
 // gated on that exact tab). If the tab has since moved to another site, the
 // write must not run there. Pure: `tabUrl(tabId)` is injected (chrome.tabs in
 // the extension, a stub in tests).

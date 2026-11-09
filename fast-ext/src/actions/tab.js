@@ -2,22 +2,22 @@ import { getActiveTab, missingTabError } from '../util.js';
 import { setTargetTab, clearTargetTab, resolveTargetTab } from './targetTab.js';
 import { trailOf } from './trail.js';
 
-// ── SINGLE SOURCE OF TRUTH for "which tab does Claude act on?" ──────────────
+// ── SINGLE SOURCE OF TRUTH for "which tab does the assistant act on?" ──────────────
 // Every action/snapshot/overlay must resolve its tab through these, NOT through
 // chrome.tabs.query({active:true}). The designated target tab (a concrete
 // pinned id) wins whenever one is set & still alive; only when NO target is
 // pinned do we fall back to the active tab. This is the core fix for the
-// cloud-relay case: the user sits on the claude.ai tab while Claude drives
+// cloud-relay case: the user sits on the claude.ai tab while the assistant drives
 // another, so target tab ≠ active tab.
 
-// Resolve the full tab OBJECT Claude should act on: the call's own `tabId` when
+// Resolve the full tab OBJECT the assistant should act on: the call's own `tabId` when
 // it names one (null if that tab is gone — never another tab), else the pinned
 // target if alive, else the active tab. Returns null if none exists.
 export async function getTargetTab(tabId) {
   return (await getActiveTab(tabId)) || null;
 }
 
-// Resolve just the tab id Claude should act on. Returns undefined if none.
+// Resolve just the tab id the assistant should act on. Returns undefined if none.
 export async function getTargetTabId(tabId) {
   return (await getTargetTab(tabId))?.id;
 }
@@ -129,7 +129,7 @@ async function openTab({ url, background, waitMs, tabId: callTabId, scoped }) {
   const opts = { url, active: !background };
   try {
     const tab = await chrome.tabs.create(opts);
-    // A tab Claude opens is a tab Claude means to drive — pin it so subsequent
+    // A tab the assistant opens is a tab the assistant means to drive — pin it so subsequent
     // actions target it even though the user's focus may be elsewhere. Pinning
     // and focusing are independent: the pin is set regardless of background.
     await setTargetTab(tab.id);

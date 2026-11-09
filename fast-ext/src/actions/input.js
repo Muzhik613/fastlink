@@ -3,7 +3,7 @@ import { frameTree } from './frames.js';
 
 const CDP_VERSION = '1.3';
 
-// Persistent CDP attachment. PREVIOUSLY every trusted action attached the
+// Persistent CDP attachment. PREVIOUSLY every debugger-input action attached the
 // debugger and detached in finally — which made the yellow "FastLink is
 // debugging this browser" banner APPEAR during a click and DISAPPEAR after.
 // That banner shifts the page viewport down ~35px, so a coordinate computed
@@ -65,7 +65,7 @@ async function ensureAdvancedControl() {
   if (!on) {
     const e = new Error(
       'Advanced control is OFF — enable it in the FastLink popup/options to use coordinate ' +
-      'clicks/typing, scripts, and background-tab capture. DOM-based clicking and form-filling work without it.'
+      'clicks/typing and background-tab screenshots. DOM-based clicking and form-filling work without it.'
     );
     e.code = 'advanced_control_off';
     throw e;
@@ -91,9 +91,9 @@ export async function cdp(tabId, method, params) {
   }
 }
 
-// Trusted click at a TOP-LEVEL viewport pixel via the CDP Input domain.
-// Unlike injected JS .click() (isTrusted:false), this lands a real mouse event
-// that LWC/React honor and that can focus an iframe input without DOM reach-in.
+// Click at a TOP-LEVEL viewport pixel via the CDP Input domain.
+// Unlike a scripted .click(), this goes through Chrome's input pipeline, which
+// LWC/React honor and that can focus an iframe input without DOM reach-in.
 export async function clickXY({ x, y, button, clickCount, tabId: callTabId }) {
   // Guard the coords: missing/NaN x|y would dispatch a mouse event at
   // (undefined, undefined) — CDP coerces it to (0,0) and "clicks" the top-left
@@ -110,7 +110,7 @@ export async function clickXY({ x, y, button, clickCount, tabId: callTabId }) {
   // the named button, or right/middle clicks misfire.
   const mask = btn === 'right' ? 2 : btn === 'middle' ? 4 : 1;
   const count = Math.max(1, clickCount || 1);
-  // Move the pointer there first, as a real mouse does: hover state follows it,
+  // Move the pointer there first: hover state follows it,
   // and fast_type's force check reads that hover state to confirm focus landed
   // on what was clicked.
   await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 });
@@ -202,7 +202,7 @@ function inspectFocusInFrame() {
   // it, or over a wrapper that holds no other field. When a click lands on
   // something that does not take focus (a dropdown button, a styled div), focus
   // STAYS on the previous field and this says false. Only a positive mismatch is
-  // reported; anything this cannot evaluate leaves it undefined.
+  // reported; anything this cannot work out leaves it undefined.
   if (editable) {
     try {
       if (el.matches(':hover')) out.underPointer = true;
@@ -325,8 +325,8 @@ async function selectAllAndDelete(tabId) {
   await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...dBase });
 }
 
-// Trusted typing into the currently-focused element via Input.insertText.
-// React accepts it because it's a real input event (unlike setting .value).
+// Typing into the currently-focused element via Input.insertText.
+// React accepts it because it arrives as an input event (unlike setting .value).
 //   args.text   : string to insert (required)
 //   args.clear  : when true, select-all + Delete first so the value is REPLACED,
 //                 not appended (default false → append at the caret).

@@ -1,7 +1,7 @@
 // FastLink side panel — the always-visible-across-tabs surface for the live
 // transcript. Reads the SAME shared pipeline the active-tab overlay uses:
 //   • chrome.storage.session['fastlink.transcript'] — latest assistant turn
-//     (text + toolActivity), scraped from the claude.ai tab by claudeScrape.js.
+//     (text + toolActivity), read from the claude.ai tab by claudeReply.js.
 //   • chrome.storage.session['fastlink.activity']   — running/idle/stuck state
 //     written by background.js's activity tracker (one source of truth).
 // It subscribes to storage.onChanged so it updates live without polling, plus a
@@ -121,7 +121,7 @@ function render() {
     els.tool.textContent = '';
     els2.cur.style.display = 'none';
     els2.perm.style.display = 'none';
-    els.msg.textContent = 'No active claude.ai session — Claude isn’t driving this browser from the web right now.';
+    els.msg.textContent = 'No active claude.ai session — claude.ai isn’t driving this browser right now.';
     els.msg.className = 'msg empty';
     els.sub.textContent = '';
     return;
@@ -143,7 +143,7 @@ function render() {
     els.status.className = 'status idle';
     els.dot.className = 'dot idle';
   } else {
-    els.status.textContent = 'idle — waiting for Claude';
+    els.status.textContent = 'idle — waiting for claude.ai';
     els.status.className = 'status idle';
     els.dot.className = 'dot idle';
   }
@@ -177,7 +177,7 @@ function renderMessage() {
   const lines = transcript.structured && Array.isArray(transcript.structured.lines)
     ? transcript.structured.lines : null;
   if ((!lines || !lines.length) && !transcript.text) {
-    els.msg.textContent = 'Waiting for Claude…';
+    els.msg.textContent = 'Waiting for a reply…';
     els.msg.className = 'msg empty';
     return;
   }
@@ -205,7 +205,7 @@ function renderPermission(perm) {
   els2.perm.textContent = '';
   const q = document.createElement('div');
   q.className = 'q';
-  q.textContent = 'Claude is asking to use FastLink tools.';
+  q.textContent = 'claude.ai is asking to use FastLink tools.';
   els2.perm.appendChild(q);
   if (perm.actionable) {
     const btns = document.createElement('div');

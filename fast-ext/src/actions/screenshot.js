@@ -13,7 +13,7 @@ import { captureViewport, captureViaDebugger, getActiveTab } from '../util.js';
 //
 // Two preserved escape hatches:
 //   • Companion screenshots — the `screenshot:true` flag attached to a DOM action,
-//     which ran on the PINNED/driven tab (e.g. in cloud-relay mode where Claude
+//     which ran on the PINNED/driven tab (e.g. in cloud-relay mode where the assistant
 //     drives a backgrounded tab while the user sits on claude.ai) — pass
 //     preferTarget:true to KEEP the pin-aware capture, so they still show the tab
 //     the action drove, not the user's foreground tab.

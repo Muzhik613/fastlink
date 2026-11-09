@@ -15,7 +15,7 @@ export const getActiveTab = async (tabId) => {
   }
   // Without a tabId: honor the designated target pin first, so every chokepoint that resolves a
   // tab through getActiveTab (screenshot, CDP capture, network, waitIdle,
-  // buffers, marks, vision) drives the tab Claude pinned — not whatever tab the
+  // buffers, marks, vision) drives the tab the assistant pinned — not whatever tab the
   // user's focus has snapped back to. resolveTargetTab returns null (and
   // self-clears a stale pin) when nothing live is pinned, so we fall through to
   // the normal active-tab logic. targetTab.js imports nothing from util.js → no
@@ -88,7 +88,7 @@ export async function captureViaDebugger(capOpts = { format: 'png' }, tabId) {
 }
 
 // Is the tab to capture OFF-SCREEN? chrome.tabs.captureVisibleTab only ever
-// grabs the active tab of the focused window — so when Claude drives a tab in
+// grabs the active tab of the focused window — so when the assistant drives a tab in
 // the background (the call's own tabId, or the pinned target) it returns the
 // WRONG tab's pixels. CDP Page.captureScreenshot targets a concrete tabId and
 // reads a non-focused tab, so capture must route through it whenever that tab

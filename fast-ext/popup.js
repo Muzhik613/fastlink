@@ -268,7 +268,7 @@ async function grant(origin, mode) {
 
 // ---------------------------------------------------------------------------
 // "Who's driving" mirror (SIGNUP-SPEC §5.4 / SAFETY N2). The target-tab PIN
-// (chrome.storage.session 'fastlink.targetTabId') is the tab Claude is driving
+// (chrome.storage.session 'fastlink.targetTabId') is the tab the assistant is driving
 // even while unfocused; mirror it here so the user always knows what's being
 // driven from the chat side. The target tab itself shows the activity overlay.
 // ---------------------------------------------------------------------------
@@ -281,9 +281,9 @@ async function isPaused() {
 
 async function renderDriving() {
   const el = $('driving');
-  // Paused state wins over the pin: make the global "Claude can't act" stop obvious.
+  // Paused state wins over the pin: make the global "the assistant can't act" stop obvious.
   if (await isPaused()) {
-    el.textContent = '⏸ Paused by you — Claude can’t act until you resume';
+    el.textContent = '⏸ Paused by you — your assistant can’t act until you resume';
     el.className = 'panel driving paused';
     el.style.display = 'block';
     return;
@@ -303,7 +303,7 @@ async function renderDriving() {
     el.style.display = 'none';   // pinned tab gone
     return;
   }
-  el.textContent = `▶ Claude is driving: ${label}`;
+  el.textContent = `▶ Your assistant is driving: ${label}`;
   el.style.display = 'block';
 }
 

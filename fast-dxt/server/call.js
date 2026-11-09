@@ -12,7 +12,7 @@
 // (a script should always name its browser); `tabId` pins each call to one tab,
 // so other sessions using the same browser can't move it.
 //
-// Secure browsers (fast-ext/src/secure/): when this machine holds a lock code for
+// Secure browsers (fast-ext/secure-only/): when this machine holds a lock code for
 // `browser` (node index.js lock <browser>), every browser call is SEALED automatically:
 // sent as `fast_sealed` ciphertext, the reply decrypted here. Callers see the same
 // { result, browser } / { error, browser } shapes either way.

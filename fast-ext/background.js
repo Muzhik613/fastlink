@@ -54,7 +54,7 @@ function reconcile() {
 // ---------------------------------------------------------------------------
 // claude.ai, Grok or a Claude Code session (all via the relay) can be driving a
 // tab the user isn't looking at. The in-page overlay (src/overlay.js) only renders
-// on the DRIVEN tab, so it's invisible from any other tab. This makes "is Claude
+// on the DRIVEN tab, so it's invisible from any other tab. This makes "is the assistant
 // working / idle / stuck?" visible GLOBALLY on the toolbar (badge + title) and in
 // the popup.
 //
@@ -91,7 +91,7 @@ const BADGE_RUN    = '#3a66ff';             // brand indigo = working
 const BADGE_STUCK  = '#e07b27';             // brand orange = possibly stuck
 
 // ---- Relay-driving gate (transcript surfaces only) ------------------------
-// The transcript pipeline (claude.ai scraper → side panel + active-tab overlay)
+// The transcript pipeline (claude.ai reply reader → side panel + active-tab overlay)
 // must surface ONLY while the relay is actively driving THIS browser, not when
 // idle. "Relay driving active" =
 //   relay socket connected  AND  (a command is in flight  OR
@@ -301,7 +301,7 @@ function persistRelayGate() {
     });
   } catch {}
 }
-// Arm a one-shot timer to re-evaluate exactly when the recency window closes, so
+// Arm a one-shot timer to re-check exactly when the recency window closes, so
 // the gate flips to inactive on its own after the last relay command (no command
 // needed to trigger it). The SW stays alive while in flight; after that it may
 // sleep, but RECENCY (25s) < the ~30s idle kill, so this normally fires — and if
@@ -348,7 +348,7 @@ function maybeNotifyStuck() {
   for (const [id, e] of inflight) {
     if (now - e.start >= stuckThreshold(e.action) && !notifiedStuck.has(id)) {
       notifiedStuck.add(id);
-      notify(`fastlink-stuck-${id}`, 'FastLink — Claude may be stuck',
+      notify(`fastlink-stuck-${id}`, 'FastLink — your assistant may be stuck',
         `${e.action} has been running ${Math.round((now - e.start) / 1000)}s with no result.`);
     }
   }
@@ -359,7 +359,7 @@ function maybeNotifyDone() {
   if (!notifyEnabled) return;
   const lasted = Date.now() - burstStart;
   if (burstCount >= 2 || lasted >= 3000) {
-    notify('fastlink-done', 'FastLink — Claude finished',
+    notify('fastlink-done', 'FastLink — your assistant finished',
       lastDone ? `Last action: ${lastDone.action} ${lastDone.ok ? '✓' : '✗'}.` : 'Driving is idle.');
   }
 }
@@ -503,7 +503,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  // Re-enable the relay after a hard disconnect. A reload re-evaluates
+  // Re-enable the relay after a hard disconnect. A reload re-runs
   // relayClient (clearing its `stopped` flag) and re-reads config — the clean
   // way back from stopRelay(). Acceptable here since it's an explicit user action.
   if (msg?.type === 'fastlink:relay-reconnect') {
@@ -518,10 +518,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // ===========================================================================
 // LIVE TRANSCRIPT PIPELINE  (additive — does NOT touch the activity tracker above)
 // ---------------------------------------------------------------------------
-// New feature: let the user SEE what Claude is SAYING from any tab while
+// New feature: let the user SEE what the assistant is SAYING from any tab while
 // claude.ai-web drives the browser. The relay carries only tool calls/results,
-// NOT chat prose, so the transcript is SCRAPED from the claude.ai DOM by the
-// src/claudeScrape.js content script. That scraper posts {type:'fastlink:transcript'}
+// NOT chat prose, so the transcript is READ from the claude.ai page by the
+// src/claudeReply.js content script. That reader posts {type:'fastlink:transcript'}
 // here; we keep the latest in chrome.storage.session and fan it out to TWO
 // surfaces that share this ONE pipeline:
 //   (a) the side panel (sidepanel.html/js) — subscribes to storage.onChanged.
@@ -574,17 +574,17 @@ function buildActivitySummary() {
 //     scripting) → skip.
 //   • The claude.ai SOURCE/chat tab → skip: the user is already reading the chat
 //     there, a floating mirror would be redundant. (sourceTabId comes from the
-//     scraper's sender.tab.id.)
+//     reader's sender.tab.id.)
 //   • The DRIVEN tab is NO LONGER skipped — the merged box folds the transcript in
 //     alongside the driving rows, so the driven tab SHOULD receive the push.
 // ---- Relay-gate fan-out for the transcript surfaces -----------------------
 // Called from recomputeRelayActive() whenever the gate flips. ACTIVE → push the
-// current transcript to the active tab's overlay + let the claude.ai scraper
+// current transcript to the active tab's overlay + let the claude.ai reply reader
 // resume sending. INACTIVE → tear the overlay off every tab we injected into,
 // blank the stored transcript (so the side panel shows a neutral "no active
-// claude.ai session" instead of a stale message), and tell scrapers to pause.
+// claude.ai session" instead of a stale message), and tell readers to pause.
 function onRelayActiveChange(active) {
-  broadcastGateToScrapers(active);
+  broadcastGateToReaders(active);
   if (active) onRelaySessionStart();
   else        clearTranscriptSurfaces();
 }
@@ -649,9 +649,9 @@ function clearTranscriptSurfaces() {
   chrome.storage.session.set({ [TRANSCRIPT_KEY]: latestTranscript }).catch(() => {});
 }
 
-// Broadcast the gate to any open claude.ai scraper so it stops sending while the
+// Broadcast the gate to any open claude.ai reply reader so it stops sending while the
 // relay isn't driving (and force-refreshes a fresh turn the moment it resumes).
-function broadcastGateToScrapers(active) {
+function broadcastGateToReaders(active) {
   chrome.tabs.query({ url: 'https://claude.ai/*' }).then((tabs) => {
     for (const t of tabs) {
       if (t.id == null) continue;
@@ -660,7 +660,7 @@ function broadcastGateToScrapers(active) {
   }).catch(() => {});
 }
 
-// claude.ai itself is the CHAT tab — the user reads Claude's messages natively
+// claude.ai itself is the CHAT tab — the user reads the assistant's messages natively
 // there, so the floating transcript overlay must never ride it. The overlay only
 // rides the DRIVEN (non-claude.ai) tabs.
 function isClaudeUrl(url) { return /^https?:\/\/([^/]+\.)?claude\.ai(\/|$|\?)/i.test(url || ''); }
@@ -687,7 +687,7 @@ async function pushOverlay(tabId) {
   if (tabId === latestTranscript.sourceTabId) return;        // de-dupe: claude.ai source tab
   // NOTE: we intentionally NO LONGER skip the driven tab. src/overlay.js (the
   // manifest-injected ISOLATED content script on every tab) is now the SINGLE
-  // floating box: it shows BOTH the "Claude is driving this tab" rows AND the
+  // floating box: it shows BOTH the "Your assistant is driving this tab" rows AND the
   // transcript/permission. So the transcript push is routed to that one panel
   // (folded in) instead of injecting a second overlay host. overlay.js is already
   // present from the manifest, so we just sendMessage — no executeScript here
@@ -709,18 +709,18 @@ function refreshActiveOverlay() {
   setTimeout(() => { refreshScheduled = false; pushOverlay(activeTabId); }, 60);
 }
 
-// Receive scraped transcript; store + fan out. Separate listener so it can't
+// Receive the read transcript; store + fan out. Separate listener so it can't
 // interfere with the onboarding/kill-switch listener above (never returns true).
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // The claude.ai scraper asks for the current gate on load so it can suppress
+  // The claude.ai reply reader asks for the current gate on load so it can suppress
   // sends until the relay is actually driving. Answered synchronously.
   if (msg?.type === 'fastlink:gate-query') {
     sendResponse({ active: relayActiveState });
     return true;
   }
   if (msg?.type === 'fastlink:transcript') {
-    // GATE: ignore scraped chat text unless claude.ai-web is currently driving
-    // this browser. (Scrapers also self-suppress, but background is authoritative.)
+    // GATE: ignore chat text unless claude.ai-web is currently driving
+    // this browser. (Readers also self-suppress, but background is authoritative.)
     if (!relayActiveState) return false;
     latestTranscript = {
       available: msg.available !== false,
@@ -740,7 +740,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   // Task D (best-effort): user clicked Allow/Deny in the overlay or side panel.
-  // Forward the decision into the claude.ai tab(s) so claudeScrape.js clicks the
+  // Forward the decision into the claude.ai tab(s) so claudeReply.js clicks the
   // real button in claude.ai's permission dialog. If no real button is found there
   // it just no-ops — we never throw.
   if (msg?.type === 'fastlink:permission-respond') {

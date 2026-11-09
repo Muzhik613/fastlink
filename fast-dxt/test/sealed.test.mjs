@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { deriveKeys, seal, unseal, newLockCode } from '../../fast-ext/src/secure/sealed.js';
+import { deriveKeys, seal, unseal, newLockCode } from '../../fast-ext/secure-only/src/secure/sealed.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CODE = newLockCode();

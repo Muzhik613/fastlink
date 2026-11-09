@@ -1,6 +1,5 @@
 // FastLink activity overlay — the SINGLE fixed top-right panel. It shows each
-// tool call as it runs AND (folded in from the former transcriptOverlay.js, the
-// old second box) the live claude.ai transcript, current-action, and permission
+// tool call as it runs AND the live claude.ai transcript, current-action, and permission
 // Allow/Deny block while the relay is driving. Always on, content script in
 // ISOLATED world. Speed principle: every message arrives via fire-and-forget
 // chrome.tabs.sendMessage from the background, so nothing here ever blocks the
@@ -9,7 +8,7 @@
 // Two message streams feed this ONE host:
 //   • {fastlink:'event', phase:start|heartbeat|end} — tool-call rows (both
 //     transports; only ever reaches the DRIVEN tab).
-//   • {fastlink:'transcript', transcript, activity} — scraped transcript +
+//   • {fastlink:'transcript', transcript, activity} — the read transcript +
 //     permission + activity summary, pushed onto the user's active tab while a
 //     relay session drives. {active:false} tears the transcript section down.
 // There is no standalone idle/empty-state box: the transcript section only
@@ -56,8 +55,7 @@
   let mountedAt = 0;   // performance.now() when the host was last mounted (hard-guard)
   const rows = new Map(); // id -> { rowEl, args, label, timers }
 
-  // Transcript/permission section — folded in from the former transcriptOverlay.js
-  // (the second box). Populated by {fastlink:'transcript'} pushes from background
+  // Transcript/permission section. Populated by {fastlink:'transcript'} pushes from background
   // during an active relay session; cleared when the relay stops driving.
   let permEl = null;
   let curEl = null;
@@ -138,7 +136,7 @@
       .status.working { color:#FAC56B; background:rgba(245,174,60,0.14); }
       .status.done    { color:#6FD89A; background:rgba(95,207,138,0.14); }
       .status.stuck   { color:#f0b070; background:rgba(235,148,80,0.16); }
-      /* ---- transcript / permission section (folded in from transcriptOverlay) -- */
+      /* ---- transcript / permission section ---- */
       .perm {
         border:1px solid rgba(240,134,58,0.5); background:rgba(240,134,58,0.12);
         border-radius:8px; padding:7px 8px; margin-bottom:6px;
@@ -191,7 +189,7 @@
     `;
     const panel = document.createElement('div');
     panel.className = 'panel';
-    panel.innerHTML = `<div class="hdr"><span class="mark"></span><span class="dot"></span><span class="ttl">Claude is driving this tab</span></div><div class="status"></div><div class="perm" style="display:none"></div><div class="cur hidden"></div><div class="msg" style="display:none"></div><div class="list"></div>`;
+    panel.innerHTML = `<div class="hdr"><span class="mark"></span><span class="dot"></span><span class="ttl">Your assistant is driving this tab</span></div><div class="status"></div><div class="perm" style="display:none"></div><div class="cur hidden"></div><div class="msg" style="display:none"></div><div class="list"></div>`;
     shadow.appendChild(style);
     shadow.appendChild(panel);
     listEl = panel.querySelector('.list');
@@ -207,7 +205,7 @@
 
   // Reflect live driving state in the header so a user glancing over from the
   // claude.ai tab instantly sees what's happening — and, crucially, when it's
-  // DONE. Three states: working (an action is mid-flight), done/idle (Claude
+  // DONE. Three states: working (an action is mid-flight), done/idle (the assistant
   // finished, nothing running), and connected (panel up, nothing yet).
   const updateStatus = () => {
     if (!statusEl) return;
@@ -260,7 +258,7 @@
       if (hdrDot) hdrDot.className = 'dot idle';
       return;
     }
-    statusEl.textContent = 'Connected — waiting for Claude';
+    statusEl.textContent = 'Connected — waiting for your assistant';
     statusEl.className = 'status';
     if (hdrDot) hdrDot.className = 'dot idle';
   };
@@ -357,7 +355,7 @@
     }, DISMISS_AFTER_MS);
   };
 
-  // ---- transcript / permission rendering (folded in from transcriptOverlay) ---
+  // ---- transcript / permission rendering ---
   // Whether the latest transcript/activity is worth surfacing the box for. We
   // never mount a standalone idle/empty box: real content (lines/permission/
   // current-action) OR a genuinely running/stuck relay session is required.
@@ -369,7 +367,7 @@
     // Otherwise surface ONLY while the relay is GENUINELY working (a relay command
     // running/stuck). Never mount for an IDLE relay just because stale transcript
     // text/lines are still cached from an earlier turn — that is what made the
-    // "Claude is driving this tab / idle — last: …" card ride every tab.
+    // "Your assistant is driving this tab / idle — last: …" card ride every tab.
     if (a && (a.state === 'running' || a.state === 'stuck')) return true;
     return false;
   };
@@ -432,7 +430,7 @@
     permEl.textContent = '';
     const q = document.createElement('div');
     q.className = 'q';
-    q.textContent = 'Claude is asking to use FastLink tools.';
+    q.textContent = 'claude.ai is asking to use FastLink tools.';
     permEl.appendChild(q);
     if (perm.actionable) {
       const btns = document.createElement('div');
@@ -459,7 +457,7 @@
     try {
       chrome.runtime.sendMessage({ type: 'fastlink:permission-respond', decision }, () => void chrome.runtime.lastError);
     } catch {}
-    // Optimistically hide; a fresh scrape will confirm it cleared.
+    // Optimistically hide; a fresh read will confirm it cleared.
     if (permEl) { permEl.style.display = 'none'; permEl.textContent = ''; }
   };
 

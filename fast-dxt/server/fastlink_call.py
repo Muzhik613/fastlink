@@ -15,9 +15,9 @@ and talks to the relay's /mcp the same way the helper does.
 call to one tab, so other sessions using the same browser can't move it; the relay
 refuses tab-named calls to extensions older than 0.4.8 instead of acting elsewhere.
 
-Secure browsers (fast-ext/src/secure/): when this machine holds a lock code for `browser`
+Secure browsers (fast-ext/secure-only/): when this machine holds a lock code for `browser`
 (node index.js lock <browser>), every browser call is sealed automatically (AES-256-GCM, the
-format in fast-ext/src/secure/sealed.js) and the reply decrypted here; callers see the same
+format in fast-ext/secure-only/src/secure/sealed.js) and the reply decrypted here; callers see the same
 shapes. That needs the `cryptography` package; without it a sealed browser raises FastLinkError.
 """
 import base64
@@ -84,7 +84,7 @@ def _b64u_dec(s):
 
 
 class Sealer:
-    """The sealed format v1 (twin of fast-ext/src/secure/sealed.js)."""
+    """The sealed format v1 (twin of fast-ext/secure-only/src/secure/sealed.js)."""
 
     def __init__(self, lock_code):
         try:

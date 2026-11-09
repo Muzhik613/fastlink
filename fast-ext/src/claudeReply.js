@@ -1,7 +1,7 @@
-// FastLink claude.ai transcript scraper.
+// FastLink claude.ai reply reader.
 //
 // WHY THIS EXISTS: the cloud relay carries only tool CALLS / RESULTS, never
-// Claude's chat prose. So the only place "what Claude is saying" lives is the
+// the assistant's chat prose. So the only place "what the assistant is saying" lives is the
 // DOM of the claude.ai tab itself. This content script (ISOLATED world, matched
 // to https://claude.ai/*) watches that DOM and ships the latest assistant turn
 // to the background, which fans it out to the side panel + the active-tab
@@ -13,13 +13,13 @@
 // surface a graceful "transcript unavailable" message, never a broken script.
 
 (() => {
-  // Re-injection guard. A content script can be evaluated twice (extension
+  // Re-injection guard. A content script can run twice (extension
   // reload / SPA quirks); the previous instance's runtime context is dead, so
   // tear it down and let this live one take over.
-  if (window.__fastlinkScrapeInstalled) {
-    try { window.__fastlinkScrapeTeardown?.(); } catch {}
+  if (window.__fastlinkReplyInstalled) {
+    try { window.__fastlinkReplyTeardown?.(); } catch {}
   }
-  window.__fastlinkScrapeInstalled = true;
+  window.__fastlinkReplyInstalled = true;
 
   const DEBOUNCE_MS = 400;   // coalesce streaming mutations (~300-500ms target)
   const MAX_TEXT    = 4000;  // cap payload so a long answer never bloats messages
@@ -39,7 +39,7 @@
   // actively driving this browser — not when idle. Background is the authoritative gate, but we also suppress
   // sends here when known-inactive (cheaper) and force a fresh push when it resumes.
   // Default false until background answers the gate-query below, so we don't leak
-  // scraped text before we know the relay is driving.
+  // chat text before we know the relay is driving.
   let relayActive = false;
 
   // ---- DOM anchoring -------------------------------------------------------
@@ -55,7 +55,7 @@
 
     // 1. The streaming message wrapper — claude.ai marks the in-progress (and
     //    most-recent) assistant message with data-is-streaming. Most reliable
-    //    anchor while Claude is actively typing.
+    //    anchor while the assistant is actively typing.
     let el = tryLast('[data-is-streaming]');
     if (el) return el;
 
@@ -102,7 +102,7 @@
   // short human string or null.
   function extractToolActivity(scope) {
     const root = scope || document;
-    // Streaming flag = Claude is mid-response.
+    // Streaming flag = the assistant is mid-response.
     let streaming = false;
     try {
       const s = document.querySelector('[data-is-streaming="true"]');
@@ -164,7 +164,7 @@
   }
 
   // ---- tool-permission prompt detection (Task D — BEST-EFFORT) --------------
-  // claude.ai shows an Allow/Decline dialog when Claude wants to use the FastLink
+  // claude.ai shows an Allow/Decline dialog when the assistant wants to use the FastLink
   // (MCP) tools. We can't assume exact markup, so we sniff defensively by button
   // text inside a dialog-ish container and capture live refs to the real buttons.
   // If nothing matches we return {present:false} and never throw — the surfaces
@@ -210,7 +210,7 @@
 
   // ---- collect + send ------------------------------------------------------
   function collectAndSend() {
-    if (!relayActive) return;   // gate: don't surface scraped text unless the relay is driving
+    if (!relayActive) return;   // gate: don't surface chat text unless the relay is driving
     // Permission detection runs regardless of whether a turn is present — the
     // prompt can appear before/around any assistant text. Best-effort + never throws.
     let permission = null;
@@ -278,7 +278,7 @@
 
   // ---- relay-driving gate wiring -------------------------------------------
   // Listen for the background's gate broadcasts; when the relay STARTS driving,
-  // reset the dedupe signature and re-scrape so the current turn surfaces
+  // reset the dedupe signature and re-read so the current turn surfaces
   // immediately (the DOM may be static, so a mutation-driven send isn't coming).
   const onGate = (msg) => {
     if (!msg) return;
@@ -296,7 +296,7 @@
         const btn = msg.decision === 'deny' ? permButtons.deny : permButtons.allow;
         if (btn && typeof btn.click === 'function') btn.click();
       } catch {}
-      // Re-scrape so the (now dismissed) prompt clears from the surfaces.
+      // Re-read so the (now dismissed) prompt clears from the surfaces.
       lastSig = ''; schedule();
       return;
     }
@@ -335,9 +335,9 @@
     try { window.removeEventListener('popstate', onNav); } catch {}
     try { if (_push) history.pushState = _push; } catch {}
     try { if (_replace) history.replaceState = _replace; } catch {}
-    window.__fastlinkScrapeInstalled = false;
+    window.__fastlinkReplyInstalled = false;
   }
-  window.__fastlinkScrapeTeardown = teardown;
+  window.__fastlinkReplyTeardown = teardown;
 
   // Kick off once the DOM is ready enough to query. queryGate() seeds relayActive
   // from the background; collectAndSend no-ops until it (or a gate broadcast)

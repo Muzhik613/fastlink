@@ -5,7 +5,7 @@
 // FastLink's details page); until then this tool explains how and does nothing. The code
 // runs in the page's MAIN world, so it sees page variables. The extension itself never
 // evaluates strings (no eval / new Function / CDP Runtime.evaluate).
-import { getInjectableTab } from '../util.js';   // installed as src/actions/evaluate.js by scripts/build-secure.sh
+import { getInjectableTab } from '../util.js';   // installed as src/secure/evaluate.js by scripts/build-secure.sh
 
 export const USER_SCRIPTS_OFF =
   'fast_evaluate is off in this browser. To allow it: chrome://extensions → FastLink → Details → turn on "Allow User Scripts".';

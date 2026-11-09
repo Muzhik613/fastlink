@@ -1,4 +1,4 @@
-// lockFile.js — lock codes for secure browsers this machine drives (fast-ext/src/secure/).
+// lockFile.js — lock codes for secure browsers this machine drives (fast-ext/secure-only/).
 // One file per browser: <dir of agent.json>/locks/<browser>.key holding the 43-char lock
 // code (dir 0700, file 0600). FASTLINK_LOCK_DIR overrides the directory (tests). The code
 // never goes to the relay: a human pastes it into that browser's FastLink options.
@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { agentFilePath } from './agentFile.js';
 
 // The sealed format lives with the extension; scripts run from a full checkout.
-export const SEALED_JS = new URL('../../fast-ext/src/secure/sealed.js', import.meta.url).href;
+export const SEALED_JS = new URL('../../fast-ext/secure-only/src/secure/sealed.js', import.meta.url).href;
 
 export const lockDir = () => process.env.FASTLINK_LOCK_DIR || join(dirname(agentFilePath()), 'locks');
 
