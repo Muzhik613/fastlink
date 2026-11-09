@@ -17,8 +17,18 @@
 - **Listing:** no first-use Allow/Deny claim (the relay default is allow); neutral debugger wording; "does not track the pages you browse yourself" plus the 30-day action log; User activity ticked; test instructions use an example.com step.
 - **Privacy policy** (`PRIVACY-POLICY.md` = fastlink.ytx.app/privacy, live 2026-11-09): adds feedback notes, timing diagnostics, Cloudflare request logs, a custom relay address, and the Google API Services User Data Policy.
 
+**Pending: the relay `/try` page** (built and tested, not deployed; needs Yaakov's OK). After the deploy and a live check, replace the dashboard test instructions with:
+```
+No test account needed.
+1. Install; setup page opens. Click "Sign in & connect", any Google account. Status: Connected.
+2. Open https://example.com in a tab.
+3. Open https://relay.ytx.app/try, same Google account. Pick the example.com tab, click "Read this tab", then "Click its first link".
+With Claude (custom connectors): add connector https://relay.ytx.app/mcp, ask "Use FastLink to read the example.com tab".
+Options: site rules, Stop driving, Advanced control. support@ytx.app
+```
+
 **Residual risk (accepted, not blocking):**
-- A reviewer without a Claude plan that has custom connectors can only pair and look at Options. A relay "try it" page would remove that doubt (relay deploy, needs Yaakov's OK).
+- Until `/try` is deployed, a reviewer without a Claude plan that has custom connectors can only pair and look at Options.
 - `page.js` runs in the MAIN world on every page at document_start, and the `webRequest` listeners are always on. Both are local-only, but injecting on demand and listening only while a call runs would be narrower.
 - Workers observability logs may include the `/ext?token=` WebSocket URL. Moving the token out of the URL is a relay change.
 - The screenshots show only settings pages; an action shot would be stronger.

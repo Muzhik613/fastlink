@@ -29,6 +29,7 @@
 // are present. Flip IDENTITY_MODE=magic once the email provider is configured — no rebuild.
 
 import * as db from './db.js';
+import { TRY_ACTIONS, runTryAction, tryPageBody } from './try.js';
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -75,6 +76,10 @@ export function makeDefaultHandler() {
             return handlePairNew(request, env);
           case '/pair/claim':
             return handlePairClaim(request, env);
+          case '/try':
+            return handleTry(request, env);
+          case '/try/run':
+            return handleTryRun(request, env);
           case '/agent/pair':
             return handleAgentPair(request, env);
           case '/agent/machines':
@@ -260,6 +265,7 @@ async function handleUpstreamCallback(request, env) {
     // Resuming a /pair/new flow: mint the code now that we know who the user is.
     return mintAndShowCode(env, userId);
   }
+  if (st.intent === 'try') return redirectResponse('/try', { 'set-cookie': await trySessionCookie(env, userId) });
   if (st.intent === 'ext_pair') {
     // One-click extension sign-in (google mode) completing IN the launchWebAuthFlow
     // window. Re-validate the ext redirect target (EXACT-match chromiumapp.org +
@@ -310,6 +316,7 @@ async function handleMagicCallback(request, env) {
   // Designate the operator (enables operator-only eval test mode) if configured.
 
   if (st.intent === 'pair') return mintAndShowCode(env, userId);
+  if (st.intent === 'try') return redirectResponse('/try', { 'set-cookie': await trySessionCookie(env, userId) });
   // Phase 2 (DARK): one-click extension sign-in (SIGNUP-SPEC §1.5 step 3). Mint the
   // device token now and BIND it to the pair_request keyed by pollId, so the still-
   // open auth window (refreshing /ext/authorize/wait) can perform the final cross-
@@ -422,6 +429,104 @@ async function handlePairNew(request, env) {
   // google mode (legacy/dormant): send the human through Google, then mint on callback.
   const state = await signState(env, { intent: 'pair' });
   return Response.redirect(googleAuthUrl(env, state), 302);
+}
+
+// ===========================================================================
+// /try — try FastLink without an AI app (src/try.js). The human signs in (Google, or a
+// magic link in magic mode), gets a short signed session cookie scoped to /try, and the
+// page's fixed buttons POST /try/run. Each run is an ordinary MCP tools/call into THIS
+// user's DO (/__mcp), so Stop driving, per-site rules and the activity log all apply.
+// Shared mode has no per-person identity, so /try is not offered there.
+// ===========================================================================
+const TRY_SESSION_TTL_SEC = 1800;    // 30 minutes
+const TRY_RUN_LIMIT = 60;            // runs per user per hour
+const TRY_BROWSER_RE = /^[a-z0-9_-]{1,32}$/;
+
+async function trySessionCookie(env, userId) {
+  const token = await signState(env, { p: 'try', uid: String(userId), exp: Date.now() + TRY_SESSION_TTL_SEC * 1000 });
+  return `fl_try=${token}; HttpOnly; Secure; SameSite=Lax; Path=/try; Max-Age=${TRY_SESSION_TTL_SEC}`;
+}
+
+async function trySessionUser(request, env) {
+  const token = parseCookies(request)['fl_try'];
+  if (!token) return null;
+  const st = await verifyState(env, token);
+  return st && st.p === 'try' && st.uid && st.exp && st.exp > Date.now() ? String(st.uid) : null;
+}
+
+async function handleTry(request, env) {
+  const mode = identityMode(env);
+  if (mode === 'shared') return htmlPage('Not available', `<p>The try page needs per-person sign-in, which this relay doesn't use.</p>`, 404);
+  if (request.method === 'POST' && mode === 'magic') {
+    const form = await request.formData();
+    const email = normalizeEmail(form.get('email'));
+    if (!email) return htmlPage('Invalid email', `<p>Please enter a valid email address.</p>`, 400);
+    return startMagicLogin(env, email, { intent: 'try' }, request);
+  }
+  if (request.method !== 'GET') return new Response('method not allowed', { status: 405 });
+  const userId = await trySessionUser(request, env);
+  if (!userId) {
+    if (mode === 'magic') return emailEntryPage('/try', '');
+    return Response.redirect(googleAuthUrl(env, await signState(env, { intent: 'try' })), 302);
+  }
+  let email = null;
+  try { email = await db.getUserEmail(env.DB, userId); } catch { /* shown as "your account" */ }
+  return htmlPage('Try FastLink', tryPageBody(email, escapeHtml));
+}
+
+// /try/run answers same-origin only: no CORS headers (unlike jsonResponse).
+const tryJson = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+
+async function handleTryRun(request, env) {
+  if (request.method !== 'POST') return tryJson({ error: 'method_not_allowed' }, 405);
+  // Same-origin only: the custom header forces a CORS preflight that this relay never
+  // grants for /try/run, and a cross-site Origin is refused outright.
+  const origin = request.headers.get('origin');
+  if (request.headers.get('x-fastlink-try') !== '1' || (origin && origin !== new URL(request.url).origin)) {
+    return tryJson({ error: 'forbidden' }, 403);
+  }
+  const userId = await trySessionUser(request, env);
+  if (!userId) return tryJson({ error: 'Your try session has expired. Reload the page to sign in again.' }, 401);
+  let body;
+  try { body = await request.json(); } catch { return tryJson({ error: 'invalid_json' }, 400); }
+  const action = String(body?.action || '');
+  if (!TRY_ACTIONS.has(action)) return tryJson({ error: 'Unknown action.' }, 400);
+  const browser = body?.browser == null || body.browser === '' ? null : String(body.browser);
+  if (browser && !TRY_BROWSER_RE.test(browser)) return tryJson({ error: 'Invalid browser name.' }, 400);
+  const tabId = body?.tabId == null ? null : body.tabId;
+  if (tabId != null && !(Number.isInteger(tabId) && tabId >= 0)) return tryJson({ error: 'Invalid tab.' }, 400);
+  if (action === 'read' || action === 'click') {
+    const rl = await db.hitRateLimit(env.DB, `try:user:${userId}`, TRY_RUN_LIMIT, 3600);
+    if (!rl.allowed) return tryJson({ error: `Too many tries; wait ${rl.retryAfterSec}s.` }, 429);
+  }
+  const result = await runTryAction(tryCallTool(env, request, userId), action, { browser, tabId, relayOrigin: new URL(relayBase(env) || request.url).origin });
+  return tryJson(result);
+}
+
+// One MCP tools/call into the user's DO, exactly as an AI app's call arrives there.
+// X-Fastlink-Caller 'try' is neither 'agent' nor 'oauth' (no sealed calls).
+function tryCallTool(env, request, userId) {
+  const stub = env.USER_RELAY.get(env.USER_RELAY.idFromName(String(userId)));
+  const url = new URL(request.url).origin + '/__mcp';
+  let n = 0;
+  return async (name, args) => {
+    const res = await stub.fetch(new Request(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Fastlink-User-Id': String(userId),
+        'X-Fastlink-Caller': 'try',
+        'user-agent': 'FastLink try page',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: ++n, method: 'tools/call', params: { name, arguments: args } }),
+    }));
+    let rpc = null;
+    try { rpc = await res.json(); } catch { /* fall through */ }
+    const text = rpc?.result?.content?.find((c) => c.type === 'text')?.text;
+    if (!text) return { error: rpc?.error?.message || 'No answer from the relay.' };
+    if (text.startsWith('Error: ')) return { error: text.slice(7) };
+    try { return JSON.parse(text); } catch { return { error: text }; }
+  };
 }
 
 async function mintAndShowCode(env, userId, extraHeaders = {}) {
