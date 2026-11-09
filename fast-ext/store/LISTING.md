@@ -1,8 +1,8 @@
 # FastLink: Chrome Web Store dashboard answers (REVIEWED, paste-ready)
 
-## STATUS (2026-11-09): draft complete, waiting for Yaakov's Submit
+## STATUS (2026-11-09): submitted, Pending review
 
-**Dashboard draft:** item `eiifomohibgelcdhadklpmdnoblpalde` (publisher YTX, yaakov@ytx.app verified, non-trader), package `fastlink-0.4.14.zip`. Every section below is entered and saved. "Submit for review" is enabled; only Yaakov presses it (or OKs it).
+**Dashboard item:** `eiifomohibgelcdhadklpmdnoblpalde` (publisher YTX, yaakov@ytx.app verified, non-trader), package `fastlink-0.4.14.zip`, Unlisted. Submitted for review 2026-11-09 ~17:30 CST on Yaakov's OK; dashboard status "Pending review". "Publish automatically after it has passed review" was left on (the default), so it goes live as Unlisted once approved. The dashboard warned of an in-depth review for broad host permissions.
 
 **Done for this submission:**
 - **Relay:** the store ID is added via `/admin/extension-ids`. "Sign in & connect" was tested with the 0.4.14 zip loaded under the store's public key (same ID): it connected to the relay. The test devices were removed from D1; backups are in `~/fastlink-store/d1-backup/` on hvm.
@@ -17,18 +17,9 @@
 - **Listing:** no first-use Allow/Deny claim (the relay default is allow); neutral debugger wording; "does not track the pages you browse yourself" plus the 30-day action log; User activity ticked; test instructions use an example.com step.
 - **Privacy policy** (`PRIVACY-POLICY.md` = fastlink.ytx.app/privacy, live 2026-11-09): adds feedback notes, timing diagnostics, Cloudflare request logs, a custom relay address, and the Google API Services User Data Policy.
 
-**Pending: the relay `/try` page** (built and tested, not deployed; needs Yaakov's OK). After the deploy and a live check, replace the dashboard test instructions with:
-```
-No test account needed.
-1. Install; setup page opens. Click "Sign in & connect", any Google account. Status: Connected.
-2. Open https://example.com in a tab.
-3. Open https://relay.ytx.app/try, same Google account. Pick the example.com tab, click "Read this tab", then "Click its first link".
-With Claude (custom connectors): add connector https://relay.ytx.app/mcp, ask "Use FastLink to read the example.com tab".
-Options: site rules, Stop driving, Advanced control. support@ytx.app
-```
+- **Relay `/try`** (deployed 2026-11-09, version aa256def): reviewers without a Claude plan can read and click a tab of their own paired browser. The test instructions (section 5) use it.
 
 **Residual risk (accepted, not blocking):**
-- Until `/try` is deployed, a reviewer without a Claude plan that has custom connectors can only pair and look at Options.
 - `page.js` runs in the MAIN world on every page at document_start, and the `webRequest` listeners are always on. Both are local-only, but injecting on demand and listening only while a call runs would be narrower.
 - Workers observability logs may include the `/ext?token=` WebSocket URL. Moving the token out of the URL is a relay change.
 - The screenshots show only settings pages; an action shot would be stronger.
@@ -138,9 +129,10 @@ Unlisted · All regions · Free.
 ```
 No test account needed.
 1. Install; setup page opens. Click "Sign in & connect", any Google account. Status: Connected.
-2. claude.ai (plan with custom connectors) > Settings > Connectors > Add custom connector, URL https://relay.ytx.app/mcp, same Google account.
-3. Open https://example.com in another tab, ask Claude: "Use FastLink to read the example.com tab, then click its link."
-Without Claude: see Options (site rules, Stop driving, Advanced control). support@ytx.app
+2. Open https://example.com in a tab.
+3. Open https://relay.ytx.app/try, same Google account. Pick the example.com tab, click "Read this tab", then "Click its first link".
+With Claude (custom connectors): add connector https://relay.ytx.app/mcp, ask "Use FastLink to read the example.com tab".
+Options: site rules, Stop driving, Advanced control. support@ytx.app
 ```
 
 ---
