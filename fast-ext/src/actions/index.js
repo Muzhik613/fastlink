@@ -116,6 +116,8 @@ function notifyOverlay(tabId, payload) {
 // fast_switch/fast_close find one, fast_list reads all) and fast_screenshot,
 // which defaults to the user's FOREGROUND tab. Every other action acts on one page.
 const SELF_TARGETING = new Set([...TAB_ACTIONS, 'fast_screenshot']);
+// Tab actions whose result names a different tab by design (the new, switched-to or closed one).
+const NAMES_OWN_TAB = new Set(['fast_tab', 'fast_list', 'fast_close', 'fast_switch']);
 
 export async function dispatchAction(action, rawArgs) {
   let args = rawArgs || {};
@@ -130,6 +132,12 @@ export async function dispatchAction(action, rawArgs) {
   // tab. Every step of the call (frames, waits, companion screenshot) then reads
   // args.tabId, so a parallel call that re-pins the target mid-flight can't
   // divert it.
+  // A call that names a tab acts on THAT tab or fails: a tabId that is present but not a
+  // number (e.g. "1220610012") is refused, never read as "no tab" (which meant the target tab).
+  if (args.tabId != null && typeof args.tabId !== 'number') {
+    return { error: `tabId must be a number (a tab id from fast_list); got ${JSON.stringify(args.tabId)}. Nothing was run.`, code: 'bad_tab' };
+  }
+  const askedTab = typeof args.tabId === 'number' ? args.tabId : null;
   if (!SELF_TARGETING.has(action) && typeof args.tabId !== 'number') {
     const id = await getTargetTabId();
     if (typeof id === 'number') args = { ...args, tabId: id };
@@ -176,7 +184,13 @@ export async function dispatchAction(action, rawArgs) {
       }
     }
     notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: true });
-    return await stampTab({ result }, actedTabId(result, args));
+    // Belt and braces: a page action asked for tab N must report tab N. Anything else is an
+    // error the caller sees (fast_tab/fast_close/fast_switch name their own tab by design).
+    const acted = actedTabId(result, args);
+    if (askedTab != null && !NAMES_OWN_TAB.has(action) && acted !== askedTab) {
+      return await stampTab({ error: `${action} was asked to act on tab ${askedTab} but reports tab ${acted}. Treat the result as wrong; check that tab with fast_list.`, code: 'wrong_tab', askedTab, actedTab: acted }, acted);
+    }
+    return await stampTab({ result }, acted);
   } catch (e) {
     const msg = e?.message || String(e);
     notifyOverlay(overlayTab, { phase: 'end', id: evtId, ok: false, error: showCallDetails ? msg : 'failed' });
