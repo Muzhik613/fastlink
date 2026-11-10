@@ -5,6 +5,7 @@ import { getText }         from './text.js';
 import { clickXY, typeText } from './input.js';
 import { handoffActions } from './handoff.js';
 import { updateSelf } from '../reloadSelf.js';
+import { fetchInPage } from './fetchInPage.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
 import { isInjectableUrl, missingTabError } from '../util.js';
@@ -163,7 +164,9 @@ export async function dispatchAction(action, rawArgs) {
   try {
     // card numbers are masked to their last 4 digits in every result (frames.js)
     const tRun = Date.now();
-    const r = slimResult(maskCardNumbers(await runOne(action, args)));
+    // fast_fetch returns a site API's raw body to a service: masking 13-19 digit runs would corrupt it (EAN-13 product codes)
+    const raw = await runOne(action, args);
+    const r = slimResult(action === 'fast_fetch' ? raw : maskCardNumbers(raw));
     // debug-only phase timings (page.js `_debug`): add the service worker's whole time — frame
     // routing, dry runs, bridge round trips — so page time and extension time can be told apart
     if (r && typeof r === 'object' && r._debug && typeof r._debug === 'object') r._debug = { ...r._debug, swTotalMs: Date.now() - tRun };
@@ -232,6 +235,7 @@ async function runOne(action, args) {
   if (Object.hasOwn(extraActions, action)) return extraActions[action](args);
   if (Object.hasOwn(handoffActions, action)) return handoffActions[action](args);
   if (action === 'fast_update')     return updateSelf();
+  if (action === 'fast_fetch')      return fetchInPage(args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
   if (action === 'fast_frame_read') return frameRead(args);

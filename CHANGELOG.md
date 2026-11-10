@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-10 — fast_fetch (relay + extension 0.4.21): page fetch for service tokens
+- **What:** `fast_fetch {browser, tabId, url, method?, headers?, body?}` runs ONE fixed `fetch()` in the tab's page context (cookies, origin, bot-check state of that site) and returns `{status, ok, contentType, length, truncated, body}` (body cut at 512 KB). No code is accepted. Allowed only for service tokens whose `agents.fetch_origins` (migration 0011) lists the URL's origin; listed in tools/list only for them. The URL must be https and same-origin as the tab (relay pins `expectOrigin`, the extension re-checks); GET/POST/HEAD; Cookie/Host/Origin/Referer headers dropped; body ≤ 64 KB, POST only. The body is returned byte-exact (no card-number masking: it would corrupt EAN-13 product codes). Audit logs method + origin + path.
+- **Why:** the Jewel API keeps one warm tab on www.jewelosco.com (Imperva trusts that Windows Chrome) and calls the site's own search JSON from it (~1 s instead of a 30 s page load).
+
 ## 2026-11-10 — extension 0.4.20: fast_type into rich-text editors in nested blank iframes (fb#23)
 - **What:** `src/actions/input.js`: (1) a focused contenteditable / designMode `<body>` is an editable field, not "the document itself" (CKEditor 4, TinyMCE, Wix Classic Editor text boxes); (2) focus is followed into an iframe with no URL of its own (no src, about:blank, srcdoc, javascript:): it is matched to its about:blank / about:srcdoc child frame instead of being reported "uninspectable".
 - **Why:** fb#23 (winkollel): Wix Classic Editor text → CKEditor iframe "Rich Text Editor, editor1" nested in the preview iframe; fast_type always said `no_editable_focus`.

@@ -57,6 +57,20 @@ const RELAY_TOOLS = [
 
 const BROWSER_TOOLS = [
   {
+    name: 'fast_fetch',
+    description: 'Service tokens only: fetch(url) from inside an open tab on the same site, with the page\'s own cookies. Returns {status, body} (body cut at 512 KB). Only origins allowed for the token; GET, POST or HEAD.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Absolute https URL on the tab\'s own origin.' },
+        method: { type: 'string', enum: ['GET', 'POST', 'HEAD'], description: 'Default GET.' },
+        headers: { type: 'object', description: 'Extra request headers (strings).' },
+        body: { type: 'string', description: 'Request body for POST (up to 64 KB).' },
+      },
+      required: ['url', 'tabId'],
+    },
+  },
+  {
     name: 'fast_update',
     description: 'Restart FastLink in a browser to load a newer version (from its update feed, or from disk for an unpacked copy). It answers first, then reconnects within seconds; check fast_status for the version. Tabs and pairing are kept.',
     inputSchema: { type: 'object', properties: {}, required: [] },

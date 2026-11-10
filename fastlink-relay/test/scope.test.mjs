@@ -41,3 +41,44 @@ test('an unscoped machine token still reaches every browser', async () => {
   await answer(r, s.win1, { result: [] });
   assert.deepEqual((await p).data, []);
 });
+
+const FETCH = { ...SCOPE, 'X-Fastlink-Fetch-Origins': JSON.stringify(['https://www.jewelosco.com']) };
+async function toolsList(r, headers) {
+  const { handleMcpRequest } = await import('../src/mcp.js');
+  const res = await handleMcpRequest(new Request('https://relay.test/__mcp', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) }), r);
+  return (await res.json()).result.tools.map((t) => t.name);
+}
+
+test('fast_fetch is listed and allowed only for tokens with fetch origins', async () => {
+  const { r, s } = await three();
+  assert.equal((await toolsList(r, {})).includes('fast_fetch'), false);
+  assert.equal((await toolsList(r, SCOPE)).includes('fast_fetch'), false);
+  assert.equal((await toolsList(r, FETCH)).includes('fast_fetch'), true);
+  const { data } = await mcpCall(r, 'fast_fetch', { browser: 'office', tabId: 5, url: 'https://www.jewelosco.com/x' }, SCOPE);
+  assert.match(data.error, /only for service tokens/);
+  assert.equal(s.office.sent.length, 0);
+});
+
+test('fast_fetch: other origins, non-https, no tabId, bad method and GET with a body are refused before the browser', async () => {
+  const { r, s } = await three();
+  const bad = [
+    { tabId: 5, url: 'https://evil.example/x' },
+    { tabId: 5, url: 'http://www.jewelosco.com/x' },
+    { url: 'https://www.jewelosco.com/x' },
+    { tabId: 5, url: 'https://www.jewelosco.com/x', method: 'DELETE' },
+    { tabId: 5, url: 'https://www.jewelosco.com/x', body: 'q=1' },
+  ];
+  for (const a of bad) assert.ok((await mcpCall(r, 'fast_fetch', { browser: 'office', ...a }, FETCH)).data.error, JSON.stringify(a));
+  assert.equal(s.office.sent.length, 0);
+});
+
+test('fast_fetch sends exactly the checked request, pinned to the origin, and returns the body', async () => {
+  const { r, s } = await three();
+  const p = mcpCall(r, 'fast_fetch', { browser: 'office', tabId: 5, url: 'https://www.jewelosco.com/api/search?q=milk', method: 'post', headers: { 'content-type': 'application/json', Cookie: 'x=1' }, body: '{"q":"milk"}' }, FETCH);
+  for (let i = 0; i < 200 && !s.office.lastCall(); i++) await tick();
+  const c = s.office.lastCall();
+  assert.equal(c.action, 'fast_fetch');
+  assert.deepEqual(c.args, { tabId: 5, url: 'https://www.jewelosco.com/api/search?q=milk', method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"q":"milk"}', expectOrigin: 'https://www.jewelosco.com' });
+  await reply(r, s.office, c.id, { result: { status: 200, body: '{"items":[]}' } });
+  assert.deepEqual((await p).data, { status: 200, body: '{"items":[]}' });
+});

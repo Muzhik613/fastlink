@@ -113,7 +113,8 @@ async function handleOne(rpc, relay, trace) {
         instructions: INSTRUCTIONS,
       });
     case 'tools/list':
-      return ok(id, { tools: TOOLS });
+      // fast_fetch exists only for service tokens that have fetch origins.
+      return ok(id, { tools: fetchScope(trace) ? TOOLS : TOOLS.filter((t) => t.name !== 'fast_fetch') });
     case 'tools/call': {
       // Bind to this connection's session — the one `initialize` just opened, the
       // one an earlier POST opened (looked up by Mcp-Session-Id or bearer token),
@@ -197,7 +198,7 @@ const MUTATING_TOOLS = new Set([
 ]);
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.
-const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_handoff_cancel', 'fast_update']);
+const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_handoff_cancel', 'fast_update', 'fast_fetch']);
 
 // Relay-native tools that never touch a page → exempt from the per-origin consent
 // gate. (fast_batch's STEPS are gated individually inside runBatch.)
@@ -325,6 +326,35 @@ function browserScope(trace) {
   if (!h) return null;
   try { const a = JSON.parse(h); return Array.isArray(a) ? a.map((x) => String(x).toLowerCase()) : []; } catch { return []; }
 }
+// Origins where this caller may use fast_fetch (set only by the worker), else null.
+function fetchScope(trace) {
+  const h = trace?.request?.headers?.get('X-Fastlink-Fetch-Origins');
+  if (!h) return null;
+  try { const a = JSON.parse(h); return Array.isArray(a) && a.length ? a.map(String) : null; } catch { return null; }
+}
+const FETCH_METHODS = new Set(['GET', 'POST', 'HEAD']);
+const FETCH_BODY_MAX = 64 * 1024;
+// fast_fetch args → the exact request the browser will send, or {error}. Same origin as the
+// allowed list only, a fixed set of methods, string headers minus the ones a page can't set anyway.
+function checkFetch(args, origins) {
+  let u;
+  try { u = new URL(String(args.url || '')); } catch { return { error: 'fast_fetch: url must be an absolute https URL.' }; }
+  if (u.protocol !== 'https:') return { error: 'fast_fetch: url must be https.' };
+  if (!origins.includes(u.origin)) return { error: `fast_fetch: ${u.origin} is not allowed for this token (allowed: ${origins.join(', ')}).` };
+  if (typeof args.tabId !== 'number') return { error: 'fast_fetch: tabId is required (a tab this service opened on that site).' };
+  const method = String(args.method || 'GET').toUpperCase();
+  if (!FETCH_METHODS.has(method)) return { error: `fast_fetch: method must be one of ${[...FETCH_METHODS].join(', ')}.` };
+  const headers = {};
+  for (const [k, v] of Object.entries(args.headers && typeof args.headers === 'object' ? args.headers : {})) {
+    if (typeof v !== 'string' || /^(cookie|host|origin|referer|content-length)$/i.test(k)) continue;
+    headers[k] = v;
+  }
+  const body = args.body == null ? undefined : String(args.body);
+  if (body && body.length > FETCH_BODY_MAX) return { error: `fast_fetch: body is over ${FETCH_BODY_MAX} characters.` };
+  if (body && method !== 'POST') return { error: 'fast_fetch: a body needs method POST.' };
+  return { args: { tabId: args.tabId, url: u.href, method, headers, ...(body !== undefined ? { body } : {}), expectOrigin: u.origin } };
+}
+
 const NO_BROWSER_TOOLS = new Set(['fast_status', 'fast_feedback', 'fast_profile', 'fast_handoff_wait', 'fast_handoff_cancel']);
 
 async function dispatchTool(params, relay, trace) {
@@ -388,6 +418,18 @@ async function dispatchTool(params, relay, trace) {
   {
     const verdict = await consentVerdict(relay, name, target, gateTab(name, args));
     if (verdict) return textResult(verdict);
+  }
+
+  // Page fetch for service tokens: a fixed fetch() inside the tab, same origin, allowed origins only.
+  if (name === 'fast_fetch') {
+    const origins = fetchScope(trace);
+    if (!origins) return textResult({ error: 'fast_fetch is only for service tokens with allowed fetch origins.' });
+    const chk = checkFetch(args, origins);
+    if (chk.error) return textResult(chk);
+    const payload = await relay.callExtension('fast_fetch', chk.args, undefined, target);
+    relay.audit('fast_fetch', { method: chk.args.method, url: new URL(chk.args.url).origin + new URL(chk.args.url).pathname }, !(payload && 'error' in payload), target);
+    if (payload && typeof payload === 'object' && 'error' in payload) return textResult(payload);
+    return textResult(payload?.result ?? null);
   }
 
   // Human hand-off: a link for the user's phone; the relay serves it (src/handoff.js).

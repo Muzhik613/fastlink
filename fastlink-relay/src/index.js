@@ -88,6 +88,10 @@ export class FastlinkApiHandler extends WorkerEntrypoint {
     const scope = this.ctx?.props?.browsers ?? this.props?.browsers;
     if (isAgent && Array.isArray(scope)) fwd.headers.set('X-Fastlink-Browsers', JSON.stringify(scope));
     else fwd.headers.delete('X-Fastlink-Browsers');
+    // Origins where this token may use fast_fetch (agents.fetch_origins); same rule: set here or removed.
+    const fo = this.ctx?.props?.fetchOrigins ?? this.props?.fetchOrigins;
+    if (isAgent && Array.isArray(fo) && fo.length) fwd.headers.set('X-Fastlink-Fetch-Origins', JSON.stringify(fo));
+    else fwd.headers.delete('X-Fastlink-Fetch-Origins');
     const res = await stub.fetch(fwd);
     return withCors(res, cors);
   }
@@ -100,7 +104,7 @@ export async function resolveAgentToken({ token, env }) {
   if (typeof token !== 'string' || !token.startsWith('fla_') || !env.DB) return null;
   const agent = await lookupAgent(env.DB, token);
   if (!agent || agent.revoked) return null;
-  return { props: { userId: String(agent.userId), agent: true, ...(agent.browsers ? { browsers: agent.browsers } : {}) } };
+  return { props: { userId: String(agent.userId), agent: true, ...(agent.browsers ? { browsers: agent.browsers } : {}), ...(agent.fetchOrigins ? { fetchOrigins: agent.fetchOrigins } : {}) } };
 }
 
 // Identity-mode reader (mirrors auth.js identityMode / userRelay.#identityMode so
