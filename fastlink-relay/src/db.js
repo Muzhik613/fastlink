@@ -555,7 +555,7 @@ export async function lookupAgent(db, agentToken) {
   let browsers = null;
   try { const b = row.browsers ? JSON.parse(row.browsers) : null; if (Array.isArray(b)) browsers = b.map((x) => String(x).toLowerCase()); } catch { browsers = []; }   // unreadable scope = nothing
   let fetchOrigins = null;
-  try { const f = row.fetch_origins ? JSON.parse(row.fetch_origins) : null; if (Array.isArray(f)) fetchOrigins = f.map(String); } catch { fetchOrigins = null; }
+  try { const f = row.fetch_origins ? JSON.parse(row.fetch_origins) : null; if (Array.isArray(f)) fetchOrigins = f; } catch { fetchOrigins = null; }   // entries: "https://site" or {origin, browsers:{name:[methods]}}
   return { userId: row.user_id, label: row.label, revoked: !!row.revoked, browsers, fetchOrigins };
 }
 

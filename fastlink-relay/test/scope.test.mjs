@@ -82,3 +82,21 @@ test('fast_fetch sends exactly the checked request, pinned to the origin, and re
   await reply(r, s.office, c.id, { result: { status: 200, body: '{"items":[]}' } });
   assert.deepEqual((await p).data, { status: 200, body: '{"items":[]}' });
 });
+
+test('fast_fetch per-browser methods: POST on office, GET only on winytx', async () => {
+  const { r, s } = await three();
+  const H = { ...SCOPE, 'X-Fastlink-Fetch-Origins': JSON.stringify([{ origin: 'https://www.jewelosco.com', browsers: { office: ['GET', 'POST', 'HEAD'], winytx: ['GET', 'HEAD'] } }]) };
+  const no = (await mcpCall(r, 'fast_fetch', { browser: 'winytx', tabId: 5, url: 'https://www.jewelosco.com/a', method: 'POST', body: 'x' }, H)).data;
+  assert.match(no.error, /POST .* not allowed on browser "winytx"/);
+  assert.equal(s.winytx.sent.length, 0);
+  const p = mcpCall(r, 'fast_fetch', { browser: 'office', tabId: 5, url: 'https://www.jewelosco.com/a', method: 'POST', body: 'x' }, H);
+  for (let i = 0; i < 200 && !s.office.lastCall(); i++) await tick();
+  assert.equal(s.office.lastCall().args.method, 'POST');
+  await reply(r, s.office, s.office.lastCall().id, { result: { status: 200 } });
+  await p;
+  const g = mcpCall(r, 'fast_fetch', { browser: 'winytx', tabId: 6, url: 'https://www.jewelosco.com/a' }, H);
+  for (let i = 0; i < 200 && !s.winytx.lastCall(); i++) await tick();
+  assert.equal(s.winytx.lastCall().args.method, 'GET');
+  await reply(r, s.winytx, s.winytx.lastCall().id, { result: { status: 200 } });
+  await g;
+});

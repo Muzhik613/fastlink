@@ -330,20 +330,30 @@ function browserScope(trace) {
 function fetchScope(trace) {
   const h = trace?.request?.headers?.get('X-Fastlink-Fetch-Origins');
   if (!h) return null;
-  try { const a = JSON.parse(h); return Array.isArray(a) && a.length ? a.map(String) : null; } catch { return null; }
+  try {
+    const a = JSON.parse(h);
+    if (!Array.isArray(a) || !a.length) return null;
+    // "https://site" = every browser and method; {origin, browsers:{name:[METHODS]}} = only those
+    return a.map((r) => (typeof r === 'string' ? { origin: r } : { origin: String(r?.origin || ''), browsers: r?.browsers || null }));
+  } catch { return null; }
 }
 const FETCH_METHODS = new Set(['GET', 'POST', 'HEAD']);
 const FETCH_BODY_MAX = 64 * 1024;
 // fast_fetch args → the exact request the browser will send, or {error}. Same origin as the
 // allowed list only, a fixed set of methods, string headers minus the ones a page can't set anyway.
-function checkFetch(args, origins) {
+function checkFetch(args, rules, browser) {
   let u;
   try { u = new URL(String(args.url || '')); } catch { return { error: 'fast_fetch: url must be an absolute https URL.' }; }
   if (u.protocol !== 'https:') return { error: 'fast_fetch: url must be https.' };
-  if (!origins.includes(u.origin)) return { error: `fast_fetch: ${u.origin} is not allowed for this token (allowed: ${origins.join(', ')}).` };
+  const rule = rules.find((r) => r.origin === u.origin);
+  if (!rule) return { error: `fast_fetch: ${u.origin} is not allowed for this token (allowed: ${rules.map((r) => r.origin).join(', ')}).` };
   if (typeof args.tabId !== 'number') return { error: 'fast_fetch: tabId is required (a tab this service opened on that site).' };
   const method = String(args.method || 'GET').toUpperCase();
   if (!FETCH_METHODS.has(method)) return { error: `fast_fetch: method must be one of ${[...FETCH_METHODS].join(', ')}.` };
+  if (rule.browsers) {
+    const allowed = (rule.browsers[browser] || []).map((m) => String(m).toUpperCase());
+    if (!allowed.includes(method)) return { error: `fast_fetch: ${method} to ${u.origin} is not allowed on browser "${browser}" (allowed there: ${allowed.join(', ') || 'nothing'}).` };
+  }
   const headers = {};
   for (const [k, v] of Object.entries(args.headers && typeof args.headers === 'object' ? args.headers : {})) {
     if (typeof v !== 'string' || /^(cookie|host|origin|referer|content-length)$/i.test(k)) continue;
@@ -424,7 +434,7 @@ async function dispatchTool(params, relay, trace) {
   if (name === 'fast_fetch') {
     const origins = fetchScope(trace);
     if (!origins) return textResult({ error: 'fast_fetch is only for service tokens with allowed fetch origins.' });
-    const chk = checkFetch(args, origins);
+    const chk = checkFetch(args, origins, target.name);
     if (chk.error) return textResult(chk);
     const payload = await relay.callExtension('fast_fetch', chk.args, undefined, target);
     relay.audit('fast_fetch', { method: chk.args.method, url: new URL(chk.args.url).origin + new URL(chk.args.url).pathname }, !(payload && 'error' in payload), target);

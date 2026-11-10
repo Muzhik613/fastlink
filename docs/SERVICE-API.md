@@ -57,8 +57,8 @@ POST /mcp
   - The response body is cut at 512 KB (`truncated:true`) and returned byte-exact.
   - Pattern: open one tab on the site (`fast_tab`, background + scoped), keep it, call
     `fast_fetch` against it repeatedly; reopen it if a call says the tab is gone or moved.
-  - On winytx this runs with Yaakov's own logged-in cookies: use GET/search endpoints only;
-    nothing that changes his account (cart, lists, profile).
+  - Methods per browser for jewel-api: office GET/POST/HEAD; winytx GET/HEAD only (it is
+    Yaakov's own logged-in profile; the relay refuses POST there).
 
 There is no JavaScript evaluation for services (fast_fetch takes a URL, never code). `fast_evaluate` exists only in the locked secure
 build. Read pages with `fast_snapshot` / `fast_text`.
