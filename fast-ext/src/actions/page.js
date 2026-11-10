@@ -576,14 +576,30 @@ const refreshLiveEntry = (el, entry) => {
 // change without thrashing layout. The minor accuracy loss vs innerText
 // (no rendered-only-via-CSS text, no respect for display:none kids) is
 // the right tradeoff for keeping the page responsive.
-const makeClickEntry = (el) => {
-  const lbl = labelFor(el);
-  // Only de-dup on custom elements / shadow hosts — that's where the
-  // host+slot+inner concatenation artifact occurs; normal elements are left
-  // exactly as-is so we never mangle legitimately-repeating text.
+// A click entry's own text. Only de-dup on custom elements / shadow hosts — that's where
+// the host+slot+inner concatenation artifact occurs; normal elements are left exactly
+// as-is so we never mangle legitimately-repeating text.
+const clickInnerText = (el) => {
   const rawText = (el.textContent || '').trim();
   const isCustom = (el.tagName && el.tagName.includes('-')) || !!el.shadowRoot;
-  const innerText = (isCustom ? collapseRepeat(rawText) : rawText).slice(0, 120);
+  return (isCustom ? collapseRepeat(rawText) : rawText).slice(0, 120);
+};
+
+// The observer does not watch characterData, so a control whose text node the page edits
+// in place kept its old text in every snapshot (feedback #25, BofA Zelle: the submit button
+// read "Next" on every step and "Pay" on the review step, no remount; snapshots kept
+// "Next" and an id click was refused in a loop). Each item a snapshot RETURNS re-reads its
+// textContent (no layout) and is re-indexed under the same id when it differs.
+const refreshText = (el, entry) => {
+  try {
+    if (entry.kind === 'click') { if (clickInnerText(el) !== (entry.innerText || '')) indexElement(el); }
+    else { const t = (el.textContent || '').trim().slice(0, 500); if (t !== entry.text) entry.text = t; }
+  } catch {}
+};
+
+const makeClickEntry = (el) => {
+  const lbl = labelFor(el);
+  const innerText = clickInnerText(el);
   const titleAttr = el.getAttribute('title') || null;
   const describedBy = resolveIdRefs(el, 'aria-describedby');
   // NOTE: el.value is deliberately NOT part of this chain — a live value is never
@@ -1362,7 +1378,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       // viewport filters) — so it stays O(items returned), not a re-walk. Without
       // it a filled field reports its pre-fill default forever (no mutation record
       // is ever produced for a .value write).
-      if (entry.live) refreshLiveEntry(el, entry);
+      if (entry.live) refreshLiveEntry(el, entry); else refreshText(el, entry);
       // Emit only keys that carry a meaningful value — null/undefined/empty-string
       // fields are dropped entirely (roughly halves the payload with zero info
       // loss; every consumer reads `it.X && …` / `(it.X || '')`, so absent and
@@ -1397,6 +1413,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       if (!offscreen && isEmptyFillable(el, entry)) fillable++;
       items.push(item);
     } else {
+      refreshText(el, entry);
       content.push({ tag: entry.tag, text: entry.text, x, y, w, h, inFrame: off.inFrame || undefined });
       // cursor:pointer text is ALSO a (weak) click target; identical content text is deduped below
       if (entry.text && pointerContent(el)) items.push({ i: entry.id, tag: entry.tag, text: entry.text.slice(0, 120), x, y, w, h, clickable: 'script', ...(off.inFrame ? { inFrame: true } : {}) });
@@ -3955,7 +3972,16 @@ async function runPageAction(action, args) {
         if (kinded.length === 1) { preMatched = [kinded[0].x]; args.__reResolved = true; }
       }
       if (preMatched) { /* acted below */ }
-      else if (!hasText) return { error: `${why} — nothing was clicked; take a fresh fast_snapshot and pass the id it lists, or text:"<label>"`, idStale: true, ...(now ? { labelNow: now } : {}) };
+      else if (!hasText) {
+        // Relabelled in place: list it again as it reads now (the result's `relisted` item is
+        // recorded as served), so the SAME id passed again clicks it, a deliberate confirm
+        // after reading the new label. Never clicked on this call (feedback #25).
+        if (it && now && now !== shown) {
+          return { error: `${why} — nothing was clicked. If "${now}" is what you mean to click, pass id:"${idP}${want}" again; else take a fresh fast_snapshot`, idStale: true, labelNow: now,
+            relisted: { i: it.i, tag: it.tag, text: it.text, ...(it.label ? { label: it.label } : {}), ...(it.ariaLabel ? { ariaLabel: it.ariaLabel } : {}), ...(it.role ? { role: it.role } : {}), ...(it.type ? { type: it.type } : {}) } };
+        }
+        return { error: `${why} — nothing was clicked; take a fresh fast_snapshot and pass the id it lists, or text:"<label>"`, idStale: true, ...(now ? { labelNow: now } : {}) };
+      }
       else args.__idStale = true;
     }
     for (;;) {
