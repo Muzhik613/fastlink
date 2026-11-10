@@ -47,8 +47,20 @@ POST /mcp
 - **Read text:** `fast_text {browser, tabId, selector?, maxLen?}` → `{text, truncated}`.
 - **Close the tab:** `fast_close {browser, tabId}`.
 - **Calls are capped at about 30 s each.** Split long waits into several `fast_wait` calls.
+- **Fetch from inside a tab (`fast_fetch`):** `{browser, tabId, url, method?, headers?, body?}` →
+  `{status, ok, url, contentType, length, truncated, body}`.
+  - It runs one fixed `fetch()` in the tab's own page, with that site's cookies and bot-check
+    state, so the site's own JSON API answers as it would for the page (~0.5 s).
+  - Only for tokens with allowed fetch origins (jewel-api: `https://www.jewelosco.com`), and only
+    same-origin as the tab. GET, POST or HEAD; a body only with POST (up to 64 KB).
+  - `Cookie`, `Host`, `Origin`, `Referer` headers are dropped (the browser sets them).
+  - The response body is cut at 512 KB (`truncated:true`) and returned byte-exact.
+  - Pattern: open one tab on the site (`fast_tab`, background + scoped), keep it, call
+    `fast_fetch` against it repeatedly; reopen it if a call says the tab is gone or moved.
+  - On winytx this runs with Yaakov's own logged-in cookies: use GET/search endpoints only;
+    nothing that changes his account (cart, lists, profile).
 
-There is no JavaScript evaluation for services. `fast_evaluate` exists only in the locked secure
+There is no JavaScript evaluation for services (fast_fetch takes a URL, never code). `fast_evaluate` exists only in the locked secure
 build. Read pages with `fast_snapshot` / `fast_text`.
 
 ## Minimal Node example
