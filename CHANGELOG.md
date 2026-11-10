@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-10 — extension 0.4.20: fast_type into rich-text editors in nested blank iframes (fb#23)
+- **What:** `src/actions/input.js`: (1) a focused contenteditable / designMode `<body>` is an editable field, not "the document itself" (CKEditor 4, TinyMCE, Wix Classic Editor text boxes); (2) focus is followed into an iframe with no URL of its own (no src, about:blank, srcdoc, javascript:): it is matched to its about:blank / about:srcdoc child frame instead of being reported "uninspectable".
+- **Why:** fb#23 (winkollel): Wix Classic Editor text → CKEditor iframe "Rich Text Editor, editor1" nested in the preview iframe; fast_type always said `no_editable_focus`.
+- **Tested:** Chrome for Testing with the unpacked extension, outer page → same-origin preview iframe → CKEditor 4.22.1 (blank editing iframe). Old code: `no_editable_focus` ("uninspectable <iframe>"). New: `verified:true`, editor reads `<p>Hello World</p>`.
+
 ## 2026-11-10 — extension 0.4.19: a named tab is checked before anything acts on it
 - **What:** `getActiveTab(tabId)` returns exactly that tab or nothing (before, the guard in 0.4.15 reported a wrong tab only after the action). A tabId not in this browser says it may be another profile's tab (tab ids are shared across the profiles of one Chrome).
 - **Why:** win1 (0.4.10) 11-10 21:06 UTC, from the hvm boss session's transcript: fast_nav {tabId:1220610012 (active ledger, file://)} replied from 1220610013 (target, Gmail compose to hachzek) and navigated it; fast_text on 012 read 013 too. Helper, relay and the 0.4.10 files (byte-identical to the tag) all pass the number through; the cause in 0.4.10 is not found.

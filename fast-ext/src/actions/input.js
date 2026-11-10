@@ -169,9 +169,24 @@ function inspectFocusInFrame() {
   for (let depth = 0; depth < 20 && el && el.shadowRoot && el.shadowRoot.activeElement; depth++) el = el.shadowRoot.activeElement;
   const tag = el ? (el.tagName || '').toLowerCase() : 'none';
   if (tag === 'iframe' || tag === 'frame') {
-    let src = '', host = '';
-    try { const u = new URL(el.src || '', location.href); src = u.href; host = u.host; } catch {}
-    return { tag: 'iframe', src, label: host || (el.getAttribute && el.getAttribute('title')) || '' };
+    // A frame with no URL of its own (no src, about:blank, srcdoc, javascript:) is how rich-text
+    // editors build their editing area (CKEditor 4: "Rich Text Editor, editor1"): `blank` lets
+    // the caller match it to its about:blank / about:srcdoc child frame.
+    const raw = (el.getAttribute && el.getAttribute('src')) || '';
+    const blank = el.hasAttribute && el.hasAttribute('srcdoc') ? 'about:srcdoc' : (!raw.trim() || /^(about:blank|javascript:)/i.test(raw.trim()) ? 'about:blank' : '');
+    let src = blank, host = '';
+    if (!blank) { try { const u = new URL(raw, location.href); src = u.href; host = u.host; } catch {} }
+    return { tag: 'iframe', src, blank: !!blank, label: host || (el.getAttribute && el.getAttribute('title')) || '' };
+  }
+  // The whole document is the field: a contenteditable <body> or designMode (CKEditor 4,
+  // TinyMCE, Wix Classic Editor text boxes). That body IS an editable, readable field.
+  const docEditable = el === document.body && (document.designMode === 'on' || (document.body && document.body.isContentEditable));
+  if (docEditable) {
+    const value = el.textContent || '';
+    let label = '';
+    try { label = (window.frameElement && (window.frameElement.getAttribute('title') || window.frameElement.getAttribute('aria-label'))) || document.title || ''; } catch {}
+    return { tag: 'body', type: 'contenteditable', editable: true, readable: true, underPointer: true,
+      label: trim(label, 80), value: trim(value, 300), valueLen: value.length };
   }
   if (!el || el === document.body || el === document.documentElement) {
     return {
@@ -257,7 +272,9 @@ async function followFocus(runIn, childrenOf) {
     const kids = (await childrenOf(frameId)) || [];
     const origin = (u) => { try { return new URL(u).origin; } catch { return ''; } };
     let cands = kids.filter((k) => k.url === d.src);
-    if (!cands.length) cands = kids.filter((k) => origin(k.url) && origin(k.url) === origin(d.src));
+    // a URL-less frame (about:blank / about:srcdoc / javascript:) → its blank child frames
+    if (!cands.length && d.blank) cands = kids.filter((k) => /^(about:(blank|srcdoc)|javascript:)/i.test(k.url || 'about:blank'));
+    if (!cands.length) cands = kids.filter((k) => origin(k.url) && origin(k.url) !== 'null' && origin(k.url) === origin(d.src));
     if (!cands.length) return unreachable(via);
     let next = null, nextId = cands[0].id;
     for (const c of cands) {
