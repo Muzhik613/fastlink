@@ -130,3 +130,16 @@ test('review fixes: recording a lock marks every live socket of that pairing; a 
   const res = await renameDevice(db, 'u1', 'tokN', 'aliya', { replace: true, liveTokens: new Set() });
   assert.deepEqual(res, { ok: false, error: 'name_locked' });
 });
+
+test('fast_status shows a secure browser\'s page-JavaScript state from its hello (feedback #25)', async () => {
+  const { r, ws } = await secureRelay();
+  let b = (await mcpCall(r, 'fast_status', {}, AGENT)).data.browsers.find((x) => x.name === 'aliya');
+  assert.equal(b.evaluate, undefined, 'an older secure build that says nothing shows nothing');
+  const off = 'off: turn on "Allow User Scripts" (chrome://extensions → FastLink → Details)';
+  await r.webSocketMessage(ws, JSON.stringify({ type: 'hello', version: '0.4.15', secure: true, locked: true, keyId: FRAME.keyId, evaluate: off }));
+  b = (await mcpCall(r, 'fast_status', {}, AGENT)).data.browsers.find((x) => x.name === 'aliya');
+  assert.equal(b.evaluate, off);
+  await r.webSocketMessage(ws, JSON.stringify({ type: 'hello', version: '0.4.15', secure: true, locked: true, keyId: FRAME.keyId, evaluate: 'on' }));
+  b = (await mcpCall(r, 'fast_status', {}, AGENT)).data.browsers.find((x) => x.name === 'aliya');
+  assert.equal(b.evaluate, 'on');
+});

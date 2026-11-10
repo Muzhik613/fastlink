@@ -47,7 +47,9 @@ scripts/build-secure.sh                       # runs the tests, writes dist/fast
   `*.bank.com` for the site and its subdomains).
 - **Scripts on that machine** seal automatically (`call.js`, `fastlink_call.py`) when a lock
   code exists for the browser.
-- **Check:** `fast_status` shows the browser with `secure: true, locked: true`.
+- **Check:** `fast_status` shows the browser with `secure: true, locked: true` and `evaluate`:
+  `"on"`, or `"off: …"` naming what to turn on (the options tick, or Chrome's "Allow User
+  Scripts" switch; re-checked every 30 s).
 - **To change code:** edit, run `cd fast-ext && npm test` and `cd fast-dxt && npm test`,
   rebuild, re-install. The relay never needs to change for code here, unless you change the
   frame fields `{v, keyId, nonce, ct}`.

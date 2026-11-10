@@ -1,6 +1,6 @@
 // Options page: the "Secure browser lock" card. scripts/build-secure.sh adds this script
 // to the secure build's options.html; it inserts the card above the pairing card.
-import { loadLock, isLocked, lockKeyId, lockSettings, setLock, setAllowlist, clearLock, normalizeAllowlist } from './lock.js';
+import { loadLock, isLocked, lockKeyId, lockSettings, setLock, setAllowlist, clearLock, normalizeAllowlist, evaluateState, userScriptsAllowed, EVAL_OFF_USER_SCRIPTS } from './lock.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -40,6 +40,10 @@ function paint() {
   $('lock-status').textContent = isLocked()
     ? `Locked. Key id ${lockKeyId()}; ${s.allowlist.length} allowed site(s).`
     : 'Not locked: this browser refuses every call until a lock code is saved.';
+  // Page JavaScript allowed here but Chrome's switch is off: say so now, not mid-flow (feedback #25).
+  if (evaluateState(userScriptsAllowed()) === EVAL_OFF_USER_SCRIPTS) {
+    $('lock-status').textContent += ' Page JavaScript is allowed but will not run: turn on "Allow User Scripts" at chrome://extensions → FastLink → Details.';
+  }
   $('lock-allow').value = s.allowlist.join('\n');
   $('lock-remote-add').checked = s.remoteAdd;
   $('lock-eval').checked = s.allowEval;

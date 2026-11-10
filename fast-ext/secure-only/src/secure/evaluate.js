@@ -6,6 +6,7 @@
 // runs in the page's MAIN world, so it sees page variables. The extension itself never
 // evaluates strings (no eval / new Function / CDP Runtime.evaluate).
 import { getInjectableTab } from '../util.js';   // installed as src/secure/evaluate.js by scripts/build-secure.sh
+import { userScriptsAllowed } from './lock.js';
 
 // Under the tab queue's 29 s cap and the relay's 30 s call limit.
 export const EVAL_DEADLINE_MS = 25_000;
@@ -13,11 +14,6 @@ export const EVAL_TIMEOUT_MSG = `fast_evaluate: the function did not settle with
 
 export const USER_SCRIPTS_OFF =
   'fast_evaluate is off in this browser. To allow it: chrome://extensions → FastLink → Details → turn on "Allow User Scripts".';
-
-// true when the user has allowed user scripts for FastLink (the API throws otherwise).
-export function userScriptsAllowed() {
-  try { return typeof chrome.userScripts?.execute === 'function'; } catch { return false; }
-}
 
 export async function evaluate({ fn, args, tabId }) {
   if (typeof fn !== 'string' || !fn.trim()) return { error: 'fast_evaluate: `fn` must be a function source string' };

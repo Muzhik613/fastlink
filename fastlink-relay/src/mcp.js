@@ -29,6 +29,7 @@ const INSTRUCTIONS = [
   '- READ a page with fast_snapshot — a fast, structured index of the DOM (readable text + clickable elements with coords). Do NOT take a screenshot to read content.',
   '- CROSS-ORIGIN FRAMES (embedded checkout/card forms, portal blades) are ordinary DOM targets: fast_snapshot lists their items under `frames`, and fast_click / fast_fill / fast_select_option act inside them directly. If a frame is still loading, snapshot again once it has rendered. Never use a screenshot to read ordinary page content — fast_snapshot does that.',
   '- CHAIN a known multi-step sequence in ONE call with fast_batch (e.g. navigate → fill → click → wait) to cut round-trips.',
+  '- There is no page-JavaScript tool (no fast_evaluate, also not as a fast_batch step): read with fast_snapshot / fast_text, act with the DOM tools.',
   '- Fill multi-field forms with ONE fast_fill {fields:{label:value}} (or one fast_batch), never field-by-field.',
   '- Action results (fast_click / fast_fill / fast_wait) already include a snapshot — chain off THAT; do not issue a separate fast_snapshot right after.',
   '- Do NOT add artificial waits/sleeps — tabs load fast. Use fast_wait only when there is a real async signal (new view text, network idle), not as a reflex after every action.',
@@ -434,7 +435,7 @@ function imageResult(result) {
 // `browser` (or none → the only online one, else `lastBrowser`) would be routed.
 async function relayStatus(relay, browser, lastBrowser) {
   const devices = await relay.deviceList();
-  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen, version: d.version, ...(d.secure ? { secure: true, locked: d.secure.locked, ...(d.secure.mismatch ? { lockMismatch: true } : {}) } : {}) }));
+  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen, version: d.version, ...(d.secure ? { secure: true, locked: d.secure.locked, ...(d.secure.mismatch ? { lockMismatch: true } : {}), ...(d.secure.evaluate ? { evaluate: d.secure.evaluate } : {}) } : {}) }));
   const target = await relay.resolveTarget(browser, lastBrowser);
   const connected = !!(target && target.ws);
   // Per-origin consent (M4): the decision for the ROUTED browser's last-known origin.

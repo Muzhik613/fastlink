@@ -77,7 +77,7 @@ const NATIVE_TAB_ACTIONS = new Set(['fast_switch', 'fast_close']);
 // (fast-ext/secure-only/src/secure/sealed.js). null for a normal browser.
 export const SEALED_ACTION = 'fast_sealed';
 function secureInfo(ws) {
-  try { const a = ws.deserializeAttachment() || {}; return a.secure ? { locked: !!a.locked, keyId: a.keyId || null } : null; } catch { return null; }
+  try { const a = ws.deserializeAttachment() || {}; return a.secure ? { locked: !!a.locked, keyId: a.keyId || null, evaluate: a.evaluate || null } : null; } catch { return null; }
 }
 
 // The lock as the RELAY knows it (devices.locked_key_id: recorded from the first locked
@@ -91,9 +91,11 @@ function serverLockOf(ws) {
 function lockState(ws) {
   const sec = ws ? secureInfo(ws) : null;
   const serverKey = ws ? serverLockOf(ws) : null;
-  if (!serverKey) return sec ? { secure: true, locked: sec.locked, mismatch: false } : null;
+  // `evaluate`: page JavaScript's state as the browser reports it ("on" / "off: <why>").
+  const evaluate = sec?.evaluate ? { evaluate: sec.evaluate } : {};
+  if (!serverKey) return sec ? { secure: true, locked: sec.locked, mismatch: false, ...evaluate } : null;
   const ok = !!(sec && sec.locked && sec.keyId === serverKey);
-  return { secure: true, locked: true, mismatch: !ok };
+  return { secure: true, locked: true, mismatch: !ok, ...evaluate };
 }
 
 // The version the extension announced in its hello on this socket ('' if none yet).
@@ -315,7 +317,7 @@ export class UserRelay extends DurableObject {
       connectedAt: newestByToken.get(r.deviceToken)?.at || null,
       // FastLink extension version from that browser's hello (null when offline).
       version: newestByToken.has(r.deviceToken) ? (extVersion(newestByToken.get(r.deviceToken).ws) || null) : null,
-      // Secure browser: { secure, locked, mismatch } from the relay's record + the live
+      // Secure browser: { secure, locked, mismatch, evaluate? } from the relay's record + the live
       // client (null for a normal browser).
       secure: lockState(newestByToken.get(r.deviceToken)?.ws || null),
       lastSeen: r.lastSeen,
@@ -483,6 +485,7 @@ export class UserRelay extends DurableObject {
       this.#stamp(ws, {
         installId: msg.installId, version: msg.version,
         secure: msg.secure === true, locked: msg.locked === true, keyId,
+        evaluate: typeof msg.evaluate === 'string' ? msg.evaluate.slice(0, 120) : null,
       });
       // First locked hello: the relay records the lock and enforces it from then on.
       if (msg.secure === true && msg.locked === true && keyId) {

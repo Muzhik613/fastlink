@@ -71,6 +71,21 @@ export function lockSettings() {
   return state ? { allowlist: [...state.allowlist], remoteAdd: state.remoteAdd, allowEval: state.allowEval } : { allowlist: [], remoteAdd: false, allowEval: false };
 }
 
+// true when the user has allowed user scripts for FastLink (the API throws otherwise).
+export function userScriptsAllowed() {
+  try { return typeof chrome.userScripts?.execute === 'function'; } catch { return false; }
+}
+
+// fast_evaluate's state for the hello (fast_status shows it per browser, feedback #25), so a
+// driving script learns it is off before a flow needs it. `userScriptsOn`: Chrome's
+// "Allow User Scripts" switch (userScriptsAllowed()).
+export const EVAL_OFF_OPTIONS = 'off: "Allow page JavaScript" unticked in FastLink options';
+export const EVAL_OFF_USER_SCRIPTS = 'off: turn on "Allow User Scripts" (chrome://extensions → FastLink → Details)';
+export function evaluateState(userScriptsOn) {
+  if (!state || !state.allowEval) return EVAL_OFF_OPTIONS;
+  return userScriptsOn ? 'on' : EVAL_OFF_USER_SCRIPTS;
+}
+
 async function readStore(key) { return (await chrome.storage.local.get(key))[key]; }
 
 export async function loadLock() {
