@@ -26,6 +26,7 @@
 //
 // See SPEC.md §3d.
 
+import { handoffRequest } from './handoff.js';
 import { DurableObject } from 'cloudflare:workers';
 import { handleMcpRequest } from './mcp.js';
 import { readTrace } from './timing.js';
@@ -159,6 +160,8 @@ export class UserRelay extends DurableObject {
 
     if (url.pathname === '/__ext') return this.#acceptExtension(request);
     if (url.pathname === '/__mcp') return handleMcpRequest(request, this);
+    // Hand-off phone page calls: reached only via the worker's /h/<token>, which proved the token.
+    if (url.pathname === '/__handoff') return handoffRequest(this, request);
     if (url.pathname === '/__revoke') return this.#revokeDevice(request);
     // Named-browser management for the extension options page. Reached only via
     // auth.js's device-token-authed /devices, which resolves the token to THIS

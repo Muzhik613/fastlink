@@ -32,9 +32,37 @@ const RELAY_TOOLS = [
       required: ['text'],
     },
   },
+  {
+    name: 'fast_handoff_wait',
+    description: 'Wait (up to 25 s per call) for a fast_handoff to finish. Returns status pending, done (the person tapped Done), or expired. Call again while pending.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handoffId: { type: 'string', description: 'The handoffId fast_handoff returned.' },
+        waitSec: { type: 'number', description: 'Seconds to wait, 0-25 (default 20).' },
+      },
+      required: ['handoffId'],
+    },
+  },
 ];
 
 const BROWSER_TOOLS = [
+  {
+    name: 'fast_handoff',
+    description: 'A captcha or "are you human" check you must not solve: get a short-lived link for the user to open on their phone. It shows only the check, and their taps click it. Send them the link, then call fast_handoff_wait. Never solve the check yourself.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        note: { type: 'string', maxLength: 200, description: 'One line shown above the check (default: tap the check, then Done).' },
+        minutes: { type: 'number', description: 'How long the link works, 1-30 (default 10).' },
+        region: {
+          type: 'object', description: 'Only if the check is not found automatically: the area to show, in viewport CSS px.',
+          properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } },
+        },
+      },
+      required: [],
+    },
+  },
   {
     name: 'fast_snapshot',
     description: 'Read the page: `items` are controls as {i, tag, label, value} (offscreen:true when below the fold; an open dialog first) plus `content` text. Visible frames are under `frames`, their ids "f<frameId>:<i>". truncated:true means this read was cut: call again with full:true.',

@@ -28,6 +28,7 @@
 // Default when IDENTITY_MODE is unset: 'shared' (safe single-user) unless Google creds
 // are present. Flip IDENTITY_MODE=magic once the email provider is configured — no rebuild.
 
+import { handleHandoffRoute } from './handoff.js';
 import * as db from './db.js';
 import { TRY_ACTIONS, runTryAction, tryPageBody } from './try.js';
 
@@ -67,6 +68,7 @@ export function makeDefaultHandler() {
     async fetch(request, env, ctx) {
       try {
         const url = new URL(request.url);
+        if (url.pathname.startsWith('/h/')) return handleHandoffRoute(request, env);
         switch (url.pathname) {
           case '/authorize':
             return handleAuthorize(request, env);

@@ -14,6 +14,7 @@
 //
 // See SPEC.md §3e, §7.
 
+import { handoffCreate, handoffWait } from './handoff.js';
 import { TOOLS } from '../tools.js';
 import { runBatch } from './batch.js';
 import { resolveTraceSession, startTraceSession, recordTiming, traceClient } from './timing.js';
@@ -30,6 +31,7 @@ const INSTRUCTIONS = [
   '- CROSS-ORIGIN FRAMES (embedded checkout/card forms, portal blades) are ordinary DOM targets: fast_snapshot lists their items under `frames`, and fast_click / fast_fill / fast_select_option act inside them directly. If a frame is still loading, snapshot again once it has rendered. Never use a screenshot to read ordinary page content — fast_snapshot does that.',
   '- CHAIN a known multi-step sequence in ONE call with fast_batch (e.g. navigate → fill → click → wait) to cut round-trips.',
   '- There is no page-JavaScript tool (no fast_evaluate, also not as a fast_batch step): read with fast_snapshot / fast_text, act with the DOM tools.',
+  '- A captcha or "are you human" check: never solve it. Call fast_handoff, send the user the link it returns, then fast_handoff_wait until done.',
   '- Fill multi-field forms with ONE fast_fill {fields:{label:value}} (or one fast_batch), never field-by-field.',
   '- Action results (fast_click / fast_fill / fast_wait) already include a snapshot — chain off THAT; do not issue a separate fast_snapshot right after.',
   '- Do NOT add artificial waits/sleeps — tabs load fast. Use fast_wait only when there is a real async signal (new view text, network idle), not as a reflex after every action.',
@@ -183,11 +185,11 @@ async function profileOnRelay(relay, args, browser) {
 const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_type',
   'fast_key_press', 'fast_nav',
-  'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close',
+  'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_handoff',
 ]);
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.
-const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch']);
+const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait']);
 
 // Relay-native tools that never touch a page → exempt from the per-origin consent
 // gate. (fast_batch's STEPS are gated individually inside runBatch.)
@@ -336,6 +338,7 @@ async function dispatchTool(params, relay, trace) {
   // Relay-native tools that answer without needing a live browser.
   if (name === 'fast_status') return textResult(await relayStatus(relay, browser, lastBrowser));
   if (name === 'fast_feedback') return textResult(await handleFeedback(relay, args, browser, lastBrowser, trace));
+  if (name === 'fast_handoff_wait') return textResult(await handoffWait(relay, args));
 
   // WHICH BROWSER: the named one, else the only one online, else the caller's
   // lastBrowser hint — resolved once and threaded through every sub-step below.
@@ -353,6 +356,13 @@ async function dispatchTool(params, relay, trace) {
   {
     const verdict = await consentVerdict(relay, name, target, gateTab(name, args));
     if (verdict) return textResult(verdict);
+  }
+
+  // Human hand-off: a link for the user's phone; the relay serves it (src/handoff.js).
+  if (name === 'fast_handoff') {
+    const origin = await relay.currentOrigin(target, gateTab(name, args));
+    const relayOrigin = String(relay.env.RELAY_BASE || new URL(trace.request.url).origin).replace(/\/+$/, '');
+    return textResult(await handoffCreate(relay, target, args, { origin, relayOrigin }));
   }
 
   if (name === 'fast_batch') {

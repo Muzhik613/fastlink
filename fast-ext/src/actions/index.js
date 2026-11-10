@@ -3,6 +3,7 @@ import { showCallDetails, extraActions } from '../callHooks.js';
 import { takeScreenshot }  from './screenshot.js';
 import { getText }         from './text.js';
 import { clickXY, typeText } from './input.js';
+import { handoffActions } from './handoff.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
 import { isInjectableUrl, missingTabError } from '../util.js';
@@ -228,6 +229,7 @@ async function runOne(action, args) {
   if (action === 'fast_screenshot') return takeScreenshot(args);
   if (action === 'fast_text')       return getText(args);
   if (Object.hasOwn(extraActions, action)) return extraActions[action](args);
+  if (Object.hasOwn(handoffActions, action)) return handoffActions[action](args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
   if (action === 'fast_frame_read') return frameRead(args);
