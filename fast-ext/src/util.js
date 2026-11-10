@@ -38,7 +38,7 @@ export const getActiveTab = async (tabId) => {
 export const isInjectableUrl = (url) => /^https?:|^file:/.test(url || '');
 
 export const missingTabError = (tabId) =>
-  `No tab with id ${tabId} — it was closed. fast_list shows the open tabs.`;
+  `No tab with id ${tabId} in this browser (it was closed, or it belongs to another browser/Chrome profile). fast_list shows this browser's tabs.`;
 
 export async function getInjectableTab(tabId) {
   const tab = await getActiveTab(tabId);
