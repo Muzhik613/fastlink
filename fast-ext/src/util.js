@@ -11,7 +11,9 @@ import { cdp } from './actions/input.js';
 // gets exactly that tab — undefined if it was closed, never another tab.
 export const getActiveTab = async (tabId) => {
   if (typeof tabId === 'number') {
-    try { return await chrome.tabs.get(tabId); } catch { return undefined; }
+    // Exactly that tab or nothing, checked BEFORE anything acts on it (win1 11-10: a call
+    // naming one tab navigated another).
+    try { const t = await chrome.tabs.get(tabId); return t && t.id === tabId ? t : undefined; } catch { return undefined; }
   }
   // Without a tabId: honor the designated target pin first, so every chokepoint that resolves a
   // tab through getActiveTab (screenshot, CDP capture, network, waitIdle,

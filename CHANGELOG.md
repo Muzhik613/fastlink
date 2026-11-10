@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-10 — extension 0.4.19: a named tab is checked before anything acts on it
+- **What:** `getActiveTab(tabId)` returns exactly that tab or nothing (before, the guard in 0.4.15 reported a wrong tab only after the action). A tabId not in this browser says it may be another profile's tab (tab ids are shared across the profiles of one Chrome).
+- **Why:** win1 (0.4.10) 11-10 21:06 UTC, from the hvm boss session's transcript: fast_nav {tabId:1220610012 (active ledger, file://)} replied from 1220610013 (target, Gmail compose to hachzek) and navigated it; fast_text on 012 read 013 too. Helper, relay and the 0.4.10 files (byte-identical to the tag) all pass the number through; the cause in 0.4.10 is not found.
+
 ## 2026-11-10 — extension 0.4.18: update.html reloads an unpacked copy
 - **What:** `fast-ext/update.html` + `update.js` call `chrome.runtime.reload()`. Opening `chrome-extension://ockcjadbkdfgfllidpcoamcepahfmlpf/update.html` (fast_tab, background) after new files land on disk loads them with no click, even on versions before fast_update (an unpacked copy serves its pages from disk, so the new page runs while the old background is still loaded).
 - **Why:** how win1/winytx/winkollel/dash went from 0.4.10 to 0.4.18 on 11-10 without a human at chrome://extensions.
