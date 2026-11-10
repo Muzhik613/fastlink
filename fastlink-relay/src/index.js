@@ -83,6 +83,11 @@ export class FastlinkApiHandler extends WorkerEntrypoint {
     // here (overwriting anything the client sent): sealed calls trust it (mcp.js sealedCall).
     const isAgent = (this.ctx?.props?.agent ?? this.props?.agent) === true;
     fwd.headers.set('X-Fastlink-Caller', isAgent ? 'agent' : 'oauth'); // must not fail silently: a client-sent value would survive
+    // A service token limited to some browsers (agents.browsers). ALWAYS set or removed here,
+    // never taken from the client; mcp.js refuses any other browser.
+    const scope = this.ctx?.props?.browsers ?? this.props?.browsers;
+    if (isAgent && Array.isArray(scope)) fwd.headers.set('X-Fastlink-Browsers', JSON.stringify(scope));
+    else fwd.headers.delete('X-Fastlink-Browsers');
     const res = await stub.fetch(fwd);
     return withCors(res, cors);
   }
@@ -95,7 +100,7 @@ export async function resolveAgentToken({ token, env }) {
   if (typeof token !== 'string' || !token.startsWith('fla_') || !env.DB) return null;
   const agent = await lookupAgent(env.DB, token);
   if (!agent || agent.revoked) return null;
-  return { props: { userId: String(agent.userId), agent: true } };
+  return { props: { userId: String(agent.userId), agent: true, ...(agent.browsers ? { browsers: agent.browsers } : {}) } };
 }
 
 // Identity-mode reader (mirrors auth.js identityMode / userRelay.#identityMode so

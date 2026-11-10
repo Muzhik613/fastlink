@@ -133,10 +133,10 @@ export async function handoffCreate(relay, target, args, { origin, relayOrigin }
 
 // The agent ends a hand-off it no longer needs (the check went away, the task changed). The
 // link dies at once; a phone that has it open shows "This check has ended".
-export async function handoffCancel(relay, args) {
+export async function handoffCancel(relay, args, scope = null) {
   const id = String(args.handoffId || '');
   const rec = await loadRec(relay, id);
-  if (!rec) return { error: `No hand-off "${id}".` };
+  if (!rec || (scope && !scope.includes(rec.browser))) return { error: `No hand-off "${id}".` };
   await settleExpiry(relay, rec);
   if (rec.status === 'pending') {
     rec.status = 'cancelled';
@@ -147,12 +147,12 @@ export async function handoffCancel(relay, args) {
   return { handoffId: id, status: rec.status };
 }
 
-export async function handoffWait(relay, args) {
+export async function handoffWait(relay, args, scope = null) {
   const id = String(args.handoffId || '');
   const until = Date.now() + Math.min(25, Math.max(0, Number(args.waitSec ?? 20))) * 1000;
   for (;;) {
     const rec = await loadRec(relay, id);
-    if (!rec) return { error: `No hand-off "${id}".` };
+    if (!rec || (scope && !scope.includes(rec.browser))) return { error: `No hand-off "${id}".` };
     await settleExpiry(relay, rec);
     if (rec.status !== 'pending' || Date.now() >= until) {
       return { handoffId: id, status: rec.status, taps: rec.taps, expiresAt: new Date(rec.exp).toISOString(),

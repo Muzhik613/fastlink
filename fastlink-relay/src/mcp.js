@@ -319,11 +319,30 @@ async function sealedCall(relay, args, browser, lastBrowser, trace) {
   return payload;
 }
 
+// Browsers a scoped service token may drive (set only by the worker, src/index.js), else null.
+function browserScope(trace) {
+  const h = trace?.request?.headers?.get('X-Fastlink-Browsers');
+  if (!h) return null;
+  try { const a = JSON.parse(h); return Array.isArray(a) ? a.map((x) => String(x).toLowerCase()) : []; } catch { return []; }
+}
+const NO_BROWSER_TOOLS = new Set(['fast_status', 'fast_feedback', 'fast_profile', 'fast_handoff_wait', 'fast_handoff_cancel']);
+
 async function dispatchTool(params, relay, trace) {
   const name = params?.name;
   // `browser` / `lastBrowser` are routing-only: consumed here, never forwarded.
-  const { browser, lastBrowser, ...args } = params?.arguments || {};
+  let { browser, lastBrowser, ...args } = params?.arguments || {};
   if (!name) return errorResult('missing tool name');
+  const scope = browserScope(trace);
+  if (scope) {
+    if (name === SEALED_ACTION) return textResult({ error: 'This service token cannot send sealed calls.', scoped: scope });
+    if (!NO_BROWSER_TOOLS.has(name)) {
+      const want = browser ?? (scope.length === 1 ? scope[0] : null);
+      if (!want || !scope.includes(String(want).toLowerCase())) {
+        return textResult({ error: `This token may drive only: ${scope.join(', ') || '(none)'}. Pass browser with one of those names.`, scoped: scope });
+      }
+      browser = want; lastBrowser = null;
+    }
+  }
 
   // N2 kill-switch (SAFETY): if the user paused driving from the extension popup,
   // refuse every browser-touching tool until they resume. Human-only — there is no
@@ -344,10 +363,14 @@ async function dispatchTool(params, relay, trace) {
   if (!KNOWN_TOOLS.has(name)) return textResult({ error: `Unknown FastLink tool "${name}". Tools: ${[...KNOWN_TOOLS].join(', ')}.`, unknownTool: true });
 
   // Relay-native tools that answer without needing a live browser.
-  if (name === 'fast_status') return textResult(await relayStatus(relay, browser, lastBrowser));
+  if (name === 'fast_status') {
+    const st = await relayStatus(relay, scope ? (browser ?? scope[0]) : browser, lastBrowser);
+    if (scope) st.browsers = st.browsers.filter((b) => scope.includes(b.name));
+    return textResult(st);
+  }
   if (name === 'fast_feedback') return textResult(await handleFeedback(relay, args, browser, lastBrowser, trace));
-  if (name === 'fast_handoff_wait') return textResult(await handoffWait(relay, args));
-  if (name === 'fast_handoff_cancel') return textResult(await handoffCancel(relay, args));
+  if (name === 'fast_handoff_wait') return textResult(await handoffWait(relay, args, scope));
+  if (name === 'fast_handoff_cancel') return textResult(await handoffCancel(relay, args, scope));
 
   // WHICH BROWSER: the named one, else the only one online, else the caller's
   // lastBrowser hint — resolved once and threaded through every sub-step below.

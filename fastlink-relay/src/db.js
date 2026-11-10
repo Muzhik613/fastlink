@@ -545,14 +545,16 @@ export async function lookupAgent(db, agentToken) {
   if (!agentToken) return null;
   const hash = await sha256Hex(agentToken);
   const row = await db
-    .prepare(`SELECT user_id, label, revoked FROM agents WHERE token_hash = ?`)
+    .prepare(`SELECT user_id, label, revoked, browsers FROM agents WHERE token_hash = ?`)
     .bind(hash)
     .first();
   if (!row) return null;
   if (!row.revoked) {
     try { await db.prepare(`UPDATE agents SET last_seen = ? WHERE token_hash = ?`).bind(now(), hash).run(); } catch { /* non-fatal */ }
   }
-  return { userId: row.user_id, label: row.label, revoked: !!row.revoked };
+  let browsers = null;
+  try { const b = row.browsers ? JSON.parse(row.browsers) : null; if (Array.isArray(b)) browsers = b.map((x) => String(x).toLowerCase()); } catch { browsers = []; }   // unreadable scope = nothing
+  return { userId: row.user_id, label: row.label, revoked: !!row.revoked, browsers };
 }
 
 // A machine's public id: the first 12 hex chars of its token hash (never the token).
