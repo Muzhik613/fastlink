@@ -181,6 +181,14 @@ async function profileOnRelay(relay, args, browser) {
   };
 }
 
+// Captcha frames in a snapshot (by frame origin/title, or named in the frames note).
+const CAPTCHA_RE = /recaptcha|hcaptcha|challenges\.cloudflare\.com|cloudflare security challenge|arkoselabs|funcaptcha|captcha/i;
+const CAPTCHA_HINT = 'A captcha / human check is on this page. Do not solve it: call fast_handoff (same tabId), send the user the link, then fast_handoff_wait.';
+function hasCaptcha(snap) {
+  const frames = Array.isArray(snap.frames) ? snap.frames : [];
+  return frames.some((f) => CAPTCHA_RE.test(`${f.frame || ''} ${f.title || ''} ${f.url || ''}`)) || CAPTCHA_RE.test(JSON.stringify([snap.frameNotice || '', snap.opaqueFrames || []]));
+}
+
 // Mutating actions blocked when a site is in read-only consent mode (SAFETY §7).
 const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_type',
@@ -385,6 +393,12 @@ async function dispatchTool(params, relay, trace) {
   // so the helper can learn its session's tab (PIN-REDESIGN §2/§3).
   if (payload && payload.tabId != null && result && typeof result === 'object' && !Array.isArray(result) && result.tabId == null) {
     result.tabId = payload.tabId;
+  }
+
+  // A captcha on the page: tell the agent, where it meets it, to hand it to the user.
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    const snap = result.frames ? result : result.snapshot;
+    if (snap && hasCaptcha(snap)) result.captcha = CAPTCHA_HINT;
   }
 
   // Image-returning tools → MCP image content (no /tmp on Workers).

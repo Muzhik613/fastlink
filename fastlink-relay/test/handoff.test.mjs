@@ -114,3 +114,11 @@ test('a bad or unknown token is a plain 404', async () => {
   }
   bot.stop();
 });
+
+test('a snapshot that shows a captcha frame tells the agent to hand it off; a plain one does not', async () => {
+  const frames = [{ frame: 'https://www.google.com', title: 'reCAPTCHA', box: CROP }];
+  const { r, bot } = await setup((c) => (c.action === 'fast_snapshot' ? { result: { url: 'https://demo.test/', frames: c.args.tabId === 7 ? frames : [], items: [] }, tabId: c.args.tabId, origin: 'https://demo.test' } : null));
+  assert.match((await mcpCall(r, 'fast_snapshot', { browser: 'b', tabId: 7 })).data.captcha, /fast_handoff/);
+  assert.equal((await mcpCall(r, 'fast_snapshot', { browser: 'b', tabId: 8 })).data.captcha, undefined);
+  bot.stop();
+});
