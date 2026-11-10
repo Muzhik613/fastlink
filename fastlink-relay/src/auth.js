@@ -1274,6 +1274,12 @@ export async function handleExtUpgrade(request, env) {
 
   // Best-effort last_seen bump (don't block the upgrade on it).
   try { await db.touchDevice(env.DB, token); } catch { /* non-fatal */ }
+  // Which machine a browser connects from (wrangler tail): name, IP, network, user agent.
+  // Never the token.
+  try {
+    const cf = request.cf || {};
+    console.log(JSON.stringify({ ext_connect: device.label || null, ip: request.headers.get('cf-connecting-ip'), org: cf.asOrganization || null, city: cf.city || null, ua: request.headers.get('user-agent') }));
+  } catch { /* logging only */ }
 
   const stub = env.USER_RELAY.get(env.USER_RELAY.idFromName(String(device.userId)));
   const u = new URL(request.url);
