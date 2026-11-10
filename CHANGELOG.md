@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-10 — extension 0.4.18: update.html reloads an unpacked copy
+- **What:** `fast-ext/update.html` + `update.js` call `chrome.runtime.reload()`. Opening `chrome-extension://ockcjadbkdfgfllidpcoamcepahfmlpf/update.html` (fast_tab, background) after new files land on disk loads them with no click, even on versions before fast_update (an unpacked copy serves its pages from disk, so the new page runs while the old background is still loaded).
+- **Why:** how win1/winytx/winkollel/dash went from 0.4.10 to 0.4.18 on 11-10 without a human at chrome://extensions.
+
 ## 2026-11-10 — fast_update (relay + extension 0.4.17): restart FastLink remotely to load a new version
 - **What:** tool `fast_update {browser}`: the extension answers `{version, installType, updateCheck}` and then restarts. A feed install asks Chrome for the update (applied at once by `onUpdateAvailable`); an unpacked copy (`installType: development`) reloads from disk, so `scripts/ship-ext.sh` + `fast_update` updates a Windows profile with no click. Storage (pairing, name) survives. Not a batch step, no consent gate (it doesn't touch a page).
 - **Why:** 11-10: win1/winytx/winkollel/dash (unpacked, 0.4.10) and svm-ytx (feed, stuck on 0.4.13) needed a human at chrome://extensions to load 0.4.16.
