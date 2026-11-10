@@ -87,33 +87,35 @@ export async function captureViaDebugger(capOpts = { format: 'png' }, tabId) {
   throw lastErr || new Error('Page.captureScreenshot failed');
 }
 
-// Is the tab to capture OFF-SCREEN? chrome.tabs.captureVisibleTab only ever
-// grabs the active tab of the focused window — so when the assistant drives a tab in
-// the background (the call's own tabId, or the pinned target) it returns the
-// WRONG tab's pixels. CDP Page.captureScreenshot targets a concrete tabId and
-// reads a non-focused tab, so capture must route through it whenever that tab
-// isn't the on-screen one. Returns the Tab in that case, else null (no tabId and
-// no pin, or the tab IS the visible one → the fast captureVisibleTab path is
-// correct). A call's own tabId that no longer exists throws.
-export async function backgroundCaptureTab(tabId) {
-  let pinned;
+// The tab to capture, and whether it is OFF-SCREEN. chrome.tabs.captureVisibleTab only
+// ever grabs the active tab of a window — so when the assistant drives a tab in the
+// background (the call's own tabId, or the pinned target) it returns the WRONG tab's
+// pixels. CDP Page.captureScreenshot targets a concrete tabId and reads a non-focused tab,
+// so capture must route through it whenever that tab isn't the on-screen one.
+// Returns { tab, background } (tab null: no tabId and no pin). A call's own tabId that no
+// longer exists throws.
+export async function captureTarget(tabId) {
+  let tab;
   if (typeof tabId === 'number') {
-    pinned = await getActiveTab(tabId);
-    if (!pinned) throw new Error(missingTabError(tabId));
+    tab = await getActiveTab(tabId);
+    if (!tab) throw new Error(missingTabError(tabId));
   } else {
-    try { pinned = await resolveTargetTab(); } catch { pinned = null; }
+    try { tab = await resolveTargetTab(); } catch { tab = null; }
   }
-  if (!pinned) return null;
-  // The tab captureVisibleTab(undefined) would actually grab: active tab of the
-  // last-focused window. Compare by id so a pinned tab that is "active" in its
-  // own non-focused window still counts as backgrounded.
+  if (!tab) return { tab: null, background: false };
+  // On screen = the active tab of the last-focused window. Compare by id so a tab that
+  // is "active" in its own non-focused window still counts as backgrounded.
   let visibleId;
   try {
     const [vis] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     visibleId = vis?.id;
   } catch {}
-  return pinned.id === visibleId ? null : pinned;
+  return { tab, background: tab.id !== visibleId };
 }
+
+// Chrome lets no extension capture its own internal pages, by any path (captureVisibleTab
+// and CDP both refuse). Pure.
+export const isUncapturableUrl = (url) => /^(chrome|chrome-untrusted|devtools|edge|brave|view-source):/i.test(url || '');
 
 // Robust viewport capture (DEVICE pixels; takeScreenshot resizes every capture to
 // CSS pixels). Order matters because the GPU
@@ -132,7 +134,14 @@ export async function captureViewport(opts = {}) {
   //    tab, so go straight to CDP — which targets the tab by id and can read a
   //    non-focused tab — and do NOT fall back to a visible-tab capture that
   //    would return the WRONG page's pixels.
-  const bg = await backgroundCaptureTab(opts.tabId);
+  const { tab: target, background } = await captureTarget(opts.tabId);
+  // feedback #25: a chrome:// tab failed every path and was reported as a GPU wedge.
+  if (target && isUncapturableUrl(target.url || target.pendingUrl)) {
+    const err = new Error(`tab ${target.id} is ${target.url || target.pendingUrl}: Chrome does not let extensions capture its internal pages; nothing was captured`);
+    err.hint = 'read a chrome:// page with the user (they can look at it), or screenshot an ordinary web page.';
+    throw err;
+  }
+  const bg = background ? target : null;
   if (bg) {
     try {
       return { dataUrl: await captureViaDebugger(capOpts, bg.id), format };
@@ -147,9 +156,20 @@ export async function captureViewport(opts = {}) {
     }
   }
 
+  // A visible-tab capture reads the TARGET's window (captureVisibleTab(undefined) is the
+  // "current" window, which can be another window: feedback #25, a screenshot right after
+  // fast_tab showed a different window's tab), and counts only while the target is still
+  // that window's active tab.
+  const visibleCapture = async () => {
+    const dataUrl = await chrome.tabs.captureVisibleTab(target ? target.windowId : undefined, capOpts);
+    if (!dataUrl) return null;
+    if (target) { try { if (!(await chrome.tabs.get(target.id)).active) return null; } catch { return null; } }
+    return dataUrl;
+  };
+
   // 1. Fast path (no pin, or the pinned tab is the visible one).
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(undefined, capOpts);
+    const dataUrl = await visibleCapture();
     if (dataUrl) return { dataUrl, format };
   } catch (_) { /* GPU wedge or quota — fall through */ }
 
@@ -164,7 +184,7 @@ export async function captureViewport(opts = {}) {
   // 3. One more captureVisibleTab, spaced to respect the quota.
   try {
     await new Promise((r) => setTimeout(r, 750));
-    const dataUrl = await chrome.tabs.captureVisibleTab(undefined, capOpts);
+    const dataUrl = await visibleCapture();
     if (dataUrl) return { dataUrl, format };
   } catch (_) { /* fall through to the hint */ }
 

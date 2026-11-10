@@ -1,4 +1,4 @@
-import { captureViewport, captureViaDebugger, getActiveTab } from '../util.js';
+import { captureViewport, captureViaDebugger, getActiveTab, isUncapturableUrl } from '../util.js';
 
 // fast_screenshot answers "what is on the user's screen RIGHT NOW", so by DEFAULT
 // it captures the user's ACTUAL foreground tab — the active tab of the last-focused
@@ -101,6 +101,11 @@ async function captureForeground(args = {}) {
     err.hint = 'no active/last-focused window resolved; focus a Chrome window and retry.';
     throw err;
   }
+  if (isUncapturableUrl(tab.url || tab.pendingUrl)) {
+    const err = new Error(`the foreground tab is ${tab.url || tab.pendingUrl}: Chrome does not let extensions capture its internal pages; nothing was captured`);
+    err.hint = 'read a chrome:// page with the user (they can look at it), or screenshot an ordinary web page.';
+    throw err;
+  }
 
   // FRESH capture: chrome.tabs.captureVisibleTab can hand back a STALE composited
   // frame (live bug: 3 byte-identical captures across focus changes), because it
@@ -120,9 +125,9 @@ async function captureForeground(args = {}) {
     } catch (_) { /* fall through to captureVisibleTab */ }
   }
 
-  // captureVisibleTab is PIXEL-based, so it captures restricted pages too — the
-  // chrome-extension:// Settings/options page (the exact tab in the live bug),
-  // chrome:// pages, the web store — where DOM scripting is blocked. Scope it to
+  // captureVisibleTab is PIXEL-based, so it captures pages DOM scripting can't reach —
+  // the chrome-extension:// Settings/options page (the exact tab in the live bug) —
+  // but never chrome:// pages (refused above). Scope it to
   // the foreground tab's WINDOW so a multi-window setup grabs the right screen.
   // The API enforces ~2 calls/sec, so the retry is spaced to stay under the quota.
   let lastErr;
