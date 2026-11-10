@@ -60,7 +60,12 @@ relay ──WSS {type:'call'}──▶ extension (per-tab FIFO queue) ──▶ 
 
 - One FIFO queue per resolved tab id: `args.tabId` if given, else the current target tab
   resolved at enqueue. Calls on different tabs run in parallel.
-- Browser-level actions that don't touch a page (`fast_list`, opening a new tab) don't queue.
+- Browser-level actions that don't touch a page (`fast_list`, opening a new tab, `fast_switch`,
+  `fast_close`) don't queue.
+- A stuck tab answers, it never hangs (feedback #24): a call that runs past the 29 s cap is
+  abandoned and its tab is marked stuck until that work settles, the tab commits a new page,
+  or it closes. Meanwhile every call waiting on it and every new one gets `code:'tab_stuck'`
+  at once; `fast_nav` still runs (reloading is the cure).
 - With `args.tabId`, the action runs on that tab WITHOUT changing the global target tab and
   without focusing the window.
 - `fast_tab` / `fast_nav` / `fast_switch` results include `tabId`, so the helper can learn

@@ -7,6 +7,10 @@
 // evaluates strings (no eval / new Function / CDP Runtime.evaluate).
 import { getInjectableTab } from '../util.js';   // installed as src/secure/evaluate.js by scripts/build-secure.sh
 
+// Under the tab queue's 29 s cap and the relay's 30 s call limit.
+export const EVAL_DEADLINE_MS = 25_000;
+export const EVAL_TIMEOUT_MSG = `fast_evaluate: the function did not settle within ${EVAL_DEADLINE_MS / 1000}s`;
+
 export const USER_SCRIPTS_OFF =
   'fast_evaluate is off in this browser. To allow it: chrome://extensions → FastLink → Details → turn on "Allow User Scripts".';
 
@@ -22,7 +26,10 @@ export async function evaluate({ fn, args, tabId }) {
   if (got.error) return got;
   const userArgs = Array.isArray(args) ? args : [];
   // The result crosses as a JSON string so the value comes back exactly (key order, nulls).
-  const code = `(async () => { try { const __fn = (${fn}); const v = await __fn(...${JSON.stringify(userArgs)}); return JSON.stringify({ ok: v === undefined ? null : v }); } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); } })()`;
+  // A function that never settles (it awaits something the page never does) answers at
+  // EVAL_DEADLINE_MS in the page, like every other page action; only a page whose main
+  // thread is frozen is left to the tab queue's cap (tabQueue.js, feedback #24).
+  const code = `(async () => { try { const __fn = (${fn}); const v = await Promise.race([__fn(...${JSON.stringify(userArgs)}), new Promise((_, rej) => setTimeout(() => rej(new Error(${JSON.stringify(EVAL_TIMEOUT_MSG)})), ${EVAL_DEADLINE_MS}))]); return JSON.stringify({ ok: v === undefined ? null : v }); } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); } })()`;
   let res;
   try {
     res = await chrome.userScripts.execute({ target: { tabId: got.tab.id }, js: [{ code }], world: 'MAIN', injectImmediately: true });

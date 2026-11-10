@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-10 — extension (unreleased): a stuck tab answers `tab_stuck` instead of hanging (feedback #24)
+- **What:** `src/tabQueue.js`: a call that runs past the 29 s cap marks its tab stuck until the abandoned work settles, the tab commits a new top-level page (`webNavigation.onCommitted`), or it closes. While stuck, every call waiting on that tab and every new one gets `{error:'tab stuck', code:'tab_stuck', hint}` at once (`fast_nav` still runs: reloading is the cure). `fast_switch` and `fast_close` no longer queue (they don't touch the page; close is the way out of a frozen tab). `fast_evaluate` (secure build) gets an in-page 25 s deadline, the one page action that had none. The cap's error used to be `page busy`; it is now `tab_stuck`.
+- **Why:** aliya (secure 0.4.10) on lending.ecapital.com, 11/10: a fast_evaluate that never returned, and the fast_switch(focus:false) right after it queued on the same tab and timed out too. Before, each call behind a stuck one waited out its own 29 s cap, so a caller with a 30 s limit never got an answer.
+- **Watch out:** not deployed. aliya needs a new secure build (`scripts/build-secure.sh`) with Yaakov's OK.
+
 ## 2026-11-09 — relay: /try page (deployed: version aa256def; rollback point 95291921)
 - **What:** `relay.ytx.app/try` lets a signed-in person try FastLink on their own paired browser without an AI app. Google sign-in (magic link in magic mode; not offered in shared mode) sets a signed 30-minute `fl_try` cookie scoped to `/try`. The page has fixed actions only: list the browser's web tabs (minus the relay's own pages), "Read this tab" (fast_snapshot summary) and "Click its first link" (fast_snapshot, then fast_click by id). `POST /try/run` sends each step as an ordinary MCP `tools/call` into the user's DO (`/__mcp`, caller `try`), so Stop driving, per-site rules, the consent gate and the activity log apply unchanged. Same-origin only (custom header + Origin check, no CORS headers), 60 read/click runs per user per hour. Code: `fastlink-relay/src/try.js` (actions + page) and the `/try` routes in `src/auth.js`; tests `test/try.test.mjs`.
 - **Why:** Web Store reviewers without a Claude plan that has custom connectors could only pair and look at Options.

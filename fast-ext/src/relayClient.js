@@ -95,6 +95,12 @@ try {
   });
 } catch {}
 
+// A tab the queue marked stuck is cleared when it commits a new page or closes.
+try {
+  chrome.webNavigation.onCommitted.addListener((d) => { if (d.frameId === 0) queue?.resetTab(d.tabId); });
+  chrome.tabs.onRemoved.addListener((tabId) => queue?.resetTab(tabId));
+} catch {}
+
 // Start the relay transport. `handle(action, args)` runs one call;
 // `resolveTabId()` names the current target tab (the queue key for calls without
 // args.tabId). Returns handler hooks for background.js to wire to the

@@ -114,18 +114,68 @@ test('a thrown run() becomes an error reply and the queue moves on', async () =>
   assert.deepEqual(await b, { result: 'ok' });
 });
 
-test('hard cap: a stuck call resolves "page busy" and frees its tab', async () => {
+test('hard cap: a stuck call answers tab_stuck, and so do the calls behind it', async () => {
   const h = harness({ hardCapMs: 40 });
   const t0 = Date.now();
-  const a = h.submit('a', 'fast_click', { tabId: 8 });   // never released
-  const b = h.submit('b', 'fast_click', { tabId: 8 });
+  const a = h.submit('a', 'fast_evaluate', { tabId: 8 });   // never released
+  const b = h.submit('b', 'fast_snapshot', { tabId: 8 });
   const ra = await a;
-  assert.equal(ra.error, 'page busy');
-  assert.equal(ra.phase, 'fast_click');
+  assert.equal(ra.code, 'tab_stuck');
+  assert.equal(ra.phase, 'fast_evaluate');
   assert.ok(Date.now() - t0 >= 35, 'waited for the cap');
-  await tick();
-  assert.ok(h.log.includes('start:b'), 'next call started after the cap');
+  const rb = await b;                                      // answered at once, not run
+  assert.equal(rb.code, 'tab_stuck');
+  assert.match(rb.hint, /earlier fast_evaluate/);
+  assert.ok(!h.log.includes('start:b'));
+  assert.ok(Date.now() - t0 < 75, 'b did not wait out a second cap');
+  const t1 = Date.now();
+  const c = await h.submit('c', 'fast_click', { tabId: 8 });   // a new call fails fast too
+  assert.equal(c.code, 'tab_stuck');
+  assert.ok(Date.now() - t1 < 20);
+  assert.ok(h.q.isStuck(8));
+  const other = h.submit('d', 'fast_click', { tabId: 9 });     // other tabs are untouched
+  await tick(); await tick();
+  assert.ok(h.log.includes('start:d'));
+  h.pending.get('d')({ result: 'D' });
+  assert.deepEqual(await other, { result: 'D' });
+});
+
+test('a stuck tab clears when the abandoned call settles', async () => {
+  const h = harness({ hardCapMs: 30 });
+  assert.equal((await h.submit('a', 'fast_evaluate', { tabId: 3 })).code, 'tab_stuck');
+  h.pending.get('a')({ result: 'late' });                  // the late result is dropped
+  await tick(); await tick();
+  assert.equal(h.q.isStuck(3), false);
+  const b = h.submit('b', 'fast_snapshot', { tabId: 3 });
+  await tick(); await tick();
   h.pending.get('b')({ result: 'B' });
   assert.deepEqual(await b, { result: 'B' });
-  h.pending.get('a')({ result: 'late' });               // a late settle is harmless
+});
+
+test('a stuck tab clears on resetTab (new page committed / tab closed); fast_nav still runs on it', async () => {
+  const h = harness({ hardCapMs: 30 });
+  await h.submit('a', 'fast_evaluate', { tabId: 4 });
+  const n = h.submit('n', 'fast_nav', { tabId: 4, url: 'https://example.com' });
+  await tick(); await tick();
+  assert.ok(h.log.includes('start:n'), 'fast_nav is the cure, so it is not refused');
+  h.pending.get('n')({ result: 'N' });
+  assert.deepEqual(await n, { result: 'N' });
+  h.q.resetTab(4);
+  assert.equal(h.q.isStuck(4), false);
+  const b = h.submit('b', 'fast_snapshot', { tabId: 4 });
+  await tick(); await tick();
+  h.pending.get('b')({ result: 'B' });
+  assert.deepEqual(await b, { result: 'B' });
+});
+
+test('fast_switch and fast_close never wait behind a stuck call on their tab (feedback #24)', async () => {
+  const h = harness({ hardCapMs: 10_000 });
+  h.submit('a', 'fast_evaluate', { tabId: 6 });            // running, not answering
+  const s = h.submit('s', 'fast_switch', { tabId: 6, focus: false });
+  const c = h.submit('c', 'fast_close', { tabId: 6 });
+  await tick(); await tick();
+  assert.ok(h.log.includes('start:s') && h.log.includes('start:c'));
+  h.pending.get('s')({ result: 'S' }); h.pending.get('c')({ result: 'C' });
+  assert.deepEqual(await Promise.all([s, c]), [{ result: 'S' }, { result: 'C' }]);
+  h.pending.get('a')({});
 });
