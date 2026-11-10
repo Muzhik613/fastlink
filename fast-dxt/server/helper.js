@@ -19,7 +19,7 @@ export const CLIENT_NAME = `fastlink-helper@${hostname()}`;
 // Tools whose own `tabId` argument names the tab to act on — shown to the model, never filled in.
 const NATIVE_TAB_ARG = new Set(['fast_switch', 'fast_close']);
 // Tools that don't act on an existing page: never get this session's tab.
-const NO_TAB = new Set(['fast_status', 'fast_list', 'fast_tab', 'fast_feedback', 'fast_handoff_wait', ...NATIVE_TAB_ARG]);
+const NO_TAB = new Set(['fast_status', 'fast_list', 'fast_tab', 'fast_feedback', 'fast_handoff_wait', 'fast_update', ...NATIVE_TAB_ARG]);
 // Results that tell us which tab this session now works in.
 const LEARNS_TAB = new Set(['fast_tab', 'fast_nav', 'fast_switch']);
 const TAB_GONE_RE = /no tab with id|tab (?:\S+ )?(?:not found|was closed|is closed|is gone|no longer exists|does not exist)|invalid tab/i;

@@ -122,3 +122,11 @@ test('a snapshot that shows a captcha frame tells the agent to hand it off; a pl
   assert.equal((await mcpCall(r, 'fast_snapshot', { browser: 'b', tabId: 8 })).data.captcha, undefined);
   bot.stop();
 });
+
+test('fast_update goes straight to the browser (no tab, no consent probe) and returns its answer', async () => {
+  const { r, ws, bot } = await setup((c) => (c.action === 'fast_update' ? { result: { version: '0.4.17', installType: 'development', reloading: true } } : null));
+  const { data } = await mcpCall(r, 'fast_update', { browser: 'b' });
+  assert.equal(data.reloading, true);
+  assert.deepEqual(bot.calls.map((c) => c.action), ['fast_update'], 'nothing else was sent');
+  bot.stop();
+});

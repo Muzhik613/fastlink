@@ -4,6 +4,7 @@ import { takeScreenshot }  from './screenshot.js';
 import { getText }         from './text.js';
 import { clickXY, typeText } from './input.js';
 import { handoffActions } from './handoff.js';
+import { updateSelf } from '../reloadSelf.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
 import { isInjectableUrl, missingTabError } from '../util.js';
@@ -116,9 +117,9 @@ function notifyOverlay(tabId, payload) {
 // Actions that resolve their own tab: the tab actions (fast_tab opens one,
 // fast_switch/fast_close find one, fast_list reads all) and fast_screenshot,
 // which defaults to the user's FOREGROUND tab. Every other action acts on one page.
-const SELF_TARGETING = new Set([...TAB_ACTIONS, 'fast_screenshot']);
+const SELF_TARGETING = new Set([...TAB_ACTIONS, 'fast_screenshot', 'fast_update']);
 // Tab actions whose result names a different tab by design (the new, switched-to or closed one).
-const NAMES_OWN_TAB = new Set(['fast_tab', 'fast_list', 'fast_close', 'fast_switch']);
+const NAMES_OWN_TAB = new Set(['fast_tab', 'fast_list', 'fast_close', 'fast_switch', 'fast_update']);
 
 export async function dispatchAction(action, rawArgs) {
   let args = rawArgs || {};
@@ -230,6 +231,7 @@ async function runOne(action, args) {
   if (action === 'fast_text')       return getText(args);
   if (Object.hasOwn(extraActions, action)) return extraActions[action](args);
   if (Object.hasOwn(handoffActions, action)) return handoffActions[action](args);
+  if (action === 'fast_update')     return updateSelf();
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
   if (action === 'fast_frame_read') return frameRead(args);

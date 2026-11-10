@@ -48,6 +48,11 @@ const RELAY_TOOLS = [
 
 const BROWSER_TOOLS = [
   {
+    name: 'fast_update',
+    description: 'Restart FastLink in a browser to load a newer version (from its update feed, or from disk for an unpacked copy). It answers first, then reconnects within seconds; check fast_status for the version. Tabs and pairing are kept.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
     name: 'fast_handoff',
     description: 'A captcha or "are you human" check you must not solve: get a short-lived link for the user to open on their phone. It shows only the check, and their taps click it. Send them the link, then call fast_handoff_wait. Never solve the check yourself.',
     inputSchema: {
@@ -333,7 +338,7 @@ const BROWSER_TOOLS = [
 
 // fast_list and fast_tab act on the browser, not a tab, so they take no TAB_ARG;
 // fast_switch and fast_close keep their own `tabId` (the tab to target / close).
-const NO_TAB_ARG = new Set(['fast_list', 'fast_tab']);
+const NO_TAB_ARG = new Set(['fast_list', 'fast_tab', 'fast_update']);
 
 function withTarget(tool) {
   const props = { ...tool.inputSchema.properties, browser: BROWSER_ARG };

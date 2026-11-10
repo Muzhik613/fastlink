@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-10 — fast_update (relay + extension 0.4.17): restart FastLink remotely to load a new version
+- **What:** tool `fast_update {browser}`: the extension answers `{version, installType, updateCheck}` and then restarts. A feed install asks Chrome for the update (applied at once by `onUpdateAvailable`); an unpacked copy (`installType: development`) reloads from disk, so `scripts/ship-ext.sh` + `fast_update` updates a Windows profile with no click. Storage (pairing, name) survives. Not a batch step, no consent gate (it doesn't touch a page).
+- **Why:** 11-10: win1/winytx/winkollel/dash (unpacked, 0.4.10) and svm-ytx (feed, stuck on 0.4.13) needed a human at chrome://extensions to load 0.4.16.
+
 ## 2026-11-10 — fast_handoff (relay + extension 0.4.16): a person solves a captcha from their phone
 - **What:** `fast_handoff {browser, tabId, note?, minutes?, region?}` returns a link `https://relay.ytx.app/h/<token>` (32 random bytes; only its SHA-256 is stored, in KV → user, and in the DO record). The relay serves the phone page; the user's DO answers `/state` `/frame` `/tap` `/done`. The extension's `handoff_frame` finds the visible challenge iframes (reCAPTCHA, hCaptcha, Turnstile, Arkose) and captures ONLY that clip (CDP `Page.captureScreenshot` clip), so no other pixels leave the browser. `handoff_tap` is a bare CDP click (no focus probe: fast). `fast_handoff_wait {handoffId, waitSec≤25}` → pending / done / expired. Code: `fastlink-relay/src/handoff.js`, `fast-ext/src/actions/handoff.js`; tests `fastlink-relay/test/handoff.test.mjs`.
 - **Safety:** one device (the first page that polls gets an HttpOnly cookie; a chat app's link preview never polls), ≤30 min (default 10), ends at Done, only the tab it was made for and only while it is still on the same site (`expectOrigin`), taps only inside the crop of the picture the person saw, one at a time, open/tap/done/expiry in the activity log. Not a batch step. The page shows "Reconnecting…" when it has no fresh picture.

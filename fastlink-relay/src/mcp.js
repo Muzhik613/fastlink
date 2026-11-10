@@ -197,11 +197,11 @@ const MUTATING_TOOLS = new Set([
 ]);
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.
-const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait']);
+const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_update']);
 
 // Relay-native tools that never touch a page → exempt from the per-origin consent
 // gate. (fast_batch's STEPS are gated individually inside runBatch.)
-const CONSENT_EXEMPT = new Set(['fast_status', 'fast_feedback', 'fast_batch']);
+const CONSENT_EXEMPT = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_update']);
 
 // N2 kill-switch: tools still allowed while the user has PAUSED driving — only the
 // relay-meta ones that never touch a page. Everything else (incl. fast_batch and
