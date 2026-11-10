@@ -14,6 +14,8 @@ phone, where the user solves it, and FastLink passes their taps through.
 3. Send the user the returned `url`. Do not touch that tab meanwhile.
 4. Call `fast_handoff_wait {handoffId}` (up to 25 s per call) until `status` is `done` or
    `expired`. After `done`, read the page to confirm it passed.
+5. No longer needed (the check went away, or was solved another way)? `fast_handoff_cancel
+   {handoffId}` ends the link at once.
 
 ## What the person gets
 

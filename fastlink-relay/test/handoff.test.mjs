@@ -130,3 +130,12 @@ test('fast_update goes straight to the browser (no tab, no consent probe) and re
   assert.deepEqual(bot.calls.map((c) => c.action), ['fast_update'], 'nothing else was sent');
   bot.stop();
 });
+
+test('fast_handoff_cancel ends the link at once; wait reports cancelled', async () => {
+  const { r, env, bot } = await setup();
+  const { data } = await mcpCall(r, 'fast_handoff', { browser: 'b', tabId: 7 });
+  assert.equal((await mcpCall(r, 'fast_handoff_cancel', { handoffId: data.handoffId })).data.status, 'cancelled');
+  assert.equal((await mcpCall(r, 'fast_handoff_wait', { handoffId: data.handoffId, waitSec: 0 })).data.status, 'cancelled');
+  assert.equal((await phone(env, data.url)).status, 404);
+  bot.stop();
+});

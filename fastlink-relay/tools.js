@@ -33,6 +33,15 @@ const RELAY_TOOLS = [
     },
   },
   {
+    name: 'fast_handoff_cancel',
+    description: 'End a fast_handoff link that is no longer needed (the check went away or was solved another way). The link stops working at once.',
+    inputSchema: {
+      type: 'object',
+      properties: { handoffId: { type: 'string', description: 'The handoffId fast_handoff returned.' } },
+      required: ['handoffId'],
+    },
+  },
+  {
     name: 'fast_handoff_wait',
     description: 'Wait (up to 25 s per call) for a fast_handoff to finish. Returns status pending, done (the person tapped Done), or expired. Call again while pending.',
     inputSchema: {

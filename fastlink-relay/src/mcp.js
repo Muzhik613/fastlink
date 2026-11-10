@@ -14,7 +14,7 @@
 //
 // See SPEC.md §3e, §7.
 
-import { handoffCreate, handoffWait } from './handoff.js';
+import { handoffCreate, handoffWait, handoffCancel } from './handoff.js';
 import { TOOLS } from '../tools.js';
 import { runBatch } from './batch.js';
 import { resolveTraceSession, startTraceSession, recordTiming, traceClient } from './timing.js';
@@ -197,7 +197,7 @@ const MUTATING_TOOLS = new Set([
 ]);
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.
-const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_update']);
+const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_handoff_cancel', 'fast_update']);
 
 // Relay-native tools that never touch a page → exempt from the per-origin consent
 // gate. (fast_batch's STEPS are gated individually inside runBatch.)
@@ -347,6 +347,7 @@ async function dispatchTool(params, relay, trace) {
   if (name === 'fast_status') return textResult(await relayStatus(relay, browser, lastBrowser));
   if (name === 'fast_feedback') return textResult(await handleFeedback(relay, args, browser, lastBrowser, trace));
   if (name === 'fast_handoff_wait') return textResult(await handoffWait(relay, args));
+  if (name === 'fast_handoff_cancel') return textResult(await handoffCancel(relay, args));
 
   // WHICH BROWSER: the named one, else the only one online, else the caller's
   // lastBrowser hint — resolved once and threaded through every sub-step below.
