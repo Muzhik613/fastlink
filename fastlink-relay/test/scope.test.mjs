@@ -100,3 +100,49 @@ test('fast_fetch per-browser methods: POST on office, GET only on winytx', async
   await reply(r, s.winytx, s.winytx.lastCall().id, { result: { status: 200 } });
   await g;
 });
+
+// fast_evaluate for operator accounts (users.allow_evaluate) on an operator-build browser.
+import { fakeD1 } from './helpers.mjs';
+async function evalSetup({ allow = 1, all = 1, op = 1, evaluate = 'on' } = {}) {
+  const db = fakeD1();
+  const ws = fakeSocket('t1', Date.now(), '0.4.22');
+  ws.serializeAttachment({ ...ws.deserializeAttachment(), evaluate });
+  const { r } = await makeRelay({ db, devices: [{ name: 'mac2', token: 't1' }], sockets: [ws] });
+  db.raw.prepare('UPDATE users SET allow_evaluate = ?, eval_allow_all = ?, is_operator = ? WHERE user_id = ?').run(allow, all, op, 'u1');
+  r.cachedOrigin = () => 'https://web.whatsapp.com';
+  r.currentOrigin = async () => 'https://web.whatsapp.com';
+  return { r, ws, db };
+}
+
+test('fast_evaluate is listed and runs for an operator account on an operator-build browser', async () => {
+  const { r, ws } = await evalSetup();
+  assert.equal((await toolsList(r, {})).includes('fast_evaluate'), true);
+  assert.equal((await toolsList(r, SCOPE)).includes('fast_evaluate'), false, 'never for service tokens');
+  const p = mcpCall(r, 'fast_evaluate', { browser: 'mac2', tabId: 7, fn: '() => document.title' });
+  await answer(r, ws, { result: 'WhatsApp' });
+  assert.equal((await p).data, 'WhatsApp');
+  assert.equal(ws.lastCall().args.expectOrigin, 'https://web.whatsapp.com');
+  const st = (await mcpCall(r, 'fast_status', {})).data;
+  assert.equal(st.browsers[0].evaluate, 'on');
+});
+
+test('fast_evaluate is refused: flag off, browser not the operator build, origin not allowed, service token', async () => {
+  { const { r, ws } = await evalSetup({ allow: 0 });
+    assert.equal((await toolsList(r, {})).includes('fast_evaluate'), false);
+    assert.match((await mcpCall(r, 'fast_evaluate', { browser: 'mac2', fn: '() => 1' })).data.error, /not enabled for this account/);
+    assert.equal(ws.sent.length, 0); }
+  { const { r, ws } = await evalSetup({ evaluate: null });
+    assert.match((await mcpCall(r, 'fast_evaluate', { browser: 'mac2', fn: '() => 1' })).data.error, /off in browser "mac2"/);
+    assert.equal(ws.sent.length, 0); }
+  { const { r, ws } = await evalSetup({ op: 0 });   // allow-all needs an operator; no allowlisted origin
+    assert.match((await mcpCall(r, 'fast_evaluate', { browser: 'mac2', fn: '() => 1' })).data.error, /not allowed on https:\/\/web.whatsapp.com/);
+    assert.equal(ws.sent.length, 0); }
+  { const { r, ws, db } = await evalSetup({ op: 0 });
+    db.raw.prepare('INSERT INTO eval_allowed_origins (user_id, origin, added_at) VALUES (?, ?, ?)').run('u1', 'https://web.whatsapp.com', Date.now());
+    const p = mcpCall(r, 'fast_evaluate', { browser: 'mac2', fn: '() => 1' });
+    await answer(r, ws, { result: 1 });
+    assert.equal((await p).data, 1); }
+  { const { r, ws } = await evalSetup();
+    assert.match((await mcpCall(r, 'fast_evaluate', { browser: 'mac2', fn: '() => 1' }, SCOPE)).data.error, /not available to service tokens/);
+    assert.equal(ws.sent.length, 0); }
+});

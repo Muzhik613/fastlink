@@ -5,8 +5,8 @@
 // is set, is refused. The lock is read once at start and again whenever the options page
 // (or a sealed set_allowlist) changes it; the hello tells the relay whether this browser
 // is locked and whether page JavaScript (fast_evaluate, which exists only here) is on.
-import { loadLock, isLocked, lockKeyId, evaluateState, userScriptsAllowed, handleSealed, refuseUnsealed, STORE_KEY as LOCK_STORE } from './secure/lock.js';
-import { evaluate } from './secure/evaluate.js';
+import { loadLock, isLocked, lockKeyId, evaluateState, handleSealed, refuseUnsealed, STORE_KEY as LOCK_STORE } from './secure/lock.js';
+import { evaluate, userScriptsAllowed } from './secure/evaluate.js';
 
 let lockReady = loadLock();
 

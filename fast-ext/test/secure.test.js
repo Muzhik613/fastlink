@@ -181,5 +181,4 @@ test('evaluateState: off until the owner allows page JavaScript, then follows Ch
   await L.setLock(CODE, ['www.bank.example'], { allowEval: true });
   assert.equal(L.evaluateState(false), L.EVAL_OFF_USER_SCRIPTS);
   assert.equal(L.evaluateState(true), 'on');
-  assert.equal(L.userScriptsAllowed(), false, 'no chrome.userScripts in this stub');
 });

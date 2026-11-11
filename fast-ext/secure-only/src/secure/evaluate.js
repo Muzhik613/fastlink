@@ -5,8 +5,12 @@
 // FastLink's details page); until then this tool explains how and does nothing. The code
 // runs in the page's MAIN world, so it sees page variables. The extension itself never
 // evaluates strings (no eval / new Function / CDP Runtime.evaluate).
-import { getInjectableTab } from '../util.js';   // installed as src/secure/evaluate.js by scripts/build-secure.sh
-import { userScriptsAllowed } from './lock.js';
+import { getInjectableTab } from '../util.js';   // installed as src/secure/evaluate.js by scripts/build-secure.sh and build-operator.sh
+
+// true when the user has allowed user scripts for FastLink (the API throws otherwise).
+export function userScriptsAllowed() {
+  try { return typeof chrome.userScripts?.execute === 'function'; } catch { return false; }
+}
 
 // Under the tab queue's 29 s cap and the relay's 30 s call limit.
 export const EVAL_DEADLINE_MS = 25_000;

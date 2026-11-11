@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-10 — fast_evaluate for operator accounts (relay + operator build)
+- **What:** `scripts/build-operator.sh` → `dist/fastlink-operator/`: the normal tree + `secure-only/src/secure/evaluate.js` + `secure-only/operator/callHooks.js` (hello `evaluate:"on"` / `"off: …"`), `userScripts` permission, no `update_url`. Unsealed calls; not the secure build; never in the CRX/feed/Web Store (`secure-only/` is excluded there). Relay: `fast_evaluate` is in tools/list only when `users.allow_evaluate` = 1 (not for service tokens), and runs only on a browser whose hello says `evaluate:"on"`, on an origin allowed by `eval_allow_all` (operator only) or `eval_allowed_origins`; pinned to that origin (`expectOrigin`), audited (origin + fn length), not a batch step, refused in read-only consent. fast_status shows each browser's `evaluate`. `userScriptsAllowed` moved into evaluate.js (shared by both builds).
+- **Why:** Alex's account (allow_evaluate/eval_allow_all/is_operator since 10-19) built WhatsApp media sends and airline checkouts on fast_evaluate, which left the normal build and the relay on 11-08 (store readiness). Boss OK 11-10 20:35.
+
 ## 2026-11-10 — extension 0.4.22: an unloaded tab is loaded before a page tool acts on it
 - **What:** `wakeTab` (`src/util.js`): a tab Chrome has unloaded (`discarded` / `status: "unloaded"`: memory saver, a restored-but-never-loaded tab) is reloaded and waited for (≤15 s) before `injectInTab` (fast_text, …) and `injectPageAction` (snapshot/click/fill/…) inject into it.
 - **Why:** mac2 (Alex's Mac) 11-10 20:30: every tab in the window was `unloaded`; fast_text on web.whatsapp.com failed with Chrome's misleading "Extension manifest must request permission to access the respective host" although `<all_urls>` was granted and nothing withheld. A fast_nav (reload) cured it. Not a permission regression, not fast_evaluate.

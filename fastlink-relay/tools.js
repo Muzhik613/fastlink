@@ -370,3 +370,19 @@ function withTarget(tool) {
 }
 
 export const TOOLS = [...RELAY_TOOLS, ...BROWSER_TOOLS.map(withTarget)];
+
+// Page JavaScript: listed only for accounts with users.allow_evaluate, and run only on a
+// browser whose hello says evaluate:"on" (the operator build, scripts/build-operator.sh).
+// Never in the Web Store / feed extension.
+export const EVALUATE_TOOL = withTarget({
+  name: 'fast_evaluate',
+  description: 'Run a JS function in the page (main world) and return its JSON result. Only on operator browsers; for what fast_snapshot / fast_text and the DOM tools cannot do.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      fn: { type: 'string', description: 'Function source, e.g. "() => document.title". May be async.' },
+      args: { type: 'array', items: {}, description: 'Arguments passed to fn.' },
+    },
+    required: ['fn'],
+  },
+});

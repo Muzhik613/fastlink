@@ -9,13 +9,14 @@
 //
 // SCOPE: every tool routes straight to the extension (fast_batch runs its steps
 // here). Image-returning tools come back as MCP image content (no /tmp on Workers).
-// There is no page-JavaScript tool (fast_evaluate exists only inside sealed calls to a
-// secure browser, which the relay never reads).
+// Page JavaScript (fast_evaluate): inside sealed calls to a secure browser (the relay never
+// reads them), and for operator accounts (users.allow_evaluate) on a browser running the
+// operator build (hello evaluate:"on"). Never for service tokens.
 //
 // See SPEC.md §3e, §7.
 
 import { handoffCreate, handoffWait, handoffCancel } from './handoff.js';
-import { TOOLS } from '../tools.js';
+import { TOOLS, EVALUATE_TOOL } from '../tools.js';
 import { runBatch } from './batch.js';
 import { resolveTraceSession, startTraceSession, recordTiming, traceClient } from './timing.js';
 import { sanitizeDeviceName, getUserEmail, insertFeedback } from './db.js';
@@ -114,7 +115,12 @@ async function handleOne(rpc, relay, trace) {
       });
     case 'tools/list':
       // fast_fetch exists only for service tokens that have fetch origins.
-      return ok(id, { tools: fetchScope(trace) ? TOOLS : TOOLS.filter((t) => t.name !== 'fast_fetch') });
+      {
+        const tools = fetchScope(trace) ? TOOLS : TOOLS.filter((t) => t.name !== 'fast_fetch');
+        // fast_evaluate only for an operator account (never a scoped service token).
+        const evalOn = !browserScope(trace) && (await relay.evalPolicy()).allowEvaluate;
+        return ok(id, { tools: evalOn ? [...tools, EVALUATE_TOOL] : tools });
+      }
     case 'tools/call': {
       // Bind to this connection's session — the one `initialize` just opened, the
       // one an earlier POST opened (looked up by Mcp-Session-Id or bearer token),
@@ -194,11 +200,11 @@ function hasCaptcha(snap) {
 const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_type',
   'fast_key_press', 'fast_nav',
-  'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_handoff',
+  'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_handoff', 'fast_evaluate',
 ]);
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.
-const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_handoff_cancel', 'fast_update', 'fast_fetch']);
+const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_handoff_cancel', 'fast_update', 'fast_fetch', 'fast_evaluate']);
 
 // Relay-native tools that never touch a page → exempt from the per-origin consent
 // gate. (fast_batch's STEPS are gated individually inside runBatch.)
@@ -375,6 +381,7 @@ async function dispatchTool(params, relay, trace) {
   const scope = browserScope(trace);
   if (scope) {
     if (name === SEALED_ACTION) return textResult({ error: 'This service token cannot send sealed calls.', scoped: scope });
+    if (name === 'fast_evaluate') return textResult({ error: 'fast_evaluate is not available to service tokens.', scoped: scope });
     if (!NO_BROWSER_TOOLS.has(name)) {
       const want = browser ?? (scope.length === 1 ? scope[0] : null);
       if (!want || !scope.includes(String(want).toLowerCase())) {
@@ -400,7 +407,7 @@ async function dispatchTool(params, relay, trace) {
   if (name === 'fast_profile') return textResult(await profileOnRelay(relay, args, browser));
   // Only the relay's own tools are forwarded; anything else is refused by name.
   if (name === SEALED_ACTION) return textResult(await sealedCall(relay, args, browser, lastBrowser, trace));
-  if (!KNOWN_TOOLS.has(name)) return textResult({ error: `Unknown FastLink tool "${name}". Tools: ${[...KNOWN_TOOLS].join(', ')}.`, unknownTool: true });
+  if (!KNOWN_TOOLS.has(name) && name !== 'fast_evaluate') return textResult({ error: `Unknown FastLink tool "${name}". Tools: ${[...KNOWN_TOOLS].join(', ')}.`, unknownTool: true });
 
   // Relay-native tools that answer without needing a live browser.
   if (name === 'fast_status') {
@@ -438,6 +445,24 @@ async function dispatchTool(params, relay, trace) {
     if (chk.error) return textResult(chk);
     const payload = await relay.callExtension('fast_fetch', chk.args, undefined, target);
     relay.audit('fast_fetch', { method: chk.args.method, url: new URL(chk.args.url).origin + new URL(chk.args.url).pathname }, !(payload && 'error' in payload), target);
+    if (payload && typeof payload === 'object' && 'error' in payload) return textResult(payload);
+    return textResult(payload?.result ?? null);
+  }
+
+  // Page JavaScript for an operator account, on an operator-build browser, on an allowed origin.
+  if (name === 'fast_evaluate') {
+    const policy = await relay.evalPolicy();
+    if (!policy.allowEvaluate) return textResult({ error: 'fast_evaluate is not enabled for this account.', evalBlocked: true });
+    const state = relay.evaluateState(target);
+    if (state !== 'on') return textResult({ error: `fast_evaluate is off in browser "${target.name}" (${state || 'it is not the FastLink operator build'}).`, evalBlocked: true });
+    const tab = gateTab(name, args);
+    const origin = await relay.currentOrigin(target, tab);
+    if (!policy.allowAll && !(origin && policy.origins.includes(origin))) {
+      return textResult({ error: `fast_evaluate is not allowed on ${origin || 'this page'} for this account.`, evalBlocked: true });
+    }
+    const evalArgs = typeof args.tabId === 'number' && origin ? { ...args, expectOrigin: origin } : args;
+    const payload = await relay.callExtension(name, evalArgs, undefined, target);
+    relay.audit(name, { origin, fnLength: String(args.fn || '').length }, !(payload && typeof payload === 'object' && 'error' in payload), target);
     if (payload && typeof payload === 'object' && 'error' in payload) return textResult(payload);
     return textResult(payload?.result ?? null);
   }
@@ -535,7 +560,7 @@ function imageResult(result) {
 // `browser` (or none → the only online one, else `lastBrowser`) would be routed.
 async function relayStatus(relay, browser, lastBrowser) {
   const devices = await relay.deviceList();
-  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen, version: d.version, ...(d.secure ? { secure: true, locked: d.secure.locked, ...(d.secure.mismatch ? { lockMismatch: true } : {}), ...(d.secure.evaluate ? { evaluate: d.secure.evaluate } : {}) } : {}) }));
+  const browsers = devices.map((d) => ({ name: d.name, connected: d.connected, lastSeen: d.lastSeen, version: d.version, ...(d.secure ? { secure: true, locked: d.secure.locked, ...(d.secure.mismatch ? { lockMismatch: true } : {}), ...(d.secure.evaluate ? { evaluate: d.secure.evaluate } : {}) } : {}), ...(d.evaluate ? { evaluate: d.evaluate } : {}) }));
   const target = await relay.resolveTarget(browser, lastBrowser);
   const connected = !!(target && target.ws);
   // Per-origin consent (M4): the decision for the ROUTED browser's last-known origin.

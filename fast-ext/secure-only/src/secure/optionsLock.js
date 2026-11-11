@@ -1,6 +1,7 @@
 // Options page: the "Secure browser lock" card. scripts/build-secure.sh adds this script
 // to the secure build's options.html; it inserts the card above the pairing card.
-import { loadLock, isLocked, lockKeyId, lockSettings, setLock, setAllowlist, clearLock, normalizeAllowlist, evaluateState, userScriptsAllowed, EVAL_OFF_USER_SCRIPTS } from './lock.js';
+import { loadLock, isLocked, lockKeyId, lockSettings, setLock, setAllowlist, clearLock, normalizeAllowlist, evaluateState, EVAL_OFF_USER_SCRIPTS } from './lock.js';
+import { userScriptsAllowed } from './evaluate.js';
 
 const $ = (id) => document.getElementById(id);
 

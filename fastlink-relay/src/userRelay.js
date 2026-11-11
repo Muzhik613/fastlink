@@ -30,7 +30,7 @@ import { handoffRequest } from './handoff.js';
 import { DurableObject } from 'cloudflare:workers';
 import { handleMcpRequest } from './mcp.js';
 import { readTrace } from './timing.js';
-import { getUserDevices, renameDevice, maskToken, sanitizeDeviceName, RESERVED_DEVICE_NAMES, recordDeviceLock, getDeviceLock } from './db.js';
+import { getUserDevices, renameDevice, maskToken, sanitizeDeviceName, RESERVED_DEVICE_NAMES, recordDeviceLock, getDeviceLock, getEvalPolicy } from './db.js';
 
 // Call deadlines: 30 s from send; a {type:'queued'} frame extends the deadline to
 // QUEUE_MAX_MS after send; {type:'started'} resets it to 30 s from that moment.
@@ -323,6 +323,8 @@ export class UserRelay extends DurableObject {
       // Secure browser: { secure, locked, mismatch, evaluate? } from the relay's record + the live
       // client (null for a normal browser).
       secure: lockState(newestByToken.get(r.deviceToken)?.ws || null),
+      // Operator build: fast_evaluate's state from its hello ("on" / "off: …"), else null.
+      evaluate: newestByToken.has(r.deviceToken) ? this.evaluateState({ ws: newestByToken.get(r.deviceToken).ws }) : null,
       lastSeen: r.lastSeen,
     }));
   }
@@ -633,6 +635,18 @@ export class UserRelay extends DurableObject {
 
   // That tab's origin: the cache, else a fast_list probe on THAT browser.
   // '' if it truly can't be determined (callers fail closed where it matters).
+  // This account's fast_evaluate policy (db.getEvalPolicy); off without D1/userId.
+  async evalPolicy() {
+    if (!this.env.DB || !this.userId) return { allowEvaluate: false, allowAll: false, origins: [] };
+    try { return await getEvalPolicy(this.env.DB, this.userId); } catch { return { allowEvaluate: false, allowAll: false, origins: [] }; }
+  }
+
+  // fast_evaluate's state as a NORMAL (unsealed) browser's hello reports it: "on" only from
+  // the operator build. A secure browser's evaluate runs inside sealed calls, never here.
+  evaluateState(target) {
+    try { const a = target?.ws?.deserializeAttachment() || {}; return a.secure ? null : (a.evaluate || null); } catch { return null; }
+  }
+
   async currentOrigin(target, tabId = null) {
     const cached = this.cachedOrigin(target, tabId);
     if (cached) return cached;

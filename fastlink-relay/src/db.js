@@ -625,3 +625,14 @@ export async function listFeedback(db, after, limit) {
     .all();
   return (res && res.results) || [];
 }
+
+// --- fast_evaluate for operator accounts (11-10; columns from migration 0001) ------
+
+// fast_evaluate runs only when allow_evaluate AND (operator allow-all OR the page's origin
+// is in eval_allowed_origins). allow-all is honored only for an operator account.
+export async function getEvalPolicy(db, userId) {
+  const u = await db.prepare(`SELECT allow_evaluate, eval_allow_all, is_operator FROM users WHERE user_id = ?`).bind(String(userId)).first();
+  if (!u || !u.allow_evaluate) return { allowEvaluate: false, allowAll: false, origins: [] };
+  const res = await db.prepare(`SELECT origin FROM eval_allowed_origins WHERE user_id = ?`).bind(String(userId)).all();
+  return { allowEvaluate: true, allowAll: !!u.is_operator && !!u.eval_allow_all, origins: ((res && res.results) || []).map((r) => r.origin) };
+}
