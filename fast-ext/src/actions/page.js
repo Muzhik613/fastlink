@@ -2830,7 +2830,12 @@ async function runPageAction(action, args) {
       el.innerText = append ? (el.innerText + v) : v; // contenteditable: "" clears
       el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: v }));
     }
-    return { filled: { tag: found.tag, label: found.label, placeholder: found.placeholder, name: found.name }, valueSet: v };
+    const out = { filled: { tag: found.tag, label: found.label, placeholder: found.placeholder, name: found.name }, valueSet: v };
+    // fast_fill writes the value with no key presses. A sign-in page's risk check can
+    // refuse a correct password that was never typed (fb#30 PayPal: "Some of your info
+    // isn't correct" right after a reset), so say how to type it instead.
+    if (el.type === 'password') out.hint = 'password set without key presses: if the sign-in is refused, enter it with fast_click on the field then fast_type (real key presses), before retrying';
+    return out;
   };
 
   const pickByText = (items, getText, query) => {

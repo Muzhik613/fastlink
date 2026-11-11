@@ -342,8 +342,27 @@ async function selectAllAndDelete(tabId) {
   await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...dBase });
 }
 
-// Typing into the currently-focused element via Input.insertText.
-// React accepts it because it arrives as an input event (unlike setting .value).
+// Type `text` as real key presses: per character a trusted keyDown carrying the
+// character, then its keyUp — so the page sees keydown → beforeinput → input → keyup,
+// as from a keyboard. Input.insertText (the old path) fired input events but no key
+// events, and a login page's risk script that records keystrokes on the field read a
+// value nobody typed (fb#30 PayPal: a freshly set password, put in without key events,
+// was refused with "Some of your info isn't correct"). A line break goes in with
+// insertText: an Enter key in a one-line field would SUBMIT the form.
+async function typeKeys(tabId, text) {
+  for (const ch of text) {
+    if (ch === '\n' || ch === '\r') { await cdp(tabId, 'Input.insertText', { text: '\n' }); continue; }
+    // Letters, digits and space carry their real key codes; any other character has no
+    // code of its own here (its char code would read as another key: "!" = 33 = PageUp).
+    const k = /^[A-Za-z0-9]$/.test(ch) ? keyInfo(ch) : ch === ' ' ? NAMED_KEYS.Space : { keyCode: 0, code: '' };
+    const base = { key: ch, code: k.code, windowsVirtualKeyCode: k.keyCode, nativeVirtualKeyCode: k.keyCode };
+    await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: ch, unmodifiedText: ch });
+    await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+  }
+}
+
+// Typing into the currently-focused element as key presses (typeKeys).
+// React accepts it because it arrives as real input events (unlike setting .value).
 //   args.text   : string to insert (required)
 //   args.clear  : when true, select-all + Delete first so the value is REPLACED,
 //                 not appended (default false → append at the caret).
@@ -418,7 +437,7 @@ export async function typeText({ text, clear, force, allowIframe, tabId: callTab
   }
 
   if (clear) await selectAllAndDelete(tabId);
-  await cdp(tabId, 'Input.insertText', { text });
+  await typeKeys(tabId, text);
 
   // Read the (post-insert) focused element back, in whatever frame it lives.
   // Best-effort — fall back to the pre-insert probe.
