@@ -15,7 +15,7 @@ import { createInterface } from 'node:readline';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { loadAgent, pair, removeAgent, agentFilePath, listMachines, revokeMachine, lastBrowserStore, DEFAULT_RELAY, PAIR_URL } from './agentFile.js';
-import { createHelper } from './helper.js';
+import { createHelper, HELPER_VERSION } from './helper.js';
 import { log } from './log.js';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -98,10 +98,36 @@ function serve() {
   // A stdio server lives exactly as long as its parent: when the pipe closes (clean exit,
   // crash, SIGKILL) stdin ends and we exit. hvm 2026-09-16 had 350 orphans before this.
   // Covered by test/stdio-orphan.test.mjs.
-  const exitWithParent = () => process.exit(0);
-  process.stdin.once('end', exitWithParent);
-  process.stdin.once('close', exitWithParent);
-  log(`helper up (${loadAgent() ? 'paired' : `unpaired: ${agentFilePath()} missing`})`);
+  let leaving = false;
+  const exitWithParent = (why) => () => { if (!leaving) { leaving = true; log(`exiting: ${why}`); } process.exit(0); };
+  process.stdin.once('end', exitWithParent('stdin ended (the MCP client closed the pipe)'));
+  process.stdin.once('close', exitWithParent('stdin closed (the MCP client closed the pipe)'));
+  watchForDeath();
+  log(`helper ${HELPER_VERSION} up (node ${process.version}, parent pid ${process.ppid}, ${loadAgent() ? 'paired' : `unpaired: ${agentFilePath()} missing`})`);
+}
+
+// Every way this process can end leaves a line in ~/.fastlink/helper.log (log.js), because
+// stderr is often already gone by then (Alex b1 11-11: a helper vanished overnight, nothing
+// in the MCP log). A bug in one request is logged and the helper keeps serving: it holds no
+// state a failed request can corrupt, and a dead stdio server cannot be restarted from the
+// inside (the pipe belongs to the MCP client; it takes a /mcp reconnect). SIGKILL (the OS
+// out-of-memory killer, kill -9) cannot be caught: the hourly heartbeat's last line, with
+// its memory figure, is what dates and explains that case.
+const HEARTBEAT_MS = 60 * 60 * 1000;
+function watchForDeath() {
+  const mb = () => `${Math.round(process.memoryUsage().rss / 1048576)} MB`;
+  process.stdout.on('error', (e) => {
+    log(`stdout failed (${e.code || e.message}): the MCP client is gone; exiting`);
+    process.exit(0);
+  });
+  process.stderr.on('error', () => { /* stderr gone: log.js still writes the file */ });
+  process.on('uncaughtException', (e) => log(`uncaught exception (kept running): ${e?.stack || e}`));
+  process.on('unhandledRejection', (e) => log(`unhandled rejection (kept running): ${e?.stack || e}`));
+  for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
+    process.once(sig, () => { log(`exiting: got ${sig} (parent pid now ${process.ppid}, rss ${mb()})`); process.exit(0); });
+  }
+  process.on('exit', (code) => log(`exit code ${code} after ${Math.round(process.uptime())}s`));
+  setInterval(() => log(`alive: up ${Math.round(process.uptime() / 60)} min, rss ${mb()}, parent pid ${process.ppid}`), HEARTBEAT_MS).unref();
 }
 
 async function runLock(browser, replace, quiet) {

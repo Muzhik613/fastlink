@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-11 — helper 2.0.1: every way a helper ends is logged to ~/.fastlink/helper.log
+- **What:** `log.js` writes each line to stderr AND `~/.fastlink/helper.log` (next to agent.json; pid on every line; cut to its last half past 1 MB; `FASTLINK_LOG_FILE` overrides). `serve()` logs start (version, node, parent pid), stdin end/close, SIGTERM/SIGHUP/SIGINT, stdout EPIPE (exits), the exit code, and an hourly `alive` heartbeat with RSS. Uncaught exceptions and unhandled rejections are logged and the helper keeps serving (it holds no state a failed request can corrupt). No self-restart: a stdio server's pipe belongs to the MCP client, so a dead helper needs `/mcp` reconnect; SIGKILL/OOM can't be caught, and the last heartbeat dates it.
+- **Why:** Alex b1 11-11: a helper connected 11/10 22:36 UTC vanished overnight with nothing in the MCP log. Its stderr goes to that log, which is gone once the pipe is (and Node exited silently on the stdin-close path).
+- **Files:** `fast-dxt/server/log.js`, `fast-dxt/server/index.js`, `fast-dxt/server/helper.js` (version), `fast-dxt/test/death-log.test.mjs`.
+
 ## 2026-11-11 — extension 0.4.25: fast_click focuses a text field; fast_fill refuses a disabled field
 - **What:** `fast_click` on a text input / textarea / contenteditable (or a `<label>` for one) now focuses it before the click, as a person's mousedown does, so a following `fast_type` types there. `fast_fill` refuses a disabled field (`el.disabled` or inside `fieldset[disabled]`) with `disabled:true` and a hint to use the page's "Change" / "Not you?" link, instead of writing a value the form never submits.
 - **Why:** feedback #29 (mac2, PayPal sign-in): `fast_click` on the password field then `fast_type` → "no editable element focused" (a scripted `el.click()` never moves focus); the remembered email field was disabled — `fast_click` refused it but `fast_fill` "changed" it and read back the new address, while the login went out with the remembered one. Reproduced on svm-ytx with fake credentials and headless (old page.js reproduces both, new fixes both). PayPal itself accepts fast_fill values (fake creds got the server-side "Some of your info isn't correct", not the client-side "Required").

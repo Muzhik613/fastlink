@@ -2,7 +2,7 @@
   "dxt_version": "0.1",
   "name": "fastlink",
   "display_name": "FastLink",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "FastLink helper: drives your own Chrome (page snapshots, clicks, form fills, batch automation) through the FastLink relay. Pair this machine once with `node server/index.js pair <CODE>` (code from https://relay.ytx.app/pair/new).",
   "icon": "icons/icon-256.png",
   "author": {
