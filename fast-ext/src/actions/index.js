@@ -8,7 +8,7 @@ import { updateSelf } from '../reloadSelf.js';
 import { fetchInPage } from './fetchInPage.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
-import { isInjectableUrl, missingTabError } from '../util.js';
+import { isInjectableUrl, missingTabError, wakeTab } from '../util.js';
 import { checkExpectedSite } from '../siteGuard.js';
 
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_list', 'fast_close', 'fast_switch']);
@@ -406,7 +406,7 @@ async function injectPageAction(action, args, frameId = 0) {
   // tabId, else the pinned target if set & alive, else the active tab) and inject
   // by explicit id, so snapshots/clicks/fills land on the tab the assistant is driving
   // even when the user's focus has snapped back to another tab.
-  const target = await getTargetTab(args?.tabId);
+  const target = await wakeTab(await getTargetTab(args?.tabId));
   if (!target?.id) return { error: typeof args?.tabId === 'number' ? missingTabError(args.tabId) : 'No tab to act on (no pinned target and no active tab).' };
   if (!isInjectableUrl(target.url)) return { error: `Restricted URL: ${target.url}` };
 

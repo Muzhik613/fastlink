@@ -39,11 +39,29 @@ export const getActiveTab = async (tabId) => {
 
 export const isInjectableUrl = (url) => /^https?:|^file:/.test(url || '');
 
+// A tab Chrome has unloaded (memory saver / discarded / restored but never loaded) has no
+// document, and executeScript into it fails with Chrome's misleading "Extension manifest
+// must request permission to access the respective host" (mac2 11-10, WhatsApp). Load it
+// first — what Chrome itself does when the user clicks such a tab — and wait for it.
+const WAKE_TIMEOUT_MS = 15000;
+export async function wakeTab(tab) {
+  if (!tab || !(tab.discarded || tab.status === 'unloaded')) return tab;
+  const done = new Promise((resolve) => {
+    const finish = () => { clearTimeout(timer); chrome.tabs.onUpdated.removeListener(onUpd); resolve(); };
+    const onUpd = (id, info) => { if (id === tab.id && info.status === 'complete') finish(); };
+    const timer = setTimeout(finish, WAKE_TIMEOUT_MS);
+    chrome.tabs.onUpdated.addListener(onUpd);
+  });
+  try { await chrome.tabs.reload(tab.id); } catch { return tab; }
+  await done;
+  try { return await chrome.tabs.get(tab.id); } catch { return undefined; }
+}
+
 export const missingTabError = (tabId) =>
   `No tab with id ${tabId} in this browser (it was closed, or it belongs to another browser/Chrome profile). fast_list shows this browser's tabs.`;
 
 export async function getInjectableTab(tabId) {
-  const tab = await getActiveTab(tabId);
+  const tab = await wakeTab(await getActiveTab(tabId));
   if (!tab) return { error: typeof tabId === 'number' ? missingTabError(tabId) : 'No active tab' };
   if (!isInjectableUrl(tab.url)) return { error: `Restricted URL: ${tab.url}` };
   return { tab };

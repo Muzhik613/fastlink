@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-10 — extension 0.4.22: an unloaded tab is loaded before a page tool acts on it
+- **What:** `wakeTab` (`src/util.js`): a tab Chrome has unloaded (`discarded` / `status: "unloaded"`: memory saver, a restored-but-never-loaded tab) is reloaded and waited for (≤15 s) before `injectInTab` (fast_text, …) and `injectPageAction` (snapshot/click/fill/…) inject into it.
+- **Why:** mac2 (Alex's Mac) 11-10 20:30: every tab in the window was `unloaded`; fast_text on web.whatsapp.com failed with Chrome's misleading "Extension manifest must request permission to access the respective host" although `<all_urls>` was granted and nothing withheld. A fast_nav (reload) cured it. Not a permission regression, not fast_evaluate.
+
 ## 2026-11-10 — fast_fetch (relay + extension 0.4.21): page fetch for service tokens
 - **What:** `fast_fetch {browser, tabId, url, method?, headers?, body?}` runs ONE fixed `fetch()` in the tab's page context (cookies, origin, bot-check state of that site) and returns `{status, ok, contentType, length, truncated, body}` (body cut at 512 KB). No code is accepted. Allowed only for service tokens whose `agents.fetch_origins` (migration 0011) lists the URL's origin; listed in tools/list only for them. The URL must be https and same-origin as the tab (relay pins `expectOrigin`, the extension re-checks); GET/POST/HEAD; Cookie/Host/Origin/Referer headers dropped; body ≤ 64 KB, POST only. The body is returned byte-exact (no card-number masking: it would corrupt EAN-13 product codes). Audit logs method + origin + path.
 - **Why:** the Jewel API keeps one warm tab on www.jewelosco.com (Imperva trusts that Windows Chrome) and calls the site's own search JSON from it (~1 s instead of a 30 s page load).
