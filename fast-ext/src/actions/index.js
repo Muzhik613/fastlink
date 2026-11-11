@@ -8,7 +8,7 @@ import { updateSelf } from '../reloadSelf.js';
 import { fetchInPage } from './fetchInPage.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
-import { isInjectableUrl, missingTabError, wakeTab } from '../util.js';
+import { isInjectableUrl, missingTabError, wakeTab, explainHostRefused } from '../util.js';
 import { checkExpectedSite } from '../siteGuard.js';
 
 const TAB_ACTIONS  = new Set(['fast_tab', 'fast_nav', 'fast_list', 'fast_close', 'fast_switch']);
@@ -370,7 +370,10 @@ async function runBridge(tabId, action, args, frameId = 0) {
     // caller can classify the failure (frame-teardown-on-navigation vs the tab
     // genuinely being gone) without re-matching against our own wrapper text.
     const raw = e?.message || String(e);
-    return { __injectError: `${action}: could not inject into target tab ${tabId} (${raw}). The tab may have been closed or navigated to a restricted URL.`, __injectRaw: raw };
+    let url = '';
+    try { url = (await chrome.tabs.get(tabId)).url; } catch {}
+    const refused = explainHostRefused(raw, url);
+    return { __injectError: refused ? `${action}: ${refused}` : `${action}: could not inject into target tab ${tabId} (${raw}). The tab may have been closed or navigated to a restricted URL.`, __injectRaw: raw };
   }
 }
 

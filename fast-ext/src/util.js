@@ -57,6 +57,24 @@ export async function wakeTab(tab) {
   try { return await chrome.tabs.get(tab.id); } catch { return undefined; }
 }
 
+// Chrome's "must request permission to access the respective host" on a LOADED tab means
+// the browser refused this host to every extension — never our manifest (<all_urls>).
+// Edge ≥150 hard-blocks extensions on most *.cloud.microsoft hosts (teams, m365 before
+// 151, …; outlook is exempt), with no policy override (eden-edge 11-11, Teams).
+const HOST_REFUSED_RE = /respective host|cannot access contents of/i;
+const isEdge = () => {
+  try { return (navigator.userAgentData?.brands || []).some((b) => /Edge/i.test(b.brand)) || /\bEdg\//.test(navigator.userAgent); } catch { return false; }
+};
+export function explainHostRefused(raw, url) {
+  if (!HOST_REFUSED_RE.test(String(raw || ''))) return null;
+  let host = '';
+  try { host = new URL(url).hostname; } catch {}
+  if (isEdge() && /(^|\.)cloud\.microsoft$/i.test(host)) {
+    return `Microsoft Edge blocks all extensions on ${host} (Edge 150+ built-in block on *.cloud.microsoft; no policy or FastLink setting overrides it). Open this site in Chrome to drive it with FastLink.`;
+  }
+  return `The browser refused FastLink on ${host || 'this page'}: an admin policy (ExtensionSettings runtime_blocked_hosts, see edge://policy or chrome://policy), the extension's Site access setting, or a browser built-in block. FastLink's manifest already allows every site.`;
+}
+
 export const missingTabError = (tabId) =>
   `No tab with id ${tabId} in this browser (it was closed, or it belongs to another browser/Chrome profile). fast_list shows this browser's tabs.`;
 
@@ -70,10 +88,16 @@ export async function getInjectableTab(tabId) {
 export async function injectInTab({ world = 'MAIN', func, args = [], tabId }) {
   const got = await getInjectableTab(tabId);
   if (got.error) return got;
-  const [{ result }] = await chrome.scripting.executeScript({
-    target: { tabId: got.tab.id }, world, func, args,
-  });
-  return { tab: got.tab, result };
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: got.tab.id }, world, func, args,
+    });
+    return { tab: got.tab, result };
+  } catch (e) {
+    const why = explainHostRefused(e?.message, got.tab.url);
+    if (why) return { error: why };
+    throw e;
+  }
 }
 
 // Capture via CDP Page.captureScreenshot — NOT subject to the captureVisibleTab
