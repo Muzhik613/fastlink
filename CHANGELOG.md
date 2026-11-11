@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-11 — extension 0.4.27: fast_type in a background tab still types (no key presses), and says so
+- **What:** `typeKeys` sends the first character as a key press and checks the field's length (readable for passwords too); if it did not grow, the whole text goes in with insertText and the result carries `keyPresses:false` + a note to fast_switch {focus:true} and retype with clear:true. The fast_fill password hint names the same steps.
+- **Why:** 0.4.26 live check on svm-ytx (windowed Chrome): CDP key events typed 0 of 7 characters into a tab not in front, 7 of 7 with it in front (full keydown/keypress/beforeinput/input/keyup per character on the W3C key-event viewer). insertText lands either way. Headless Chrome delivers both, so headless tests can't show this.
+- **Files:** `fast-ext/src/actions/input.js`, `fast-ext/src/actions/page.js`.
+
 ## 2026-11-11 — extension 0.4.26: fast_type sends real key presses; fast_fill on a password says so
 - **What:** `fast_type` (`input.js` `typeKeys`) types each character as a trusted CDP keyDown (with the character) + keyUp, so the page sees keydown → beforeinput → input → keyup; letters/digits/space carry their key codes, other characters none (their char code would read as another key: "!" = PageUp); a line break still goes in with insertText (Enter in a one-line field would submit). Replaces the single `Input.insertText` (input events, no key events). `fast_fill` into a password field adds a hint: if the sign-in is refused, enter it with fast_click + fast_type.
 - **Why:** fb#30 (mac1, PayPal): a password set seconds earlier, put in with fast_fill, was refused ("Some of your info isn't correct"). PayPal's login JS reads the field's .value (the value does arrive), but its fraud script (`fn-sync-telemetry-min.js`) records keydown/keyup timings and `:-webkit-autofill` on the login fields into `fn_sync_data`, sent with the login: a value with no key presses and no autofill reads as scripted. Not provable with fake credentials (they are refused either way); the real check is Alex's next login via fast_click + fast_type.

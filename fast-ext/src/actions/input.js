@@ -349,16 +349,38 @@ async function selectAllAndDelete(tabId) {
 // value nobody typed (fb#30 PayPal: a freshly set password, put in without key events,
 // was refused with "Some of your info isn't correct"). A line break goes in with
 // insertText: an Enter key in a one-line field would SUBMIT the form.
-async function typeKeys(tabId, text) {
-  for (const ch of text) {
-    if (ch === '\n' || ch === '\r') { await cdp(tabId, 'Input.insertText', { text: '\n' }); continue; }
-    // Letters, digits and space carry their real key codes; any other character has no
-    // code of its own here (its char code would read as another key: "!" = 33 = PageUp).
-    const k = /^[A-Za-z0-9]$/.test(ch) ? keyInfo(ch) : ch === ' ' ? NAMED_KEYS.Space : { keyCode: 0, code: '' };
-    const base = { key: ch, code: k.code, windowsVirtualKeyCode: k.keyCode, nativeVirtualKeyCode: k.keyCode };
-    await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: ch, unmodifiedText: ch });
-    await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+//
+// A tab that is not in front of its window (opened in the background, the usual case
+// for an agent's tab) drops CDP key events in a windowed Chrome, while insertText
+// still lands (svm-ytx 11-11: 0 of 7 keys in a background tab, 7 of 7 in front). So
+// the first character goes in as a key press and the field's length is checked
+// (readable for a password too): if it did not grow, the text goes in with insertText
+// and the result says no key presses were sent. Returns { keys: boolean }.
+async function typeKeys(tabId, text, lenBefore) {
+  const chars = Array.from(text);
+  let i = 0;
+  if (chars.length && chars[0] !== '\n' && chars[0] !== '\r' && typeof lenBefore === 'number') {
+    await keyPress(tabId, chars[0]);
+    let after = null;
+    try { after = await probeFocus(tabId); } catch {}
+    if (after && after.editable && after.valueLen === lenBefore) {
+      await cdp(tabId, 'Input.insertText', { text });
+      return { keys: false };
+    }
+    i = 1;
   }
+  for (; i < chars.length; i++) await keyPress(tabId, chars[i]);
+  return { keys: true };
+}
+
+async function keyPress(tabId, ch) {
+  if (ch === '\n' || ch === '\r') { await cdp(tabId, 'Input.insertText', { text: '\n' }); return; }
+  // Letters, digits and space carry their real key codes; any other character has no
+  // code of its own here (its char code would read as another key: "!" = 33 = PageUp).
+  const k = /^[A-Za-z0-9]$/.test(ch) ? keyInfo(ch) : ch === ' ' ? NAMED_KEYS.Space : { keyCode: 0, code: '' };
+  const base = { key: ch, code: k.code, windowsVirtualKeyCode: k.keyCode, nativeVirtualKeyCode: k.keyCode };
+  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: ch, unmodifiedText: ch });
+  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...base });
 }
 
 // Typing into the currently-focused element as key presses (typeKeys).
@@ -437,13 +459,16 @@ export async function typeText({ text, clear, force, allowIframe, tabId: callTab
   }
 
   if (clear) await selectAllAndDelete(tabId);
-  await typeKeys(tabId, text);
+  const { keys } = await typeKeys(tabId, text, el.editable ? (clear ? 0 : el.valueLen) : undefined);
 
   // Read the (post-insert) focused element back, in whatever frame it lives.
   // Best-effort — fall back to the pre-insert probe.
   let after = el;
   try { after = await probeFocus(tabId); } catch {}
-  const tail = { typed: text.length, cleared: !!clear, forced: forced || undefined, typedInto: where(after) };
+  const tail = {
+    typed: text.length, cleared: !!clear, forced: forced || undefined, typedInto: where(after),
+    ...(keys ? {} : { keyPresses: false, note: 'this tab is not in front, so key presses do not reach it: the text went in without key events. Where a page needs real typing (a sign-in refused as wrong), bring the tab to front (fast_switch {tabId, focus:true}) and fast_type again with clear:true' }),
+  };
   if (!after.readable) {
     return { verified: false, reason: after.reason || 'unreadable: value not readable', ...tail };
   }

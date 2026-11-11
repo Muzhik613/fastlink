@@ -2834,7 +2834,7 @@ async function runPageAction(action, args) {
     // fast_fill writes the value with no key presses. A sign-in page's risk check can
     // refuse a correct password that was never typed (fb#30 PayPal: "Some of your info
     // isn't correct" right after a reset), so say how to type it instead.
-    if (el.type === 'password') out.hint = 'password set without key presses: if the sign-in is refused, enter it with fast_click on the field then fast_type (real key presses), before retrying';
+    if (el.type === 'password') out.hint = 'password set without key presses: if the sign-in is refused, type it instead: fast_switch {tabId, focus:true} (key presses reach only a tab in front), fast_click the field, fast_type {text, clear:true}';
     return out;
   };
 
