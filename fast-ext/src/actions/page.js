@@ -2779,6 +2779,16 @@ async function runPageAction(action, args) {
     // is a REAL value that CLEARS the field, so only null/undefined is rejected.
     if (value == null) return { error: "fast_fill: no value provided — pass value (use value:'' to clear the field)" };
     const v = String(value); // safe now: value is present (may be "")
+    // A disabled field is refused, as fast_click refuses one: a script can still
+    // write its .value, but the form never submits it and the page ignores it
+    // (fb#29 PayPal mac2: the remembered sign-in email was disabled, fast_fill
+    // "changed" it and read back the new address, and the login went out with the
+    // remembered one).
+    let disabled = false;
+    try { disabled = el.disabled === true || !!(el.closest && el.closest('fieldset[disabled]')); } catch {}
+    if (disabled) {
+      return { error: `${JSON.stringify(found.label || found.name || found.placeholder || el.tagName.toLowerCase())} is disabled (nothing written) — the page does not take a value there and a form does not send it. If it holds a remembered sign-in name, use the page's own "Change" / "Not you?" link to edit it`, disabled: true };
+    }
     flashEl(el, 'fill');
     // Checkbox / radio: the value is a STATE (true → ticked), set the way a person
     // does (a click, so the page's handlers run) — writing "true" into .value
@@ -4283,6 +4293,16 @@ async function runPageAction(action, args) {
     let leaving = false;
     const onLeave = () => { leaving = true; };
     try { addEventListener('pagehide', onLeave, true); addEventListener('beforeunload', onLeave, true); addEventListener('unload', onLeave, true); } catch {}
+    // A person's click on a text field FOCUSES it (on mousedown, before the click);
+    // a scripted click/pointer sequence does not. Without this a fast_click on a
+    // field followed by fast_type was refused as "no editable element focused"
+    // (fb#29 PayPal password). A <label> click focuses its control the same way.
+    try {
+      const NON_TEXT = /^(checkbox|radio|button|submit|reset|file|image|range|color|hidden)$/i;
+      const textField = (e) => !!e && ((e.tagName === 'INPUT' && !NON_TEXT.test(e.type || 'text')) || e.tagName === 'TEXTAREA' || e.isContentEditable === true);
+      const ft = textField(el) ? el : (el.tagName === 'LABEL' && textField(el.control) ? el.control : null);
+      if (ft && ft.getRootNode().activeElement !== ft) ft.focus({ preventScroll: true });
+    } catch {}
     const tDispatch = nowMs();
     if (item.clickable || !NATIVE_CLICK.test(el.tagName)) pointerSeq(el); else el.click();
     phase('dispatchMs', nowMs() - tDispatch);

@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-11 — extension 0.4.25: fast_click focuses a text field; fast_fill refuses a disabled field
+- **What:** `fast_click` on a text input / textarea / contenteditable (or a `<label>` for one) now focuses it before the click, as a person's mousedown does, so a following `fast_type` types there. `fast_fill` refuses a disabled field (`el.disabled` or inside `fieldset[disabled]`) with `disabled:true` and a hint to use the page's "Change" / "Not you?" link, instead of writing a value the form never submits.
+- **Why:** feedback #29 (mac2, PayPal sign-in): `fast_click` on the password field then `fast_type` → "no editable element focused" (a scripted `el.click()` never moves focus); the remembered email field was disabled — `fast_click` refused it but `fast_fill` "changed" it and read back the new address, while the login went out with the remembered one. Reproduced on svm-ytx with fake credentials and headless (old page.js reproduces both, new fixes both). PayPal itself accepts fast_fill values (fake creds got the server-side "Some of your info isn't correct", not the client-side "Required").
+- **Files:** `fast-ext/src/actions/page.js`.
+
 ## 2026-11-11 — extension 0.4.24: a host the browser refuses to extensions gets a true error
 - **What:** `explainHostRefused` (`src/util.js`): when executeScript fails with "…permission to access the respective host" on a loaded tab, `runBridge` (snapshot/click/fill/…) and `injectInTab` (fast_text, …) return a plain reason instead of Chrome's raw text. In Edge on `*.cloud.microsoft`: "Edge blocks all extensions on <host> … open this site in Chrome". Elsewhere: admin policy `runtime_blocked_hosts` / Site access / browser built-in block; never the manifest (it has `<all_urls>`).
 - **Why:** eden-edge 11-11 (feedback #28): fast_snapshot on teams.cloud.microsoft failed with that message, outlook.cloud.microsoft worked, no blocking policy in the registry. Edge 150+ has a hard-coded extension block on most `*.cloud.microsoft` hosts (outlook exempt; m365/forms unblocked in 151), not overridable by `runtime_allowed_hosts` or force-install (techcommunity thread 4535027, MicrosoftEdge-Extensions#644). Not fixable in FastLink.
