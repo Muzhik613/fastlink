@@ -300,5 +300,16 @@ async function switchTab(args = {}) {
     await chrome.tabs.update(target.id, { active: true });
     if (target.windowId !== undefined) await chrome.windows.update(target.windowId, { focused: true });
   } catch {}
-  return { id: target.id, tabId: target.id, url: target.url, title: target.title, targetTab: target.id };
+  const out = { id: target.id, tabId: target.id, url: target.url, title: target.title, targetTab: target.id };
+  // Did the page really get focus? Chrome can raise its own window but cannot take
+  // the screen from another app (macOS forbids it), and then key presses do not
+  // reach the page (fb#32 mac1: focus:true came back ok, fast_type got no keys).
+  try {
+    const [r] = await chrome.scripting.executeScript({ target: { tabId: target.id, frameIds: [0] }, world: 'ISOLATED', func: () => document.hasFocus() });
+    if (r && r.result === false) {
+      out.pageFocused = false;
+      out.note = 'the tab is in front of its window, but Chrome is not the focused app (another app is in front, the screen is locked, or Chrome is on another Space): key presses will not reach it until the user clicks into the Chrome window';
+    } else if (r && r.result === true) out.pageFocused = true;
+  } catch {}
+  return out;
 }

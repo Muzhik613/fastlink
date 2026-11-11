@@ -311,35 +311,42 @@ function describeFocus(d) {
   return `<${d.tag}>${d.label ? ` (${d.label})` : ''}`;
 }
 
-// Detect macOS so keyboard chords use the platform-correct select-all modifier:
-// Cmd/Meta on macOS, Ctrl elsewhere. userAgentData.platform is the modern
-// signal; navigator.platform is the legacy fallback.
-function isMacPlatform() {
-  try {
-    const p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
-    return /mac/i.test(p);
-  } catch { return false; }
+// Empty the focused field for clear:true, inside the frame that holds it: select
+// ITS contents (input/textarea .select(), a contenteditable's children) and delete
+// them with execCommand, which edits like a person (beforeinput/input, so React and
+// other controlled inputs update their state). Key-based select-all + Delete
+// replaced: key events do not reach a tab whose window is not focused, so the
+// clear silently did nothing and the text was appended (fb#31 eden-edge,
+// PointClickCare: clear:true added a third copy); and Ctrl/Cmd+A with the document
+// focused selected the whole PAGE (Azure portal blade). Returns the field's length
+// after, or null when the frame could not be reached.
+function clearFocusedInFrame() {
+  let el = document.activeElement;
+  for (let d = 0; d < 20 && el && el.shadowRoot && el.shadowRoot.activeElement; d++) el = el.shadowRoot.activeElement;
+  if (!el) return null;
+  const isField = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+  if (isField) el.select();
+  else if (el.isContentEditable || el === document.body) { const s = getSelection(); s.selectAllChildren(el); }
+  else return null;
+  const read = () => (isField ? String(el.value || '').length : (el.textContent || '').length);
+  // Delete even when the field reads empty: a browser-autofilled password reads ""
+  // to page scripts until the first real input, then shows up in front of what was typed.
+  if (!document.execCommand('delete') && read()) {
+    // execCommand refused (some editors disable it): set the value as fast_fill does
+    if (isField) {
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, '');
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    } else el.textContent = '';
+  }
+  return read();
 }
 
-// Select-all + Delete via the CDP Input domain. Uses Cmd/Meta+A on macOS and
-// Ctrl+A elsewhere (the MOD_BITS map below carries meta/cmd=4), so the
-// clear-before-type select-all fires the right chord on every platform. This
-// is the only remaining caller of keyInfo/MOD_BITS. Clears the field so a
-// follow-up insertText REPLACES instead of appending.
-// ONLY ever called with an EDITABLE element focused (see typeText): Ctrl/Cmd+A
-// with the DOCUMENT focused selects the whole PAGE, which is what happened on
-// Azure's cross-origin portal blade — the page went blue and the name field was
-// never touched, while the call reported success.
-async function selectAllAndDelete(tabId) {
-  const a = keyInfo('a');
-  const selectAllMod = isMacPlatform() ? MOD_BITS.meta : MOD_BITS.ctrl;
-  const aBase = { modifiers: selectAllMod, key: a.key, code: a.code, windowsVirtualKeyCode: a.keyCode, nativeVirtualKeyCode: a.keyCode };
-  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...aBase });
-  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...aBase });
-  const del = keyInfo('Delete');
-  const dBase = { modifiers: 0, key: del.key, code: del.code, windowsVirtualKeyCode: del.keyCode, nativeVirtualKeyCode: del.keyCode };
-  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...dBase });
-  await cdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...dBase });
+async function clearFocused(tabId, frameId) {
+  try {
+    const [r] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId || 0] }, world: 'ISOLATED', func: clearFocusedInFrame });
+    return r ? r.result : null;
+  } catch { return null; }
 }
 
 // Type `text` as real key presses: per character a trusted keyDown carrying the
@@ -350,13 +357,17 @@ async function selectAllAndDelete(tabId) {
 // was refused with "Some of your info isn't correct"). A line break goes in with
 // insertText: an Enter key in a one-line field would SUBMIT the form.
 //
-// A tab that is not in front of its window (opened in the background, the usual case
-// for an agent's tab) drops CDP key events in a windowed Chrome, while insertText
-// still lands (svm-ytx 11-11: 0 of 7 keys in a background tab, 7 of 7 in front). So
-// the first character goes in as a key press and the field's length is checked
-// (readable for a password too): if it did not grow, the text goes in with insertText
-// and the result says no key presses were sent. Returns { keys: boolean }.
-async function typeKeys(tabId, text, lenBefore) {
+// A windowed Chrome drops CDP key events for a page whose window is not the focused
+// one — on macOS whenever another app is in front, which Chrome cannot change itself
+// (svm-ytx 11-11: 0 of 7 keys; mac1 fb#32: after fast_switch focus:true) — while
+// insertText still lands. So the first character goes in as a key press and the
+// field's length is checked (readable for a password too). If it did not grow:
+//   • a PASSWORD field is refused ({ refused:true }), nothing typed: a sign-in must
+//     never get a password nobody typed (fb#32: the insertText write revealed the
+//     autofilled saved password in front of it — 13 typed, 26 in the field);
+//   • any other field gets the text with insertText and the result says so.
+// Returns { keys: boolean, refused?: true }.
+async function typeKeys(tabId, text, lenBefore, isPassword) {
   const chars = Array.from(text);
   let i = 0;
   if (chars.length && chars[0] !== '\n' && chars[0] !== '\r' && typeof lenBefore === 'number') {
@@ -364,6 +375,7 @@ async function typeKeys(tabId, text, lenBefore) {
     let after = null;
     try { after = await probeFocus(tabId); } catch {}
     if (after && after.editable && after.valueLen === lenBefore) {
+      if (isPassword) return { keys: false, refused: true };
       await cdp(tabId, 'Input.insertText', { text });
       return { keys: false };
     }
@@ -458,8 +470,28 @@ export async function typeText({ text, clear, force, allowIframe, tabId: callTab
     };
   }
 
-  if (clear) await selectAllAndDelete(tabId);
-  const { keys } = await typeKeys(tabId, text, el.editable ? (clear ? 0 : el.valueLen) : undefined);
+  if (clear) {
+    const left = await clearFocused(tabId, el.frameId);
+    if (left) {
+      return {
+        error: `fast_type: clear:true could not empty the field (${left} characters left), so nothing was typed`,
+        code: 'clear_failed', focused: where(el),
+        hint: 'the page keeps its own value for this field: fast_fill it with value:"" (by label, or match:"password" for a password field), then fast_type without clear',
+      };
+    }
+  }
+  const lenBefore = el.editable ? (clear ? 0 : el.valueLen) : undefined;
+  const isPassword = el.type === 'password';
+  const { keys, refused } = await typeKeys(tabId, text, lenBefore, isPassword);
+  if (refused) {
+    // a key that was only queued could still land: leave the field empty either way
+    await clearFocused(tabId, el.frameId);
+    return {
+      error: 'fast_type: key presses do not reach this page — its Chrome window is not the focused window (on a Mac: another app is in front, the screen is locked, or Chrome is on another Space), and a password is never put in without real key presses, so nothing was typed (the field was emptied)',
+      code: 'password_needs_key_presses', keyPresses: false, focused: where(el),
+      hint: 'ask the user to click into the Chrome window (or unlock the screen), then fast_click the password field and fast_type {text, clear:true} again — or hand the sign-in to the user with fast_handoff',
+    };
+  }
 
   // Read the (post-insert) focused element back, in whatever frame it lives.
   // Best-effort — fall back to the pre-insert probe.
@@ -467,8 +499,20 @@ export async function typeText({ text, clear, force, allowIframe, tabId: callTab
   try { after = await probeFocus(tabId); } catch {}
   const tail = {
     typed: text.length, cleared: !!clear, forced: forced || undefined, typedInto: where(after),
-    ...(keys ? {} : { keyPresses: false, note: 'this tab is not in front, so key presses do not reach it: the text went in without key events. Where a page needs real typing (a sign-in refused as wrong), bring the tab to front (fast_switch {tabId, focus:true}) and fast_type again with clear:true' }),
+    ...(keys ? {} : { keyPresses: false, note: 'key presses do not reach this tab (it is not in front, or its window is not focused): the text went in without key events. Where a page needs real typing (a sign-in refused as wrong), bring it to front (fast_switch {tabId, focus:true}) and fast_type again with clear:true' }),
   };
+  // More characters than were there plus what was typed: the field held a value the
+  // page could not see before typing — a browser-autofilled password reads "" to
+  // scripts until the first real input, then the typed text lands AFTER it (fb#31
+  // PointClickCare on eden-edge: 15 typed, 30 in the field). Never a value to submit.
+  if (typeof lenBefore === 'number' && after.editable && typeof after.valueLen === 'number' && after.valueLen > lenBefore + text.length) {
+    return {
+      verified: false,
+      reason: `the field holds ${after.valueLen} characters after typing ${text.length} into ${lenBefore}: it already had a value the page could not read (a browser-autofilled password does this), so it now holds that value AND the typed text. Do not submit it; fast_type the same text again with clear:true`,
+      code: 'field_longer_than_typed',
+      ...tail,
+    };
+  }
   if (!after.readable) {
     return { verified: false, reason: after.reason || 'unreadable: value not readable', ...tail };
   }
@@ -484,9 +528,6 @@ export async function typeText({ text, clear, force, allowIframe, tabId: callTab
     ...tail,
   };
 }
-
-// CDP modifier bitmask: Alt=1, Ctrl=2, Meta/Cmd=4, Shift=8.
-const MOD_BITS = { alt: 1, ctrl: 2, control: 2, meta: 4, cmd: 4, command: 4, shift: 8 };
 
 // Map a key name to the fields CDP's dispatchKeyEvent needs. Covers common
 // named keys, letters, and digits — enough for shortcuts (Ctrl+A, Cmd+C) and

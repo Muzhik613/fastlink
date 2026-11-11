@@ -7,6 +7,19 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-11 — extension 0.4.28: no password without real key presses; clear without keys; Lightning Locker (fb#31/#32/#33)
+- **What:**
+  - `fast_type` into a **password** field whose page gets no key events (window not focused: on a Mac another app in front / screen locked / other Space) is **refused** (`code: password_needs_key_presses`, field emptied), never written with insertText. Other fields still fall back to insertText with `keyPresses:false`.
+  - `fast_type` flags `field_longer_than_typed` (verified:false) when the field ends up longer than before + typed: a browser-autofilled password reads "" to scripts until the first real input and then shows up in front of the typed text.
+  - `clear:true` empties the focused field in its own frame (`.select()` / selectAllChildren + `execCommand('delete')`), not with Ctrl/Cmd+A + Delete keys (dropped when the window is unfocused, and a page-wide select-all on a focused document). `clear_failed` if anything is left.
+  - `fast_key_press` Backspace/Delete on a text field performs the edit (execCommand) unless the page cancelled the keydown; result says `edited`. A scripted key event never edits a field by itself.
+  - `fast_switch focus:true` reports `pageFocused:false` + a note when Chrome could not take focus from another app.
+  - `fast_fill`: a field with no wired label/aria-label/placeholder takes its field group's single `<label>` (Material UI); a label wired to or wrapping another control is skipped. `match:"password"` names a password field by type.
+  - Lightning Locker / LWS: `lookupId`/`byIdIn` never throw (getElementById, then querySelector('#id'), else skip the root); every `document.getElementById` in page.js goes through it.
+- **Why:** fb#31 (eden-edge, PointClickCare: 15 typed, 30 in the field; clear and Backspace did nothing; fast_fill "Password" found nothing), fb#32 (mac1 0.4.27, PayPal: fast_switch focus:true "ok" but keyPresses:false, 13 typed, 26 in the field). Both = hidden autofilled saved password revealed by the first trusted input, plus key events dropped in an unfocused window. fb#33 (PCC support portal, Salesforce Experience Cloud): 'Disallowed method "getElementById" on ShadowRoot' broke every snapshot/click.
+- **Verified:** `test/typeText.test.js` (keys ok / keys dropped / password refused / autofill caught then cleared); headless old-vs-new on a Material UI form and a Locker-style ShadowRoot (old: snapshot throws, click misses; new: both work).
+- **Files:** `fast-ext/src/actions/input.js`, `page.js`, `tab.js`, `test/typeText.test.js`.
+
 ## 2026-11-11 — extension 0.4.27: fast_type in a background tab still types (no key presses), and says so
 - **What:** `typeKeys` sends the first character as a key press and checks the field's length (readable for passwords too); if it did not grow, the whole text goes in with insertText and the result carries `keyPresses:false` + a note to fast_switch {focus:true} and retype with clear:true. The fast_fill password hint names the same steps.
 - **Why:** 0.4.26 live check on svm-ytx (windowed Chrome): CDP key events typed 0 of 7 characters into a tab not in front, 7 of 7 with it in front (full keydown/keypress/beforeinput/input/keyup per character on the W3C key-event viewer). insertText lands either way. Headless Chrome delivers both, so headless tests can't show this.

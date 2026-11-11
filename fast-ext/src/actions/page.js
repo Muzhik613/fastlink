@@ -221,16 +221,26 @@ const pointerContent = (el) => {
   } catch { return false; }
 };
 
+// Never throws: Salesforce Lightning Locker / LWS wraps ShadowRoot and THROWS
+// 'Disallowed method "getElementById" on ShadowRoot', which broke every snapshot and
+// click on Experience Cloud sites (fb#33 support.pointclickcare.com). Each root is
+// asked with getElementById, then querySelector('#id'), and a root that refuses both
+// is skipped.
+const byIdIn = (root, id) => {
+  try { if (root.getElementById) return root.getElementById(id); } catch {}
+  try { if (root.querySelector) return root.querySelector('#' + CSS.escape(id)); } catch {}
+  return null;
+};
 const lookupId = (el, id) => {
-  let r = el.getRootNode && el.getRootNode();
-  while (r) {
-    if (r.getElementById) {
-      const f = r.getElementById(id);
+  try {
+    let r = el.getRootNode && el.getRootNode();
+    for (let hops = 0; r && hops < 50; hops++) {
+      const f = byIdIn(r, id);
       if (f) return f;
+      r = r.host ? r.host.getRootNode() : null;
     }
-    r = r.host ? r.host.getRootNode() : null;
-  }
-  return document.getElementById(id);
+  } catch {}
+  return byIdIn(document, id);
 };
 
 const resolveIdRefs = (el, attr) => {
@@ -323,6 +333,8 @@ const containerLabel = (el) => {
       for (let i = 0; i < labels.length && n < 2; i++) {
         const l = labels[i];
         if (l.contains(el)) continue;   // a wrapping label belongs to the control
+        // a label wired to, or wrapping, ANOTHER control ("Remember me" on its checkbox) is not this field's
+        if ((l.htmlFor && l.htmlFor !== el.id) || l.querySelector('input,select,textarea')) continue;
         if (++n === 1) found = l;
       }
     } catch {}
@@ -598,7 +610,12 @@ const refreshText = (el, entry) => {
 };
 
 const makeClickEntry = (el) => {
-  const lbl = labelFor(el);
+  // A field with no wired label, aria-label or placeholder takes the one <label> of its
+  // field group: Material UI puts the label beside the input with no for/id (fb#31
+  // PointClickCare: "Username"/"Password" fields read as unlabeled, fast_fill "Password"
+  // found nothing). Only for such fields, so the common case pays nothing.
+  let lbl = labelFor(el);
+  if (!lbl && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && !el.getAttribute('aria-label') && !el.getAttribute('placeholder')) lbl = containerLabel(el) || '';
   const innerText = clickInnerText(el);
   const titleAttr = el.getAttribute('title') || null;
   const describedBy = resolveIdRefs(el, 'aria-describedby');
@@ -1229,7 +1246,7 @@ const dialogLabel = (d) => {
   try {
     const own = d.getAttribute('aria-label');
     if (own) return cleanLabel(own).slice(0, 80);
-    const by = (d.getAttribute('aria-labelledby') || '').split(/\s+/).map((id) => document.getElementById(id)).filter(Boolean);
+    const by = (d.getAttribute('aria-labelledby') || '').split(/\s+/).map((id) => byIdIn(document, id)).filter(Boolean);
     if (by.length) return cleanLabel(by.map((e) => e.textContent).join(' ')).slice(0, 80);
     const h = d.querySelector('h1,h2,h3,h4,[role="heading"]');
     if (h) return cleanLabel(h.textContent).slice(0, 80);
@@ -2177,7 +2194,9 @@ async function runPageAction(action, args) {
   // EXACT field match (label / aria / placeholder / name equal, not substring).
   // Preferred over the loose substring match so "URIs 1" doesn't grab "URIs 10"
   // or a different section's "URIs" field.
+  // "password" also names a password field by its type, label or not (fb#31).
   const fieldMatchesExact = (it, m) =>
+    (m === 'password' && it.type === 'password') ||
     (it.label       && it.label.toLowerCase() === m) ||
     (it.ariaLabel   && it.ariaLabel.toLowerCase() === m) ||
     (it.placeholder && it.placeholder.toLowerCase() === m) ||
@@ -2631,7 +2650,7 @@ async function runPageAction(action, args) {
       const ids = ariaPanelIds(el);
       if (wrap) for (const id of ariaPanelIds(wrap)) if (!ids.includes(id)) ids.push(id);
       for (const id of ids) {
-        const panel = lookupId(el, id) || document.getElementById(id);
+        const panel = lookupId(el, id) || byIdIn(document, id);
         if (!panel) continue;
         let r; try { r = panel.getBoundingClientRect(); } catch { continue; }
         if (!visible(panel, r)) continue;
@@ -2995,11 +3014,24 @@ async function runPageAction(action, args) {
     const el = document.activeElement || document.body;
     const urlBefore = location.href;
     const opts = keyInit(key);
-    el.dispatchEvent(new KeyboardEvent('keydown', opts));
+    const notCancelled = el.dispatchEvent(new KeyboardEvent('keydown', opts));
     el.dispatchEvent(new KeyboardEvent('keypress', opts));
+    // A scripted key event never edits a field (only trusted keys do), so Backspace /
+    // Delete into a text field changed nothing while reporting success (fb#31
+    // PointClickCare: 10 Backspaces, value unchanged). Do the edit the key stands
+    // for, as a person's key would, unless the page cancelled the keydown.
+    let edited;
+    const NON_TEXT = /^(checkbox|radio|button|submit|reset|file|image|range|color|hidden)$/i;
+    const textField = (el.tagName === 'INPUT' && !NON_TEXT.test(el.type || 'text')) || el.tagName === 'TEXTAREA' || el.isContentEditable;
+    if (notCancelled && textField && (key === 'Backspace' || key === 'Delete')) {
+      const len = () => (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? String(el.value || '').length : (el.textContent || '').length);
+      const before = len();
+      try { document.execCommand(key === 'Backspace' ? 'delete' : 'forwardDelete'); } catch {}
+      edited = len() !== before;
+    }
     el.dispatchEvent(new KeyboardEvent('keyup', opts));
     const out = await withSnap({ keyDispatched: key });
-    const head = { keyDispatched: key, target: describeEl(el), url: location.href, urlChanged: location.href !== urlBefore };
+    const head = { keyDispatched: key, target: describeEl(el), url: location.href, urlChanged: location.href !== urlBefore, ...(edited !== undefined ? { edited } : {}) };
     const sug = openSuggestions(document.activeElement);
     if (sug) Object.assign(head, sug);
     else if (key === 'Enter' || key === 'Tab') acSettle(el);   // submitted and no list left open
@@ -3630,7 +3662,7 @@ async function runPageAction(action, args) {
         let opts = [];
         if (instId) opts = Array.from(document.querySelectorAll(`[id^="${instId}-option"]`));
         if (!opts.length) {
-          const listbox = (instId && document.getElementById(`${instId}-listbox`))
+          const listbox = (instId && byIdIn(document, `${instId}-listbox`))
             || (ctrl.parentElement && ctrl.parentElement.querySelector('[class*="select__menu"]'))
             || null;
           opts = listbox ? Array.from(listbox.querySelectorAll('[id*="-option-"], [role="option"]')) : [];
@@ -3665,7 +3697,7 @@ async function runPageAction(action, args) {
       // Cheap: the panel the control names (attribute reads + that panel's rects).
       const ariaOptionEls = () => {
         for (const id of ariaPanelIds(field)) {
-          const panel = lookupId(field, id) || document.getElementById(id);
+          const panel = lookupId(field, id) || byIdIn(document, id);
           if (!panel) continue;
           const els = visibleOnly(panel.querySelectorAll(OPTION_SEL));
           if (els.length) return { els, via: 'aria-controls' };
@@ -4632,7 +4664,7 @@ async function runPageAction(action, args) {
       try {
         // The name may be an element id the model copied from `focused` (react-select-8-input).
         const hid = rep.hiddenMatches && rep.hiddenMatches.find(h => /^react-select-/.test(h.id || ''));
-        const byId = document.getElementById(sp.match) || (hid ? document.getElementById(hid.id) : null);
+        const byId = byIdIn(document, sp.match) || (hid ? byIdIn(document, hid.id) : null);
         sel = selectHintFor(byId);
       } catch {}
       // The name belongs to a visible select / combobox control (not fillable):
