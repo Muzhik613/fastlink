@@ -5,7 +5,7 @@ export async function getText(args = {}) {
     world: 'ISOLATED',
     tabId: args.tabId,
     func: extractText,
-    args: [args.selector || null, args.maxLen || null, !!args.html],
+    args: [args.selector || null, args.offset ?? 0, args.maxLen ?? null, !!args.html],
   });
   // JSON string across executeScript (Chrome sorts returned object keys) so
   // `truncated` stays the first field.
@@ -13,13 +13,30 @@ export async function getText(args = {}) {
 }
 
 // Runs in the page (self-contained: executeScript serializes this function).
+// Reads the window [offset, offset + maxLen) of the text (maxLen ≤ CHUNK_MAX, default
+// CHUNK_MAX). While more remains, the full text stays cached in this extension's isolated
+// world, so the next window (offset > 0, same selector/html) slices the same snapshot
+// instead of re-reading a huge page; the last window frees it.
 // A form control's text is its live VALUE, never its (empty) textContent: a
 // selector matching input / textarea / select / [contenteditable] /
 // role=combobox|textbox|searchbox returns the value as `text` plus
 // field:{tag, label, value} (fields:[…] for several matches). A read whose text
 // is empty says so (empty:true) — Maps run 61581163 read "" from the Destination
 // <input> and took it as "nothing contradicts me".
-export function extractText(selector, maxLen, html) {
+export function extractText(selector, offset, maxLen, html) {
+  // The most characters one call returns. A result goes back in ONE relay WebSocket frame
+  // (escaped again at each hop); a ~15 MB page in one frame dropped the browser's relay
+  // socket and the caller's MCP connection (winshore 11-10). Bigger text: read in windows.
+  const CHUNK_MAX = 2_000_000;
+  const start = offset == null ? 0 : offset;
+  if (!Number.isInteger(start) || start < 0) return JSON.stringify({ error: `offset must be a whole number ≥ 0 (got ${JSON.stringify(offset)})` });
+  if (maxLen != null && !(Number.isInteger(maxLen) && maxLen > 0)) return JSON.stringify({ error: `maxLen must be a whole number > 0 (got ${JSON.stringify(maxLen)})` });
+  if (maxLen > CHUNK_MAX) return JSON.stringify({ error: `maxLen ${maxLen} is over the ${CHUNK_MAX}-character limit for one call; read in pieces: offset 0, then each result's \`next\`` });
+  const limit = maxLen || CHUNK_MAX;
+  const cacheKey = JSON.stringify([location.href, selector, !!html]);
+  const cache = globalThis.__fastlinkTextCache;
+  if (start > 0 && cache && cache.key === cacheKey) return JSON.stringify(windowOf(cache.text, cache.meta));
+  globalThis.__fastlinkTextCache = null;
   const EMPTY_HINT = 'the element has no text; if it is a form field its value is in value (shown here) — an empty read is not confirmation';
   const MAX_FIELDS = 50;
   const CONTROL_ROLE = /^(combobox|textbox|searchbox)$/;
@@ -84,16 +101,25 @@ export function extractText(selector, maxLen, html) {
     kind = html ? 'outerHTML' : 'innerText';
   }
   const text = String(raw);
-  const limit = typeof maxLen === 'number' && maxLen > 0 ? maxLen : 0;
-  const truncated = !!(limit && text.length > limit);
-  const body = { text: truncated ? text.slice(0, limit) : text, length: text.length, kind, from: selector || 'body', ...(roots.length > 1 ? { matches: roots.length } : {}), ...extra };
-  if (!text.trim()) return JSON.stringify({ truncated: false, empty: true, hint: EMPTY_HINT, ...body });
-  // A cut result says so FIRST, with the exact call that returns the rest.
-  if (!truncated) return JSON.stringify({ truncated: false, ...body });
-  return JSON.stringify({
-    truncated: true,
-    dropped: { chars: text.length - limit },
-    hint: `only the first ${limit} of ${text.length} chars are shown — call fast_text again with maxLen:${text.length} (or omit maxLen), or a narrower selector, before relying on this text`,
-    ...body,
-  });
+  const meta = { kind, from: selector || 'body', ...(roots.length > 1 ? { matches: roots.length } : {}), ...extra };
+  if (!text.trim()) return JSON.stringify({ truncated: false, empty: true, hint: EMPTY_HINT, text, offset: 0, length: text.length, ...meta });
+  return JSON.stringify(windowOf(text, meta));
+
+  // One window of `text`. `truncated` comes FIRST: true means more text follows, at `next`.
+  function windowOf(full, m) {
+    if (start > full.length) return { error: `offset ${start} is past the end of the text (length ${full.length})` };
+    let end = Math.min(full.length, start + limit);
+    // never split a surrogate pair across two windows
+    if (end < full.length && end > start + 1) { const c = full.charCodeAt(end - 1); if (c >= 0xd800 && c <= 0xdbff) end--; }
+    const more = end < full.length;
+    globalThis.__fastlinkTextCache = more ? { key: cacheKey, text: full, meta: m } : null;
+    const body = { text: full.slice(start, end), offset: start, length: full.length, ...m };
+    if (!more) return { truncated: false, ...body };
+    return {
+      truncated: true,
+      next: end,
+      hint: `characters ${start}-${end} of ${full.length} — call fast_text again with offset:${end} (same selector) for the rest, or narrow the selector, before relying on this text`,
+      ...body,
+    };
+  }
 }

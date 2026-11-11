@@ -44,7 +44,7 @@ POST /mcp
   - `items`: `[{i, tag, text|label, href?, …}]`; links carry `href`.
   - `content`: the visible text blocks.
   - Add `full:true` for the whole page instead of the visible part.
-- **Read text:** `fast_text {browser, tabId, selector?, maxLen?}` → `{text, truncated}`.
+- **Read text:** `fast_text {browser, tabId, selector?, offset?, maxLen?}` → `{truncated, next?, text, offset, length}`. One call returns at most 2,000,000 characters; while `truncated:true`, call again with `offset:next` (same selector) and join the pieces.
 - **Close the tab:** `fast_close {browser, tabId}`.
 - **Calls are capped at about 30 s each.** Split long waits into several `fast_wait` calls.
 - **Fetch from inside a tab (`fast_fetch`):** `{browser, tabId, url, method?, headers?, body?}` →

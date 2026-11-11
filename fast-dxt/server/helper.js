@@ -10,6 +10,8 @@
 // {lastBrowser}: the relay uses the only online browser, else that hint if it's
 // online, else errors with the online list. Calls also get {tabId: myTab}.
 import { hostname } from 'node:os';
+import { appendFileSync, closeSync, openSync, renameSync, rmSync } from 'node:fs';
+import { dirname, basename, isAbsolute, join } from 'node:path';
 import { createRelayClient } from './relayClient.js';
 import { PAIR_URL } from './agentFile.js';
 
@@ -40,6 +42,21 @@ const UNPAIRED_STATUS_TOOL = {
   description: 'Shows whether FastLink is set up on this machine.',
   inputSchema: { type: 'object', properties: {} },
 };
+
+// fast_text `saveTo` (helper-only): the helper reads the whole text window by window
+// (the relay's fast_text returns ≤2M chars per call) and writes it to a file on THIS
+// machine; the result names the file and never carries the text. For pages too big to
+// put in a model's context (a 15 MB API JSON, winshore 11-10).
+const SAVE_TO_ARG = {
+  type: 'string',
+  description: 'Absolute file path on this machine: write the whole text there (any size, read in pieces) and return only the path and length, not the text. Overwrites the file.',
+};
+const MAX_SAVE_CHUNKS = 200; // 400M chars: far past any page, stops a runaway loop
+
+export function withSaveTo(tool) {
+  if (tool.name !== 'fast_text') return tool;
+  return { ...tool, inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties, saveTo: SAVE_TO_ARG } } };
+}
 
 const text = (obj) => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj) }] });
 const errorText = (msg) => ({ content: [{ type: 'text', text: msg }], isError: true });
@@ -122,7 +139,7 @@ export function createHelper({ loadAgent, pairCommand, lastBrowserStore = { get:
   async function listTools() {
     if (!ensureRelay()) return { tools: [UNPAIRED_STATUS_TOOL, PROFILE_TOOL] };
     const r = await relay.request('tools/list', {});
-    const tools = (r?.tools || []).filter((t) => t.name !== 'fast_profile').map(stripRoutingArgs);
+    const tools = (r?.tools || []).filter((t) => t.name !== 'fast_profile').map(stripRoutingArgs).map(withSaveTo);
     return { ...r, tools: [...tools, PROFILE_TOOL] };
   }
 
@@ -185,7 +202,9 @@ export function createHelper({ loadAgent, pairCommand, lastBrowserStore = { get:
 
     let result;
     try {
-      result = await relay.request('tools/call', { name, arguments: args });
+      result = name === 'fast_text' && args.saveTo != null
+        ? await saveText(args)
+        : await relay.request('tools/call', { name, arguments: args });
     } catch (e) {
       return errorText(`Error: ${e.message}`);
     }
@@ -209,6 +228,42 @@ export function createHelper({ loadAgent, pairCommand, lastBrowserStore = { get:
       myTab.delete(tabKey);
     }
     return result;
+  }
+
+  // fast_text {saveTo}: every window, appended to a temp file renamed into place at the end.
+  // Returns a relay-shaped result (the last window's _meta, so routing/tab learning work).
+  async function saveText({ saveTo, offset: _o, ...args }) {
+    const file = String(saveTo);
+    if (!isAbsolute(file)) return errorText(`Error: saveTo must be an absolute path (got "${file}")`);
+    const tmp = join(dirname(file), `.${basename(file)}.part-${process.pid}-${Date.now()}`);
+    let fd;
+    try { fd = openSync(tmp, 'w', 0o600); } catch (e) { return errorText(`Error: can't write ${file}: ${e.message}`); }
+    let offset = 0, chunks = 0, r, body, bytes = 0;
+    try {
+      for (;;) {
+        r = await relay.request('tools/call', { name: 'fast_text', arguments: { ...args, offset } });
+        body = resultJson(r);
+        if (r?.isError || !body || typeof body !== 'object' || 'error' in body) return r;
+        // An extension without windowed reads ignores `offset` and sends no offset back.
+        if (body.offset !== offset) return errorText(`Error: the browser's FastLink is too old for big reads (no fast_text offset); update it (fast_update), then retry`);
+        const buf = Buffer.from(String(body.text ?? ''), 'utf8');
+        appendFileSync(fd, buf);
+        bytes += buf.length;
+        chunks++;
+        if (!body.truncated) break;
+        if (!(body.next > offset)) return errorText(`Error: fast_text gave no next offset after ${offset}`);
+        if (chunks >= MAX_SAVE_CHUNKS) return errorText(`Error: stopped after ${chunks} pieces (${body.next} of ${body.length} characters)`);
+        offset = body.next;
+      }
+      closeSync(fd); fd = null;
+      renameSync(tmp, file);
+    } finally {
+      if (fd != null) closeSync(fd);
+      rmSync(tmp, { force: true });
+    }
+    const { text: _t, truncated: _tr, next: _n, hint: _h, offset: _off, ...rest } = body;
+    const { length: chars, ...meta } = rest;
+    return { ...r, content: [{ type: 'text', text: JSON.stringify({ saved: file, chars, bytes, pieces: chunks, ...meta }) }] };
   }
 
   // One JSON-RPC message in → the reply (or null for notifications).

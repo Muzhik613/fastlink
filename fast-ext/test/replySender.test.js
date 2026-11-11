@@ -2,7 +2,7 @@
 // when there is no current one, held ≤ HOLD_MS and flushed on reconnect.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createReplySender } from '../src/replySender.js';
+import { createReplySender, FRAME_MAX_BYTES } from '../src/replySender.js';
 
 const sock = (readyState = 1) => ({ readyState, sent: [], send(s) { this.sent.push(JSON.parse(s)); } });
 
@@ -59,4 +59,16 @@ test('progress frames are live-only: never held, never sent on the arrival socke
   const r = createReplySender({ getCurrent: () => null });
   assert.equal(r.sendProgress({ type: 'started', id: 5 }), false);
   assert.equal(r.heldCount(), 0);
+});
+
+test('a result frame too big for the socket goes out as an error, never the frame', () => {
+  const sent = [];
+  const ws = { readyState: 1, send: (s) => sent.push(s) };
+  const r = createReplySender({ getCurrent: () => ws });
+  r.sendResult({ type: 'result', id: 7, tabId: 3, result: { text: 'x'.repeat(FRAME_MAX_BYTES) } }, ws);
+  const f = JSON.parse(sent[0]);
+  assert.equal(f.id, 7);
+  assert.equal(f.tabId, 3);
+  assert.match(f.error, /result too large to send \(16\.0 MB; the limit is 16\.0 MB\).*offset/);
+  assert.equal(f.result, undefined);
 });

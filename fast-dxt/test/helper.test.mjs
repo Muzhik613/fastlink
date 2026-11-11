@@ -5,7 +5,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn, execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,11 +37,20 @@ const TOOLS = [
   { name: 'fast_snapshot', description: 'snap', inputSchema: { type: 'object', properties: { browser: { type: 'string' }, tabId: { type: 'number' }, depth: { type: 'number' } }, required: ['tabId'] } },
   { name: 'fast_switch', description: 'sw', inputSchema: { type: 'object', properties: { browser: { type: 'string' }, tabId: { type: 'number' }, match: { type: 'string' } } } },
   { name: 'fast_tab', description: 't', inputSchema: { type: 'object', properties: { browser: { type: 'string' }, url: { type: 'string' } } } },
+  { name: 'fast_text', description: 'text', inputSchema: { type: 'object', properties: { browser: { type: 'string' }, tabId: { type: 'number' }, selector: { type: 'string' }, offset: { type: 'number' }, maxLen: { type: 'number' } } } },
   { name: 'fast_nav', description: 'n', inputSchema: { type: 'object', properties: { browser: { type: 'string' }, tabId: { type: 'number' }, url: { type: 'string' } } } },
 ];
 const txt = (o) => ({ content: [{ type: 'text', text: JSON.stringify(o) }] });
 
+let pageText = '';          // what the fake browser's fast_text reads
+let oldExtension = false;  // a browser whose fast_text ignores offset
+const WINDOW = 5;
 function toolResult(name, args) {
+  if (name === 'fast_text') {
+    if (oldExtension) return txt({ truncated: false, text: pageText, length: pageText.length });
+    const off = args.offset ?? 0, end = Math.min(pageText.length, off + WINDOW);
+    return txt({ truncated: end < pageText.length, ...(end < pageText.length ? { next: end } : {}), text: pageText.slice(off, end), offset: off, length: pageText.length, kind: 'innerText', from: args.selector || 'body', tabId: 7 });
+  }
   if (name === 'fast_status') return txt({ browsers: BROWSERS, routedBrowser: args.browser || args.lastBrowser || 'home' });
   if (args.tabId != null && !liveTabs.has(args.tabId)) return txt({ error: `No tab with id: ${args.tabId}.` });
   if (name === 'fast_tab') { const id = nextTab++; liveTabs.add(id); return txt({ tabId: id, url: args.url }); }
@@ -340,4 +349,40 @@ test('call.js: scripts call FastLink with the machine pairing, browser on every 
   } finally {
     if (prev === undefined) delete process.env.FASTLINK_AGENT_FILE; else process.env.FASTLINK_AGENT_FILE = prev;
   }
+});
+
+test('fast_text saveTo: the helper reads every window into the file, the result has no text', async (t) => {
+  const h = startHelper(writeAgent(join(tmp, 'save.json')));
+  t.after(h.stop);
+  await h.rpc('initialize', {});
+  const listed = (await h.rpc('tools/list', {})).result.tools.find((x) => x.name === 'fast_text');
+  assert.ok(listed.inputSchema.properties.saveTo, 'saveTo is listed on fast_text');
+  pageText = '{"a":"héllo 😀 world","b":[1,2,3]}';
+  const file = join(tmp, 'out', 'page.json');
+  mkdirSync(dirname(file), { recursive: true });
+  calls.length = 0;
+  const r = h.json(await h.call('fast_text', { selector: 'pre', saveTo: file }));
+  assert.equal(readFileSync(file, 'utf8'), pageText);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.equal(r.saved, file);
+  assert.equal(r.chars, pageText.length);
+  assert.equal(r.bytes, Buffer.byteLength(pageText));
+  assert.equal(r.text, undefined);
+  assert.deepEqual(calls.map((c) => c.arguments.offset), [0, 5, 10, 15, 20, 25, 30]);
+  assert.ok(calls.every((c) => c.arguments.selector === 'pre' && !('saveTo' in c.arguments)));
+});
+
+test('fast_text saveTo: a relative path or an old extension fails clearly and leaves no file', async (t) => {
+  const h = startHelper(writeAgent(join(tmp, 'save2.json')));
+  t.after(() => { oldExtension = false; h.stop(); });
+  await h.rpc('initialize', {});
+  const rel = await h.call('fast_text', { saveTo: 'page.json' });
+  assert.ok(rel.isError && /absolute path/.test(rel.content[0].text));
+  pageText = 'x'.repeat(12);
+  oldExtension = true;
+  const file = join(tmp, 'old.json');
+  const old = await h.call('fast_text', { saveTo: file });
+  assert.ok(old.isError && /too old/.test(old.content[0].text));
+  assert.equal(existsSync(file), false);
+  assert.deepEqual(readdirSync(tmp).filter((f) => f.includes('.part-')), []);
 });

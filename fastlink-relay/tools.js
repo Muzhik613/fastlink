@@ -225,13 +225,14 @@ const BROWSER_TOOLS = [
   },
   {
     name: 'fast_text',
-    description: 'Page text, or one element\'s via `selector` (a form control returns its live value). truncated:true means cut: raise `maxLen` or narrow the selector.',
+    description: 'Page text, or one element\'s via `selector` (a form control returns its live value). One call returns at most 2,000,000 characters: truncated:true means more follows, so call again with offset:`next` (same selector) or narrow the selector.',
     inputSchema: {
       type: 'object',
       properties: {
         selector: { type: 'string', description: 'CSS selector (default body).' },
         html: { type: 'boolean', description: 'Return HTML instead of text.' },
-        maxLen: { type: 'number', description: 'Max characters.' },
+        offset: { type: 'number', description: 'Start at this character (default 0); a truncated result\'s `next`.' },
+        maxLen: { type: 'number', description: 'Max characters for this call (default and limit 2000000).' },
       },
     },
   },
