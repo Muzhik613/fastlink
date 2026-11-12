@@ -7,6 +7,15 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-12 — extension 0.4.29: one frame enumeration for every tool (fb#34 Stripe)
+- **What:**
+  - Every frame-aware path (fast_snapshot, fast_click / fast_fill / fast_select_option, `frame:"…"`, the frame notice, `framesAppeared`, the selector-wait frame hint, the text wait) lists frames through ONE function, `frames.js` `frameProbe` / `renderedFrames`. It is injected in the ISOLATED world, needs no page.js in the frame, and has no 1.5s cap. page.js's own scan (`opaqueFrames`, `fast_frames`, `withFrameNotice`, `noFrameNotice`) is deleted. The frame notice is now built in the background (`frameNoticeFor`), with the same rules as before: on screen, at least 100x50, not read.
+  - Rendered frame = http(s) src, at least 10x10, not hidden. A named frame with no match is listed again once after 250ms before the call answers "no visible frame" / "no frame matches".
+  - If `frame:"<origin>"` names several frames (Stripe's card and address forms are both js.stripe.com), fill/click/select act in the one that holds the target. Snapshot/scroll/wait still refuse and list the frame ids.
+- **Why:** fb#34 (mac1 0.4.28, payments.red-gate.com, Stripe Payment Element). `fast_wait "Card number"` found the card in js.stripe.com f3894, but snapshot/fill/click with `frame:"f3894"` or the origin answered "no visible frame on this page", and an unframed snapshot listed no frames. The text wait walked frames with its own probe. The DOM tools asked page.js in the top document under a 1.5s cap, so a top document slow to answer (page.js re-injected after a reload, a busy payment page) looked like a page with no frames.
+- **Verified:** `fast-runner/test/frame-reach.test.mjs` fb#34 tests: a Stripe-like page with the card frame, a hidden controller, a 4px strip and an address frame; the top document 1.6s slow (fails on 0.4.28 with exactly the reported symptoms); a reload between wait and fill (new frame ids: found again, the old id refused); a frame that renders just after the call starts; a multi-frame origin fill/click. Headless Chrome against the real Stripe Payment Element (pk_test, deferred intent): wait, unframed snapshot, `frame:"https://js.stripe.com"` and a fill after a reload all reach the card frame. Already failing before this change and not touched: 14 type/text/toolset tests in fast-runner.
+- **Files:** `fast-ext/src/actions/frames.js`, `page.js`, `index.js`; `fast-runner/test/frame-reach.test.mjs`, `frame-notice.test.mjs`, `frame-wait.test.mjs`.
+
 ## 2026-11-11 — extension 0.4.28: no password without real key presses; clear without keys; Lightning Locker (fb#31/#32/#33)
 - **What:**
   - `fast_type` into a **password** field whose page gets no key events (window not focused: on a Mac another app in front / screen locked / other Space) is **refused** (`code: password_needs_key_presses`, field emptied), never written with insertText. Other fields still fall back to insertText with `keyPresses:false`.

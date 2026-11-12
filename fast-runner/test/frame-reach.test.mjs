@@ -648,3 +648,107 @@ test('fast_click carries debug-only phase timings (_debug.phases + swTotalMs); o
   const f = await call('fast_fill', { frame: 'pay.provider', match: 'Card number', value: '1', noSnapshot: true });
   assert.equal(f._debug, undefined);
 });
+
+test('a selector wait (top document only) that times out names the visible frames and the frame arg', async () => {
+  setup();
+  const r = await call('fast_wait', { selector: '#vmName', timeoutMs: 400, noSnapshot: true });
+  assert.match(r.error, /^Timed out waiting for selector "#vmName" in this document — it may be inside a visible frame \(https:\/\/pay\.provider\.example at 200,300 400x200\); pass frame:/, JSON.stringify(r));
+});
+
+// fb#34 (mac1, payments.red-gate.com, Stripe Payment Element): fast_wait "Card number" found
+// the card in frame js.stripe.com f3894, while fast_snapshot / fast_fill / fast_click with
+// frame:"f3894" or "https://js.stripe.com" said "no visible frame on this page" and an
+// unframed snapshot listed no frames. Two enumerations: the wait walked frames with its own
+// ISOLATED probe; the DOM tools asked page.js in the top document (fast_frames) under a 1.5s
+// cap, so a top document slow to answer (page.js re-injected after a reload, a busy payment
+// page) read as "no frames". Now every tool enumerates through the one probe.
+const STRIPE = 'https://js.stripe.com/v3/elements-inner-payment-abc.html#apiKey=pk_test&controllerId=__privateStripeController5511';
+const STRIPE_HTML = '<label for="cn">Card number</label><input id="cn" data-box="4,40,470,44"><label for="ex">Expiration date</label><input id="ex" data-box="4,110,230,44"><label for="cvc">Security code</label><input id="cvc" data-box="244,110,230,44">';
+function stripePage({ cardId = 3894, slowTopMs = 0, address = false } = {}) {
+  const RG = 'https://payments.red-gate.example/pay/enter-payment-details';
+  const CTRL = 'https://js.stripe.com/v3/controller-with-preconnect-x.html';
+  const top = doc(`<h1>Enter payment details</h1>
+    <div class="__PrivateStripeElement"><iframe name="__privateStripeFrame5514" title="Secure payment input frame" src="${STRIPE}" data-box="60,260,480,341"></iframe></div>
+    <iframe name="__privateStripeController5511" src="${CTRL}" data-box="0,1115,0,0" style="visibility:hidden"></iframe>
+    <button>Pay</button>`, RG);
+  top.eval(PAGE_JS);
+  if (slowTopMs) {
+    const run = top.__fastlink.run;
+    top.__fastlink.run = async (a, x) => { await new Promise((r) => setTimeout(r, slowTopMs)); return run(a, x); };
+  }
+  const card = doc(STRIPE_HTML, STRIPE);
+  frames = new Map([[0, { win: top, parent: -1, url: RG }], [cardId - 1, { win: doc('<p>ctrl</p>', CTRL), parent: 0, url: CTRL }], [cardId, { win: card, parent: 0, url: STRIPE }]]);
+  if (address) {
+    const ADDR = 'https://js.stripe.com/v3/elements-inner-address-def.html#apiKey=pk_test';
+    const STRIP = 'https://js.stripe.com/v3/elements-inner-ach-bank-search-results.html';
+    const box = (src, b) => { const el = top.document.createElement('iframe'); el.setAttribute('src', src); el.setAttribute('data-box', b); Object.defineProperty(el, 'contentDocument', { get: () => null }); top.document.body.appendChild(el); };
+    box(STRIP, '60,256,489,4');
+    box(ADDR, '60,611,480,249');
+    frames.set(cardId + 3, { win: doc('<p>results</p>', STRIP), parent: 0, url: STRIP });
+    frames.set(cardId + 5, { win: doc('<label for="pc">Postal code</label><input id="pc" data-box="4,40,470,44"><button data-box="4,100,100,30">Use this address</button>', ADDR), parent: 0, url: ADDR });
+  }
+  calls.length = 0;
+  return { top, card };
+}
+
+test('fb#34: a Stripe Payment Element frame found by fast_wait is also listed by fast_snapshot and reachable by frame id and origin', async () => {
+  stripePage();
+  const w = await call('fast_wait', { text: 'Card number', timeoutMs: 3000, noSnapshot: true });
+  assert.deepEqual(w.found && [w.found.frame, w.found.frameId], ['https://js.stripe.com', 3894], JSON.stringify(w));
+  const snap = await call('fast_snapshot', {});
+  assert.deepEqual((snap.frames || []).map((f) => f.frameId), [3894], JSON.stringify(snap).slice(0, 300));
+  assert.equal(snap.frameNotice, undefined);
+  for (const frame of ['f3894', 'https://js.stripe.com']) {
+    const r = await call('fast_snapshot', { frame });
+    assert.equal(r.inFrame && r.inFrame.frameId, 3894, `${frame}: ${JSON.stringify(r).slice(0, 200)}`);
+  }
+});
+
+test('fb#34: the top document slow to answer (1.6s, past the old 1.5s frame-scan cap) — snapshot, fill and click still reach the card frame', async () => {
+  const { card } = stripePage({ slowTopMs: 1600 });
+  const snap = await call('fast_snapshot', {});
+  assert.deepEqual((snap.frames || []).map((f) => f.frameId), [3894], JSON.stringify(snap).slice(0, 300));
+  const r = await call('fast_fill', { frame: 'https://js.stripe.com', fields: { 'Card number': '4242 4242 4242 4242', 'Security code': '123' }, noSnapshot: true });
+  assert.equal(card.document.getElementById('cn').value, '4242 4242 4242 4242', JSON.stringify(r));
+  assert.equal(card.document.getElementById('cvc').value, '123');
+  const f = await call('fast_fill', { fields: { 'Expiration date': '12 / 34' }, noSnapshot: true });
+  assert.equal(card.document.getElementById('ex').value, '12 / 34', JSON.stringify(f));
+});
+
+test('fb#34: the page reloads between fast_wait and fast_fill (new frame ids) — frame:"https://js.stripe.com" finds the new frame; the old id is refused as stale', async () => {
+  stripePage({ cardId: 3894 });
+  const w = await call('fast_wait', { text: 'Card number', timeoutMs: 3000, noSnapshot: true });
+  assert.equal(w.found.frameId, 3894);
+  const { card } = stripePage({ cardId: 4120 });   // reload: new documents, new frame ids
+  const r = await call('fast_fill', { frame: 'https://js.stripe.com', fields: { 'Card number': '4242 4242 4242 4242' }, noSnapshot: true });
+  assert.equal(card.document.getElementById('cn').value, '4242 4242 4242 4242', JSON.stringify(r));
+  assert.equal(r.inFrame.frameId, 4120);
+  const stale = await call('fast_snapshot', { frame: 'f3894' });
+  assert.match(stale.error, /no frame matches "f3894" \(nothing done\); frames: https:\/\/js\.stripe\.com \(f4120\)/, JSON.stringify(stale));
+});
+
+test('fb#34: a frame that renders just after the call starts is found by the one re-enumeration, not "no visible frame"', async () => {
+  const { top } = stripePage();
+  const el = top.document.querySelector('iframe[name^="__privateStripeFrame"]');
+  el.remove();
+  setTimeout(() => top.document.body.prepend(el), 50);
+  const r = await call('fast_snapshot', { frame: 'https://js.stripe.com' });
+  assert.equal(r.inFrame && r.inFrame.frameId, 3894, JSON.stringify(r).slice(0, 300));
+});
+
+test('fb#34: frame:"https://js.stripe.com" names the card, the address and a 4px strip — a fill or click acts in the one frame holding the target', async () => {
+  const { card } = stripePage({ address: true });
+  const snap = await call('fast_snapshot', {});
+  assert.deepEqual((snap.frames || []).map((f) => f.frameId).sort(), [3894, 3899], 'the 4px strip is not a frame to read');
+  const r = await call('fast_fill', { frame: 'https://js.stripe.com', fields: { 'Card number': '4242 4242 4242 4242', 'Postal code': '10001' }, noSnapshot: true });
+  assert.equal(card.document.getElementById('cn').value, '4242 4242 4242 4242', JSON.stringify(r));
+  assert.equal(frames.get(3899).win.document.getElementById('pc').value, '10001');
+  assert.equal(r.verified, true, JSON.stringify(r));
+  let clicked = 0;
+  frames.get(3899).win.document.querySelector('button').addEventListener('click', () => { clicked++; });
+  const c = await call('fast_click', { frame: 'https://js.stripe.com', text: 'Use this address', noSnapshot: true });
+  assert.equal(clicked, 1, JSON.stringify(c));
+  assert.equal(c.inFrame.frameId, 3899);
+  const s1 = await call('fast_snapshot', { frame: 'https://js.stripe.com' });
+  assert.match(s1.error, /matches 2 frames \(nothing done\); pass one frame id: https:\/\/js\.stripe\.com \(f3894\), https:\/\/js\.stripe\.com \(f3899\)/);
+});

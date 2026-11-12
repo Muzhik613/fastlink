@@ -199,13 +199,14 @@ export async function frameTree(tabId) {
 }
 
 // The child frames of one parent that its rendered <iframe> elements point at:
-// each src (in the parent's priority order) takes one unclaimed child whose URL
-// is exactly it, else one of the same origin. A child no rendered element
-// claims is a hidden / zero-size / not-http frame and is not returned. Pure.
-export function matchChildFrames(children, srcs) {
+// each rendered element (`kids` from frameProbe, in the parent's priority order)
+// takes one unclaimed child whose URL is exactly its src, else one of the same
+// origin. A child no rendered element claims is a hidden / zero-size / not-http
+// frame and is not returned. Returns [{ id, url, kid }]. Pure.
+export function matchChildFrames(children, kids) {
   const free = [...(children || [])];
   const out = [];
-  for (const src of srcs || []) { const c = claimChild(free, src); if (c) out.push(c); }
+  for (const kid of kids || []) { const c = claimChild(free, kid.src); if (c) out.push({ ...c, kid }); }
   return out;
 }
 
@@ -219,7 +220,7 @@ export function matchChildFrames(children, srcs) {
 // frame tree from the top, injecting into a few NAMED frames per tick
 // (target.frameIds):
 //   • a frame is visited only when its parent renders it (a box of at least
-//     2×2 px, not visibility:hidden) and it is http(s) — in-view first, then by area;
+//     10×10 px, not visibility:hidden — a 4px widget strip holds nothing to read) and it is http(s) — in-view first, then by area;
 //   • at most FRAME_WALK.perTick frames per tick, FRAME_WALK.gapMs apart; a
 //     finished pass backs off (firstMs → doubling → maxMs) before the next;
 //   • the first tick waits FRAME_WALK.firstMs, so text already in the top
@@ -227,9 +228,16 @@ export function matchChildFrames(children, srcs) {
 
 // Runs in ONE frame (ISOLATED world). Reports this frame's URL; when `needle`
 // is given, whether its rendered text contains it (script/style/template/
-// noscript text does not count); and, unless it was found, the URLs of its
-// rendered http(s) child frames — in-view first, then by area, at most
-// `maxKids`, the element scan bounded to ~30ms.
+// noscript text does not count); and, unless it was found, its rendered http(s)
+// child frames as { src, origin, x, y, w, h, cx, cy, inView } in this frame's
+// viewport (cx/cy = the content-box origin) — in-view first, then by area, at
+// most `maxKids`, the element scan bounded to ~30ms.
+// This is the ONE frame enumeration: the text wait, fast_snapshot, the DOM
+// tools, the frame notice and framesAppeared all use it. ISOLATED world, so the
+// page cannot patch the DOM APIs it reads, and it needs no page.js in the frame
+// (a reloaded tab has none until the first page.js call re-injects it; fb#34,
+// mac1 Stripe: the wait found the card frame, while snapshot/fill — then asking
+// page.js with a 1.5s cap — said "no visible frame on this page").
 function frameProbe(needle, maxKids) {
   const url = location.href;
   let found = false;
@@ -255,13 +263,16 @@ function frameProbe(needle, maxKids) {
     try { src = new URL(el.getAttribute('src') || '', location.href).href; } catch {}
     if (!/^https?:/.test(src)) continue;
     const r = el.getBoundingClientRect();
-    if (!(r.width >= 2 && r.height >= 2)) continue;
-    try { if (getComputedStyle(el).visibility === 'hidden') continue; } catch {}
+    if (!(r.width >= 10 && r.height >= 10)) continue;
+    try { const cs = getComputedStyle(el); if (cs.visibility === 'hidden' || cs.display === 'none') continue; } catch {}
     const inView = r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
-    kids.push({ src, inView, area: r.width * r.height });
+    let origin = '';
+    try { origin = new URL(src).origin; } catch {}
+    kids.push({ src, origin, x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height),
+      cx: r.left + (el.clientLeft || 0), cy: r.top + (el.clientTop || 0), inView });
   }
-  kids.sort((a, b) => (b.inView - a.inView) || (b.area - a.area));
-  return { url, found, kids: kids.slice(0, maxKids).map((k) => k.src) };
+  kids.sort((a, b) => (b.inView - a.inView) || (b.w * b.h - a.w * a.h));
+  return { url, found, kids: kids.slice(0, maxKids) };
 }
 
 const WAIT_GRACE_MS = 400;
@@ -284,6 +295,13 @@ async function probeFrames(tabId, ids, needle, maxKids) {
     if (ids.length > 1) for (const id of ids) { try { await run([id]); } catch {} }
   }
   return out;
+}
+
+// The rendered child frames of one document (frameProbe's kids), or [] when the
+// document did not answer.
+export async function renderedFrames(tabId, frameId = 0) {
+  const r = (await probeFrames(tabId, [frameId], null, FRAME_WALK.maxKids)).get(frameId);
+  return (r && Array.isArray(r.kids)) ? r.kids : [];
 }
 
 // fast_wait {text} that can see inside frames. `topWait` is page.js's own
@@ -313,8 +331,8 @@ export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_
     if (cursor >= pass.length) {
       // a new pass: the frame tree as it is now, from the top document down
       tree = await frameTree(tabId);
-      const topKids = tree.size ? (await probeFrames(tabId, [0], null, walk.maxKids)).get(0) : null;
-      pass = topKids ? matchChildFrames(tree.get(0), topKids.kids).map((k) => ({ ...k, depth: 1 })) : [];
+      const topKids = tree.size ? await renderedFrames(tabId, 0) : [];
+      pass = matchChildFrames(tree.get(0), topKids).map((k) => ({ ...k, depth: 1 }));
       cursor = 0;
       if (!pass.length) { await pause(backoff); backoff = Math.min(backoff * 2, walk.maxMs); continue; }
     }
@@ -372,11 +390,29 @@ export async function waitTextAnyFrame(args, topWait, { cancelTop, walk = FRAME_
 // tool; `ctx.run(frameId, action, args)` is index.js's page.js bridge
 // (frameId 0 = the top document).
 //
-// Which frames: those page.js's own scan reports (fast_frames: on screen,
-// >=100x50, not hidden, not read by the parent — the frames the notice names),
-// mapped to extension frame ids through webNavigation (only asked when such a
-// frame exists), nested to REACH.depth, at most REACH.maxFrames.
-export const REACH = { maxFrames: 4, depth: 2, dryMs: 1500, snapMs: 2500 };
+// Which frames: the ones frameProbe reports rendered in their parent (the same
+// enumeration the text wait walks), mapped to extension frame ids through
+// webNavigation (only asked when such a frame exists), nested to REACH.depth,
+// at most REACH.maxFrames — in-view first, then the largest.
+export const REACH = { maxFrames: 4, depth: 2, dryMs: 1500, snapMs: 2500, retryMs: 250 };
+
+// The frames the user SEES that DOM tools did not read: rendered in the top
+// document, on screen, at least NOTICE_MIN, and not in `readSrcs`. Named up
+// front so the model does not wait for text it cannot reach (live Azure: a
+// header-only snapshot, 56s of waits for text plainly on screen). Pure.
+const NOTICE_MIN = { w: 100, h: 50 }, NOTICE_LIST = 4;
+export function frameNoticeFor(kids, readSrcs = new Set()) {
+  const left = (kids || []).filter((k) => k.inView && k.w >= NOTICE_MIN.w && k.h >= NOTICE_MIN.h && !readSrcs.has(k.src))
+    .sort((a, b) => b.w * b.h - a.w * a.h);
+  if (!left.length) return {};
+  const shown = left.slice(0, NOTICE_LIST);
+  const boxes = shown.map((k) => ({ origin: k.origin && k.origin !== 'null' ? k.origin : '(unknown origin)', x: k.x, y: k.y, w: k.w, h: k.h }));
+  const more = left.length > shown.length ? ` and ${left.length - shown.length} more` : '';
+  return {
+    frameNotice: `${left.length} frame(s) DOM tools cannot read: ${boxes.map((b) => `${b.origin} at ${b.x},${b.y} ${b.w}x${b.h}`).join('; ')}${more} (visible in fast_screenshot only)`,
+    opaqueFrames: boxes,
+  };
+}
 
 const withTimeout = (p, ms) => Promise.race([Promise.resolve(p).catch(() => null), sleep(ms).then(() => null)]);
 const claimChild = (free, src) => {
@@ -386,16 +422,16 @@ const claimChild = (free, src) => {
 };
 
 // [{ frameId, origin, url, src, box:{x,y,w,h}, ox, oy }] in top-page space, plus
-// `unmapped`: frames page.js saw that no extension frame id answers for.
-export async function frameTargets(ctx, { topScan } = {}) {
+// `unmapped`: rendered frames that no extension frame id answers for.
+// `topKids`: the top document's renderedFrames when the caller already has them.
+export async function frameTargets(ctx, { topKids } = {}) {
   const targets = [], unmapped = [];
   let tree = null;
-  let level = [{ frameId: 0, ox: 0, oy: 0, scan: topScan }];
+  let level = [{ frameId: 0, ox: 0, oy: 0, kids: topKids }];
   for (let d = 0; d < REACH.depth && level.length && targets.length < REACH.maxFrames; d++) {
     const next = [];
     for (const p of level) {
-      const scan = p.scan || await withTimeout(ctx.run(p.frameId, 'fast_frames', {}), REACH.dryMs);
-      const seen = scan && Array.isArray(scan.frames) ? scan.frames : [];
+      const seen = p.kids || await renderedFrames(ctx.tabId, p.frameId);
       if (!seen.length) continue;
       if (!tree) tree = await frameTree(ctx.tabId);
       const free = [...(tree.get(p.frameId) || [])];
@@ -435,8 +471,7 @@ export function toTopSpace(result, t) {
 const frameTag = (t) => ({ frame: t.origin, frameId: t.frameId });
 const inFrame = (t, r) => {
   if (!r || typeof r !== 'object') return r;
-  const { frameNotice, opaqueFrames, ...rest } = r;
-  return { inFrame: frameTag(t), ...toTopSpace(rest, t) };
+  return { inFrame: frameTag(t), ...toTopSpace(r, t) };
 };
 
 // fast_snapshot: the top document's snapshot, plus `frames:[{frame, url,
@@ -445,48 +480,54 @@ const inFrame = (t, r) => {
 // the frames that could not be read. `args.frame` (URL substring) reads just that frame.
 export async function snapshotWithFrames(ctx, args) {
   if (args && args.frame) return inNamedFrame(ctx, 'fast_snapshot', args);
-  const top = await ctx.run(0, 'fast_snapshot', args);
-  if (top && !top.error && !top.frameNotice) noteSeenFrames(ctx.tabId, []);
-  if (!top || top.error || !top.frameNotice) return top;
-  const { targets } = await frameTargets(ctx);
-  if (!targets.length) return top;
+  const [top, kids] = await Promise.all([ctx.run(0, 'fast_snapshot', args), renderedFrames(ctx.tabId, 0)]);
+  if (!top || top.error) return top;
+  noteSeenFrames(ctx.tabId, kids.map((k) => k.src));
+  if (!kids.length) return top;
+  const { targets } = await frameTargets(ctx, { topKids: kids });
+  if (!targets.length) return { ...frameNoticeFor(kids), ...top };
   const t0 = Date.now();
-  const snaps = await Promise.all(targets.map((t) => withTimeout(ctx.run(t.frameId, 'fast_snapshot', { ...args, noFrameNotice: true }), REACH.snapMs - (Date.now() - t0))));
+  const snaps = await Promise.all(targets.map((t) => withTimeout(ctx.run(t.frameId, 'fast_snapshot', { ...args }), REACH.snapMs - (Date.now() - t0))));
   const frames = [];
   const readTop = new Set();
   targets.forEach((t, k) => {
     const s = snaps[k];
     if (!s || s.error) return;
-    const { frameNotice, opaqueFrames, ...rest } = s;
-    const { url: _u, ...body } = rest;
+    const { url: _u, ...body } = s;
     frames.push({ frame: t.origin, frameId: t.frameId, box: t.box, ...toTopSpace(body, t) });
     if (t.parent === 0) readTop.add(t.src);
   });
-  noteSeenFrames(ctx.tabId, targets.map((t) => t.src));
-  if (!frames.length) return top;
-  const { frameNotice, opaqueFrames, ...rest } = top;
-  const unreadSrcs = [];
-  const scan = await withTimeout(ctx.run(0, 'fast_frames', {}), REACH.dryMs);
-  for (const f of (scan && scan.frames) || []) if (!readTop.has(f.src)) unreadSrcs.push(f.src);
-  let notice = {};
-  if (unreadSrcs.length) {
-    const n = await withTimeout(ctx.run(0, 'fast_frames', { unread: unreadSrcs }), REACH.dryMs);
-    if (n && n.frameNotice) notice = { frameNotice: n.frameNotice, opaqueFrames: n.opaqueFrames };
-  }
+  const notice = frameNoticeFor(kids, readTop);
+  if (!frames.length) return { ...notice, ...top };
   const framesNote = `read ${frames.length} frame(s) into frames; act on their items by id or text`;
   // frames lead the top document's own items: on a framed app the top is chrome only
-  const { url, title, ...others } = rest;
+  const { url, title, ...others } = top;
   return { framesNote, ...notice, url, title, frames, ...others };
+}
+
+// The frames a call names (frame:"<origin|URL part|fN>"), enumerated fresh. An
+// empty or missing match is enumerated ONCE more after REACH.retryMs: a frame
+// replaced by a reload or a re-render (new frame id, fb#34) is found again
+// instead of the call answering "no visible frame".
+async function namedTargets(ctx, want) {
+  const byId = /^f?(\d+)$/.exec(want);
+  const pick = (targets) => targets.filter((t) => (byId ? t.frameId === Number(byId[1]) : (t.url.includes(want) || t.origin.includes(want))));
+  let { targets } = await frameTargets(ctx);
+  let hits = pick(targets);
+  if (!hits.length) {
+    await sleep(REACH.retryMs);
+    ({ targets } = await frameTargets(ctx));
+    hits = pick(targets);
+  }
+  return { targets, hits };
 }
 
 // Run `action` in the one visible frame whose URL contains args.frame. A value that
 // names no frame (live OCI: the model passed the TOP page URL) lists the frame URLs
 // that do exist.
-export async function inNamedFrame(ctx, action, args) {
+export async function inNamedFrame(ctx, action, args, named) {
   const want = String(args.frame);
-  const { targets } = await frameTargets(ctx);
-  const byId = /^f?(\d+)$/.exec(want);
-  const hits = targets.filter((t) => (byId ? t.frameId === Number(byId[1]) : (t.url.includes(want) || t.origin.includes(want))));
+  const { targets, hits } = named || await namedTargets(ctx, want);
   if (hits.length !== 1) {
     const names = (hits.length ? hits : targets).map((t) => `${t.origin} (f${t.frameId})`).join(', ');
     return {
@@ -498,7 +539,7 @@ export async function inNamedFrame(ctx, action, args) {
     };
   }
   const { frame, ...rest } = args;
-  return inFrame(hits[0], await ctx.run(hits[0].frameId, action, { ...rest, noFrameNotice: true, idPrefix: `f${hits[0].frameId}:` }));
+  return inFrame(hits[0], await ctx.run(hits[0].frameId, action, { ...rest, idPrefix: `f${hits[0].frameId}:` }));
 }
 
 // fast_click / fast_fill / fast_select_option, frame-aware. With no visible
@@ -518,23 +559,29 @@ export async function actWithFrames(ctx, action, args = {}) {
     const { targets } = await frameTargets(ctx);
     const t = targets.find((x) => x.frameId === Number(idm[1]));
     if (!t) return { error: `id ${args.id} points into frame ${idm[1]}, which is no longer a visible frame — nothing was done; take a fresh fast_snapshot`, idStale: true };
-    return inFrame(t, await ctx.run(t.frameId, action, { ...args, id: Number(idm[2]), noFrameNotice: true, idPrefix: `f${t.frameId}:` }));
+    return inFrame(t, await ctx.run(t.frameId, action, { ...args, id: Number(idm[2]), idPrefix: `f${t.frameId}:` }));
   }
-  if (args.frame) return inNamedFrame(ctx, action, args);
-  if (args.id != null && args.id !== '') return ctx.run(0, action, args);   // a top-document id
-  const topScan = await withTimeout(ctx.run(0, 'fast_frames', {}), REACH.dryMs);
-  if (!topScan || !Array.isArray(topScan.frames) || !topScan.frames.length) return ctx.run(0, action, args);
-  const { targets } = await frameTargets(ctx, { topScan });
+  // frame:"…" naming several frames (Stripe renders the card AND the address form from
+  // js.stripe.com, fb#34): the target is searched in those frames only, as below
+  let scoped = null;
+  if (args.frame) {
+    const named = await namedTargets(ctx, String(args.frame));
+    const noTarget = action === 'fast_click' && !(args.text != null && String(args.text).trim() !== '');
+    if (named.hits.length <= 1 || noTarget) return inNamedFrame(ctx, action, args, named);
+    scoped = named.hits;
+    const { frame, ...rest } = args;
+    args = rest;
+  }
+  if (!scoped && args.id != null && args.id !== '') return ctx.run(0, action, args);   // a top-document id
+  const topKids = scoped ? [] : await renderedFrames(ctx.tabId, 0);
+  if (!scoped && !topKids.length) return ctx.run(0, action, args);
+  const { targets } = scoped ? { targets: scoped } : await frameTargets(ctx, { topKids });
   // a miss in the top document names the visible frames that could NOT be read
   // (the ones read were searched and did not hold the target either)
   const topCall = async (readSrcs) => {
     const r = await ctx.run(0, action, args);
     const missed = r && typeof r === 'object' && (r.error || (typeof r.missed === 'number' && r.missed > 0) || (typeof r.failed === 'number' && r.failed > 0));
-    if (!missed || r.frameNotice) return r;
-    const unread = topScan.frames.map((f) => f.src).filter((src) => !readSrcs.has(src));
-    if (!unread.length) return r;
-    const n = await withTimeout(ctx.run(0, 'fast_frames', { unread }), REACH.dryMs);
-    return n && n.frameNotice ? { frameNotice: n.frameNotice, opaqueFrames: n.opaqueFrames, ...r } : r;
+    return missed ? { ...frameNoticeFor(topKids, readSrcs), ...r } : r;
   };
   if (!targets.length) return topCall(new Set());
   // no text and no id: page.js refuses it (an index is not an item id) — nothing to search frames for
@@ -548,7 +595,7 @@ export async function actWithFrames(ctx, action, args = {}) {
     if (args.field != null && args.option != null && !(String(args.field) in args.selections)) entries.push([String(args.field), { option: args.option, index: args.index, section: args.section ?? args.near }]);
   }
   const keyOf = () => (action === 'fast_click' ? null : String(action === 'fast_fill' ? args.match : args.field));
-  const dry = await Promise.all([0, ...targets.map((t) => t.frameId)].map((id) => withTimeout(ctx.run(id, action, { ...args, dryRun: true, noFrameNotice: true }), REACH.dryMs)));
+  const dry = await Promise.all([scoped ? null : 0, ...targets.map((t) => t.frameId)].map((id) => (id == null ? null : withTimeout(ctx.run(id, action, { ...args, dryRun: true }), REACH.dryMs))));
   const readSrcs = new Set(targets.filter((t, k) => t.parent === 0 && dry[k + 1] && !dry[k + 1].error).map((t) => t.src));
   const statusIn = (d, key) => {
     if (!d || d.error) return 'missing';
@@ -558,7 +605,8 @@ export async function actWithFrames(ctx, action, args = {}) {
   const where = (key) => {
     const top = statusIn(dry[0], key);
     const hits = targets.map((t, k) => ({ t, s: statusIn(dry[k + 1], key), d: dry[k + 1] })).filter((h) => h.s !== 'missing');
-    if (!hits.length) return { in: 'top' };
+    // found nowhere: the normal call (it auto-waits) in the top document, or in the first named frame
+    if (!hits.length) return { in: scoped ? targets[0] : 'top' };
     if (top === 'missing' && hits.length === 1) return { in: hits[0].t };
     const label = key == null ? JSON.stringify(args.text ?? args.id) : JSON.stringify(key);
     return {
@@ -577,7 +625,7 @@ export async function actWithFrames(ctx, action, args = {}) {
     const w = where(keyOf());
     if (w.refuse) return w.refuse;
     if (w.in === 'top') return topCall(readSrcs);
-    return inFrame(w.in, await ctx.run(w.in.frameId, action, { ...args, noFrameNotice: true, idPrefix: `f${w.in.frameId}:` }));
+    return inFrame(w.in, await ctx.run(w.in.frameId, action, { ...args, idPrefix: `f${w.in.frameId}:` }));
   }
 
   // per field: group by document, run each group, merge in the caller's order
@@ -594,7 +642,7 @@ export async function actWithFrames(ctx, action, args = {}) {
   const specOf = new Map(entries);
   const parts = [];
   for (const [gk, g] of groups) {
-    const sub = { ...args, [multiKey]: Object.fromEntries(g.keys.map((k) => [k, specOf.get(k)])), noFrameNotice: gk !== 'top', ...(gk !== 'top' ? { idPrefix: `f${gk}:` } : {}) };
+    const sub = { ...args, [multiKey]: Object.fromEntries(g.keys.map((k) => [k, specOf.get(k)])), ...(gk !== 'top' ? { idPrefix: `f${gk}:` } : {}) };
     if (multiKey === 'selections') { delete sub.field; delete sub.option; }
     const r = await ctx.run(gk === 'top' ? 0 : gk, action, sub);
     parts.push({ g, r: g.t ? inFrame(g.t, r) : r });
@@ -673,6 +721,16 @@ export function maskCardNumbers(v, depth = 0) {
 }
 
 
+// A selector wait that timed out in the top document names the rendered frames
+// it could be in (a selector is matched in one document only).
+export async function withSelectorFrameHint(ctx, r, selector) {
+  if (!r || typeof r !== 'object' || !/^Timed out waiting for selector/.test(r.error || '')) return r;
+  const { frameNotice } = frameNoticeFor(await renderedFrames(ctx.tabId, 0));
+  if (!frameNotice) return r;
+  const list = frameNotice.replace(/^\d+ frame\(s\) DOM tools cannot read: /, '').replace(/ \(visible in fast_screenshot only\)$/, '');
+  return { ...r, error: `Timed out waiting for selector ${JSON.stringify(selector)} in this document — it may be inside a visible frame (${list}); pass frame:"<part of the frame URL>" to wait there` };
+}
+
 // ── Frames the model has not seen ────────────────────────────────────────────
 // A text wait that hits inside a frame carries that frame's items (the bounded
 // auto-snapshot an action carries), so the fields arrive with the hit: live Azure
@@ -683,11 +741,10 @@ export async function withFrameHitSnapshot(ctx, r, args = {}) {
   const { targets } = await frameTargets(ctx);
   const t = targets.find((x) => x.frameId === r.found.frameId) || targets.find((x) => x.url === r.found.frame);
   if (!t) return r;
-  const s = await withTimeout(ctx.run(t.frameId, 'fast_snapshot', { autoCap: true, noFrameNotice: true, nearText: args.text, ...(args.full ? { full: true } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }), REACH.snapMs);
+  const s = await withTimeout(ctx.run(t.frameId, 'fast_snapshot', { autoCap: true, nearText: args.text, ...(args.full ? { full: true } : {}), ...(typeof args.limit === 'number' ? { limit: args.limit } : {}) }), REACH.snapMs);
   if (!s || s.error) return r;
   markSeen(ctx.tabId, [t.src]);
-  const { frameNotice, opaqueFrames, ...rest } = s;
-  const { url: _u, ...body } = rest;
+  const { url: _u, ...body } = s;
   return { ...r, snapshot: { frame: t.origin, frameId: t.frameId, box: t.box, ...toTopSpace(body, t) } };
 }
 
@@ -702,13 +759,14 @@ function markSeen(tabId, srcs) { const s = SEEN.get(tabId); if (s) for (const x 
 export async function framesAppeared(ctx) {
   const seen = SEEN.get(ctx.tabId);
   if (!seen) return null;   // no snapshot yet: nothing the model could have missed
-  const topScan = await withTimeout(ctx.run(0, 'fast_frames', {}), REACH.dryMs);
-  const fresh = ((topScan && topScan.frames) || []).filter((f) => !seen.has(f.src));
+  const all = await renderedFrames(ctx.tabId, 0);
+  // only a frame big enough to be named in a notice is worth a line (not a 4px widget strip)
+  const fresh = all.filter((k) => !seen.has(k.src) && k.inView && k.w >= NOTICE_MIN.w && k.h >= NOTICE_MIN.h);
   if (!fresh.length) return null;
-  const { targets } = await frameTargets(ctx, { topScan: { frames: fresh } });
+  const { targets } = await frameTargets(ctx, { topKids: fresh });
   for (const f of fresh) seen.add(f.src);
   if (!targets.length) return null;
-  const counts = await Promise.all(targets.map((t) => withTimeout(ctx.run(t.frameId, 'fast_snapshot', { autoCap: true, noFrameNotice: true }), 1000)));
+  const counts = await Promise.all(targets.map((t) => withTimeout(ctx.run(t.frameId, 'fast_snapshot', { autoCap: true }), 1000)));
   return `new frame(s) since your last snapshot: ${targets.map((t, k) => `${t.origin} f${t.frameId} (${counts[k] && typeof counts[k].count === 'number' ? counts[k].count : '?'} items)`).join('; ')}`;
 }
 

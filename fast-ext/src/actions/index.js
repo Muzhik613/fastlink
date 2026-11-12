@@ -7,7 +7,7 @@ import { handoffActions } from './handoff.js';
 import { updateSelf } from '../reloadSelf.js';
 import { fetchInPage } from './fetchInPage.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
-import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
+import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, withSelectorFrameHint, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
 import { isInjectableUrl, missingTabError, wakeTab, explainHostRefused } from '../util.js';
 import { checkExpectedSite } from '../siteGuard.js';
 
@@ -268,10 +268,11 @@ async function runOne(action, args) {
     if (args.selector) {
       const r = await injectPageAction('fast_wait', { ...args, timeoutMs: args.timeoutMs || 10000 });
       if (r && typeof r === 'object' && !r.error) { const pending = await pendingNow(args.tabId); return { ...r, networkIdle: pending === 0, pending }; }
-      return r;
+      return withSelectorFrameHint(await frameCtx(args.tabId), r, args.selector);
     }
     return waitForNetworkIdle(args);
   }
+  if (action === 'fast_wait' && args?.selector) return withSelectorFrameHint(await frameCtx(args.tabId), await injectPageAction(action, args), args.selector);
   if (PAGE_ACTIONS.has(action))     return injectPageAction(action, args);
   return { error: `Unknown action: ${action}` };
 }

@@ -125,8 +125,10 @@ test('zero-size / hidden frames are never searched; a tick names at most perTick
 
 test('matchChildFrames: exact URL, then same origin; an unclaimed child is not returned', () => {
   const kids = [{ id: 1, url: 'https://a.example/x' }, { id: 2, url: 'https://b.example/y?z' }, { id: 3, url: 'https://c.example/hidden' }];
-  assert.deepEqual(matchChildFrames(kids, ['https://b.example/y', 'https://a.example/x']).map((k) => k.id), [2, 1]);
-  assert.deepEqual(matchChildFrames(kids, ['https://a.example/x', 'https://a.example/x']).map((k) => k.id), [1]);
+  const el = (src) => ({ src });
+  assert.deepEqual(matchChildFrames(kids, [el('https://b.example/y'), el('https://a.example/x')]).map((k) => k.id), [2, 1]);
+  assert.deepEqual(matchChildFrames(kids, [el('https://a.example/x'), el('https://a.example/x')]).map((k) => k.id), [1]);
+  assert.equal(matchChildFrames(kids, [el('https://a.example/x')])[0].kid.src, 'https://a.example/x', 'each match carries its rendered element');
 });
 
 test('a top wait that overruns its own deadline (a heavy page) is answered at timeoutMs + grace, and cancelled', async () => {

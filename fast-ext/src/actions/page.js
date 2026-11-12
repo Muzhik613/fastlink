@@ -1445,7 +1445,7 @@ const serializeSnapshot = async (viewportOnly, opts) => {
       if (clickTexts.has(content[i].text)) content.splice(i, 1);
     }
   }
-  // (Cross-origin frames on screen are named by withFrameNotice on every snapshot result.)
+  // (Frames on screen with their own documents are read or named by the background: frames.js.)
   let hint;
   // Batching nudge, as data: 2+ empty fields on one view → one fast_fill{fields}
   // (or one fast_batch), never field-by-field turns.
@@ -1700,74 +1700,6 @@ const capSnapshot = (snap, itemCap, contentCap, near = null) => {
 // offscreen,textTrimmed}, hint } — a model reading top-down cannot miss that
 // the view is partial, and the hint names the exact call that returns the rest.
 // Returns a NEW object (key order matters), or `snap` untouched when complete.
-// Frames this document does not read itself but the user SEES: iframes whose
-// document is closed to the page (cross-origin) or has its own http(s) URL
-// (ownedFrameDoc), on screen, at least FRAME_NOTICE_MIN in size. The background
-// reads them (frames.js); the ones it cannot are named up front — live: the
-// Azure portal's whole body is a cross-origin blade, fast_snapshot came back
-// header-only and the model burned 56s on waits for text plainly on screen,
-// then reported "page never rendered". Reads only the <iframe> elements' own
-// src and box from the top document: no injection. Bounded for pages with tens
-// of thousands of iframes: a lazy element collection, a scan cap and a clock,
-// zero-size frames skipped before anything else is read. Pure given (doc, win).
-const FRAME_NOTICE_MIN = { w: 100, h: 50 };
-const FRAME_NOTICE_LIST = 4;
-const FRAME_SCAN_MAX = 3000, FRAME_SCAN_MS = 25;
-const opaqueFrames = (doc = document, win = window) => {
-  const out = [];
-  let scanned = 0, partial = false;
-  try {
-    const vw = win.innerWidth || 0, vh = win.innerHeight || 0;
-    const t0 = Date.now();
-    for (const tag of ['iframe', 'frame']) {
-      const els = doc.getElementsByTagName(tag);
-      for (let i = 0; i < els.length; i++) {
-        if (++scanned > FRAME_SCAN_MAX || ((scanned & 63) === 0 && Date.now() - t0 > FRAME_SCAN_MS)) { partial = true; break; }
-        const el = els[i];
-        const r = el.getBoundingClientRect();
-        if (r.width < FRAME_NOTICE_MIN.w || r.height < FRAME_NOTICE_MIN.h) continue;
-        if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) continue;
-        if (ownedFrameDoc(el)) continue;   // read here, as part of this document
-        try { const cs = win.getComputedStyle(el); if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue; } catch {}
-        let origin = '';
-        try { origin = new URL(el.getAttribute('src') || '', doc.baseURI).origin; } catch {}
-        // src + cx/cy (the frame's content-box origin in this viewport) are for the
-        // background's frame reach (frames.js); notices show only origin and box
-        let src = '';
-        try { src = new URL(el.getAttribute('src') || '', doc.baseURI).href; } catch {}
-        out.push({ origin: origin && origin !== 'null' ? origin : '(unknown origin)', x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height),
-          src, cx: r.left + (el.clientLeft || 0), cy: r.top + (el.clientTop || 0) });
-      }
-      if (partial) break;
-    }
-  } catch {}
-  out.sort((a, b) => b.w * b.h - a.w * a.h);
-  return { frames: out, partial };
-};
-// "<origin> at x, y, WxH; …" for up to FRAME_NOTICE_LIST frames. Pure.
-const frameList = (frames) => {
-  const shown = frames.slice(0, FRAME_NOTICE_LIST).map((f) => `${f.origin} at ${f.x},${f.y} ${f.w}x${f.h}`);
-  const more = frames.length > shown.length ? ` and ${frames.length - shown.length} more` : '';
-  return `${shown.join('; ')}${more}`;
-};
-// The sentence a snapshot leads with for frames DOM tools could NOT read. The
-// background reads every frame it can (frames.js) and keeps this only for the
-// rest, so it does not steer toward coordinates: models cannot point reliably
-// (live: three Grok models missed a 450x23 box on the same screenshot). Pure.
-const frameNotice = ({ frames }) => {
-  if (!frames || !frames.length) return '';
-  return `${frames.length} frame(s) DOM tools cannot read: ${frameList(frames)} (visible in fast_screenshot only)`;
-};
-// Lead a snapshot result with the notice (a fresh scan). Returns `out` unchanged when none.
-const noticeBoxes = (frames) => frames.slice(0, FRAME_NOTICE_LIST).map(({ origin, x, y, w, h }) => ({ origin, x, y, w, h }));
-const withFrameNotice = (out) => {
-  if (!out || typeof out !== 'object' || NO_FRAME_NOTICE.on) return out;
-  const scan = opaqueFrames();
-  const notice = frameNotice(scan);
-  if (!notice) return out;
-  return frontload(out, { frameNotice: notice, opaqueFrames: noticeBoxes(scan.frames) });
-};
-
 // `preview` (an action's auto-snapshot): the same counts under `omitted`, with no
 // `truncated` flag — a preview is bounded by design and lists what to act on; the
 // "truncated:true → read again before acting" rule belongs to a fast_snapshot the caller
@@ -1779,8 +1711,8 @@ const markTruncated = (snap, hintFor, { preview = false } = {}) => {
   const off = snap.offscreenItems || 0;
   delete snap.dropped; delete snap.offscreenItems;
   if (!(d.items || d.content || d.textTrimmed || off)) {
-    if (preview) { const { url, title, ...body } = snap; return withFrameNotice(body); }
-    return withFrameNotice(snap);
+    if (preview) { const { url, title, ...body } = snap; return body; }
+    return snap;
   }
   const dropped = { ...d };
   if (off) dropped.offscreen = off;
@@ -1790,9 +1722,9 @@ const markTruncated = (snap, hintFor, { preview = false } = {}) => {
   if (preview) {
     // a preview says how much it left out, nothing more (the runner explains `omitted`)
     const { url, title, ...body } = snap;
-    return withFrameNotice(parts.length > 1 ? { omitted: dropped, hint: parts.slice(1).join(' | '), ...body } : { omitted: dropped, ...body });
+    return parts.length > 1 ? { omitted: dropped, hint: parts.slice(1).join(' | '), ...body } : { omitted: dropped, ...body };
   }
-  return withFrameNotice({ truncated: true, dropped, hint: parts.join(' | '), ...snap });
+  return { truncated: true, dropped, hint: parts.join(' | '), ...snap };
 };
 const offscreenHint = (d) => d.offscreen
   ? `${d.offscreen} interactive element(s) are outside the viewport (below/above the fold) and NOT listed — call fast_snapshot without viewport:true, or fast_scroll, before concluding a control is absent`
@@ -2970,20 +2902,6 @@ async function runPageAction(action, args) {
     return out;
   };
 
-  // Internal (the background's frame reach, not a tool): the visible cross-origin
-  // frames of this document with src and content-box origin; with `unread` (a
-  // list of srcs) also the notice naming only those.
-  if (action === 'fast_frames') {
-    const scan = opaqueFrames();
-    const out = { frames: scan.frames, partial: scan.partial };
-    if (Array.isArray(args.unread)) {
-      const left = scan.frames.filter((f) => args.unread.includes(f.src));
-      const notice = frameNotice({ frames: left });
-      if (notice) { out.frameNotice = notice; out.opaqueFrames = noticeBoxes(left); }
-    }
-    return out;
-  }
-
   if (action === 'fast_snapshot') {
     const snap = await serializeSnapshot(!!args.viewport, { overlay: !!args.overlay });
     // full:true → the complete, uncapped set. Otherwise rank + cap (interactive /
@@ -3189,8 +3107,7 @@ async function runPageAction(action, args) {
           if (Date.now() > deadline) {
             if (emptyHit) return resolveEmpty();
             // a selector is matched in this document only; name the frames it could be in
-            const fr = opaqueFrames().frames;
-            return resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}${fr.length ? ` in this document — it may be inside a visible frame (${frameList(fr)}); pass frame:"<part of the frame URL>" to wait there` : ''}`, ...pageActivity(), ...(acWaitHint() || {}) });
+            return resolve({ error: `Timed out waiting for selector ${JSON.stringify(selector)}`, ...pageActivity(), ...(acWaitHint() || {}) });
           }
           return setTimeout(poll, 150);
         }
@@ -4808,7 +4725,7 @@ async function runPageAction(action, args) {
 // \"Resource group\", \"Region\""), not a page of candidates, diagnostics and timings.
 // Ambiguity refusals keep their candidates (index / row / section ARE the fix). A fill
 // that landed in a field whose label is not the one asked for says `matched`.
-const MISS_KEEP = new Set(['error', 'code', 'idStale', 'labelNow', 'disabled', 'dialogStillOpen', 'frameNotice', 'opaqueFrames', 'inFrame', 'framesAppeared']);
+const MISS_KEEP = new Set(['error', 'code', 'idStale', 'labelNow', 'disabled', 'dialogStillOpen', 'inFrame', 'framesAppeared']);
 const quoteList = (names, n) => {
   const uniq = [...new Set(names.map((x) => cleanLabel(String(x || '')).slice(0, 50)).filter(Boolean))];
   return uniq.slice(0, n).map((x) => JSON.stringify(x)).join(', ') + (uniq.length > n ? ` (+${uniq.length - n} more)` : '');
@@ -5031,10 +4948,6 @@ const withIdStale = (r, args) => {
   return r;
 };
 
-// Set for the duration of a call made with noFrameNotice (a frame document the
-// background reads itself).
-const NO_FRAME_NOTICE = { on: false };
-
 // The fast_wait polls still running in this document, each as its cancel function.
 const ACTIVE_WAITS = new Set();
 
@@ -5048,7 +4961,6 @@ const ACTIVE_WAITS = new Set();
 if (typeof window !== 'undefined') {
   window.__fastlink = window.__fastlink || {};
   window.__fastlink.run = async (action, args) => {
-    NO_FRAME_NOTICE.on = !!(args && args.noFrameNotice);
     const write = WRITE_ACTIONS.has(action) && !(args && args.dryRun);
     const timing = action === 'fast_click' && !(args && args.dryRun);
     PHASES = timing ? {} : null;
@@ -5083,7 +4995,7 @@ if (typeof window !== 'undefined') {
       const message = String((e && e.stack) || (e && e.message) || e).slice(0, 300);
       try { window.__fastlink.lastError = { action, message, at: Date.now() }; } catch {}
       return { error: `${action}: the page threw — ${message}`, threw: true };
-    } finally { NO_FRAME_NOTICE.on = false; PHASES = null; }
+    } finally { PHASES = null; }
   };
   window.__fastlink.cancelWaits = () => { const n = ACTIVE_WAITS.size; for (const c of [...ACTIVE_WAITS]) c(); return n; };
 }
