@@ -32,6 +32,8 @@ import { createTabQueue } from './tabQueue.js';
 import { createReplySender } from './replySender.js';
 import { defaultBaseName } from './browserName.js';
 import { initCallHooks, whenReady, helloFields, runCall } from './callHooks.js';
+import { createCallWatch } from './callWatchdog.js';
+import { connLog } from './connLog.js';
 
 // The target-tab resolver background.js passes in (the same one every call uses).
 let resolveTarget = async () => null;
@@ -80,7 +82,11 @@ let stopped = false;       // set on auth failure — no reconnect until the use
 // and `fastlinkConn` storage.
 let report = null;         // (payload:{state}) => void
 // Results go out on the live socket, never only the one the call arrived on.
-const replies = createReplySender({ getCurrent: () => socket });
+const replies = createReplySender({ getCurrent: () => socket, onDrop: (n) => connLog('results_dropped', { count: n }) });
+// Every call answers before the relay's deadline (callWatchdog.js, fb#35).
+const watch = createCallWatch({ log: connLog });
+let openedAt = 0;          // when the live socket opened (uptime in the close entry)
+let closedAt = 0;          // when the last socket closed (downtime in the open entry)
 
 // Mirror of the user "Stop" pause flag (chrome.storage.session). Re-asserted in
 // the hello frame on every (re)connect so the relay DO converges its DURABLE
@@ -107,7 +113,7 @@ try {
 // synchronously-registered alarm/window listeners.
 export function startRelayConnection(handle, { wssUrl, deviceToken, onState, resolveTabId } = {}) {
   resolveTarget = resolveTabId || (async () => null);
-  queue = createTabQueue({ run: handle, resolveTabId, send: (f) => replies.sendProgress(f) });
+  queue = createTabQueue({ run: handle, resolveTabId, send: (f) => { watch.progress(f); replies.sendProgress(f); } });
   cfg = { wssUrl, deviceToken };
   report = onState || null;
   stopped = false;
@@ -147,6 +153,7 @@ async function connect() {
   // redacted. Never log `url` directly — always wrap it in redact().
   try { ws = new WebSocket(url); } catch (err) {
     console.warn('[fastlink/relay] connect failed for', redact(url), err?.message || err);
+    connLog('dial_failed', { error: err?.name || 'error' });
     scheduleReconnect();
     return;
   }
@@ -157,6 +164,8 @@ async function connect() {
   ws.onopen = () => {
     backoffMs = BACKOFF_MIN_MS;                       // healthy connection — reset backoff
     lastRxTs = Date.now();
+    openedAt = Date.now();
+    connLog('open', { dialMs: openedAt - connectStartedAt, ...(closedAt ? { downMs: openedAt - closedAt } : {}) });
     whenReady(() => sendHello(ws));
     replies.flush();                                  // results finished while no socket was open
     startPingLoop(ws);
@@ -168,9 +177,12 @@ async function connect() {
     // relay-core's DO closes the OLD socket with code 4000 ("superseded") while
     // the freshly-dialed socket is the live one. ping loop / badge / reconnect are
     // module-global, so acting on the dead socket here would clobber the live one.
-    if (socket !== ws) return;
+    if (socket !== ws) { connLog('old_socket_closed', { code: e?.code }); return; }
     stopPingLoop();
     socket = null;
+    closedAt = Date.now();
+    connLog('close', { code: e?.code, reason: e?.reason, wasClean: e?.wasClean, upMs: openedAt ? closedAt - openedAt : 0, pendingCalls: watch.size() });
+    openedAt = 0;
     // Token revoked (4401): stop + prompt re-pair (don't hammer a dead token).
     // Anything else (drop, hibernation churn, SW death): backoff reconnect.
     if (e && e.code === AUTH_FAIL_CODE) { onAuthFailure(); return; }
@@ -180,7 +192,7 @@ async function connect() {
   // onclose always follows an error, so reconnect is handled there. Log a
   // redacted breadcrumb (never the raw URL/token) so a failed handshake is still
   // diagnosable from the console.
-  ws.onerror = () => { console.warn('[fastlink/relay] socket error for', redact(url)); };
+  ws.onerror = () => { console.warn('[fastlink/relay] socket error for', redact(url)); connLog('socket_error'); };
 }
 
 async function onMessage(ws, e) {
@@ -206,9 +218,10 @@ async function onMessage(ws, e) {
     return;
   }
   if (msg.type !== 'call' || msg.id == null || !msg.action) return;   // events/hello/etc. — ignore inbound
-  const reply = await runCall(msg, (action, args) => queue.submit({ id: msg.id, action, args }), resolveTarget);
+  const reply = await watch.run(msg.id, msg.action, (ctl) =>
+    runCall(msg, (action, args) => queue.submit({ id: msg.id, action, args, cancelled: ctl.timedOut }), resolveTarget));
   // Spread reply so {result} or {error, ...extras} (plus origin/tabId) reach the relay verbatim.
-  replies.sendResult({ type: 'result', id: msg.id, ...reply }, ws);
+  if (!replies.sendResult({ type: 'result', id: msg.id, ...reply }, ws)) connLog('result_held', { action: msg.action });
 }
 
 function scheduleReconnect() {
@@ -216,6 +229,7 @@ function scheduleReconnect() {
   if (reconnectTimer) return;                        // a reconnect is already pending
   const delay = backoffMs;
   backoffMs = Math.min(backoffMs * 2, BACKOFF_MAX_MS);
+  connLog('redial', { inMs: delay });
   reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
 }
 
@@ -235,14 +249,15 @@ function checkHealth() {
   if (stopped || !socket) return;
   const now = Date.now();
   if (socket.readyState === WebSocket.CONNECTING) {
-    if (now - connectStartedAt > CONNECT_TIMEOUT_MS) { recycle(); scheduleReconnect(); }
+    if (now - connectStartedAt > CONNECT_TIMEOUT_MS) { connLog('connect_timeout', { ms: now - connectStartedAt }); recycle(); scheduleReconnect(); }
     return;
   }
   if (socket.readyState === WebSocket.OPEN) {
-    if (now - lastRxTs > STALE_MS) { recycle(); setBadgeForState('disconnected'); scheduleReconnect(); }
+    if (now - lastRxTs > STALE_MS) { connLog('stale_socket', { silentMs: now - lastRxTs }); recycle(); setBadgeForState('disconnected'); scheduleReconnect(); }
     return;
   }
   // CLOSING / CLOSED that never fired a usable onclose — clean up and retry.
+  connLog('dead_socket', { state: socket.readyState });
   recycle();
   scheduleReconnect();
 }
@@ -250,6 +265,7 @@ function checkHealth() {
 // Token rejected/revoked: stop reconnecting (no infinite loop on a dead token),
 // clear the stored token, and surface a re-pair prompt for the options page.
 function onAuthFailure() {
+  connLog('auth_failed');
   stopped = true;
   stopPingLoop();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
@@ -267,6 +283,7 @@ function onAuthFailure() {
 // and a reconnect re-runs the module with stopped reset). Distinct from
 // onAuthFailure: no re-pair prompt, no stored error — this is intentional.
 export function stopRelay() {
+  connLog('stopped_by_user');
   stopped = true;
   stopPingLoop();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }

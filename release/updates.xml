@@ -8,6 +8,6 @@
 -->
 <gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
   <app appid='ockcjadbkdfgfllidpcoamcepahfmlpf'>
-    <updatecheck codebase='https://github.com/Muzhik613/fastlink/releases/download/ext-v0.4.29/fastlink-0.4.29.crx' version='0.4.29' />
+    <updatecheck codebase='https://github.com/Muzhik613/fastlink/releases/download/ext-v0.4.30/fastlink-0.4.30.crx' version='0.4.30' />
   </app>
 </gupdate>

@@ -1,6 +1,6 @@
 {
   "name": "fast-dxt",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "type": "module",
   "main": "server/index.js",
   "description": "FastLink helper: per-session MCP stdio server that forwards to the FastLink relay.",

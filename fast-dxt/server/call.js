@@ -102,7 +102,11 @@ export async function connect({ browser = null, client = 'script', timeoutMs = D
     // unsealed is refused: a result must come from the browser, sealed.
     if (!body || typeof body !== 'object' || !body.sealed) {
       const error = body && typeof body === 'object' && typeof body.error === 'string' ? body.error : 'the relay sent an unsealed reply to a sealed call';
-      return { error, browser: served };
+      // An error in clear keeps only its short code and hint (e.g. call_timeout from the
+      // browser's call watchdog): text, never page content.
+      const extra = {};
+      if (typeof body?.error === 'string') for (const k of ['code', 'phase', 'hint']) if (typeof body[k] === 'string') extra[k] = body[k].slice(0, 400);
+      return { error, ...extra, browser: served };
     }
     let reply;
     try { reply = await sealed.unseal(keys, 'res', body.sealed, seq); } catch (e) { return { error: e.message, browser: served }; }

@@ -26,7 +26,8 @@ export function encodeResult(frame) {
   return JSON.stringify({ type, id, origin, tabId, error: `result too large to send (${mb(bytes)} MB; the limit is ${mb(FRAME_MAX_BYTES)} MB): ask for less (fast_text reads big text in pieces with offset/maxLen, or a narrower selector)` });
 }
 
-export function createReplySender({ getCurrent, holdMs = HOLD_MS, now = Date.now }) {
+// onDrop(n): n held results expired undelivered (connLog.js).
+export function createReplySender({ getCurrent, holdMs = HOLD_MS, now = Date.now, onDrop = () => {} }) {
   const held = [];   // [{ frame, at }]
 
   function trySend(ws, frame) {
@@ -52,12 +53,14 @@ export function createReplySender({ getCurrent, holdMs = HOLD_MS, now = Date.now
   function flush() {
     const ws = getCurrent();
     const cutoff = now() - holdMs;
+    let dropped = 0;
     while (held.length) {
       const { frame, at } = held[0];
-      if (at < cutoff) { held.shift(); continue; }
-      if (!trySend(ws, frame)) return;
+      if (at < cutoff) { held.shift(); dropped++; continue; }
+      if (!trySend(ws, frame)) break;
       held.shift();
     }
+    if (dropped) onDrop(dropped);
   }
 
   return { sendResult, sendProgress, flush, heldCount: () => held.length };

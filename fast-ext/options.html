@@ -338,6 +338,19 @@
       <div id="relay-name-msg" class="msg"></div>
     </div>
 
+      <!-- 1d. CONNECTION LOG — relay socket drops/redials and calls that ran out of time
+           (src/connLog.js). Holds no addresses, page content or call arguments. -->
+      <div class="card" id="conn-log-card">
+      <details id="conn-log">
+        <summary><strong>Connection log</strong> <span class="fine">(last 200 events: relay connection drops, reconnects, calls that ran out of time)</span></summary>
+        <div class="row" style="gap:8px; margin-top:8px;">
+          <button type="button" id="conn-log-refresh" class="ghost">Refresh</button>
+          <button type="button" id="conn-log-copy" class="ghost">Copy</button>
+        </div>
+        <pre id="conn-log-text" class="fine" style="max-height:320px; overflow:auto; white-space:pre-wrap; word-break:break-word;">…</pre>
+      </details>
+    </div>
+
     </section>
 
     <!-- ============ TAB: BEHAVIOR ============ -->

@@ -7,9 +7,11 @@
 // new tab, fast_switch pinning one, fast_close closing one (the way out of a
 // frozen tab, so it must never wait behind it).
 //
-// Progress frames for the relay's timers:
+// Progress frames for the relay's timers (and the call watchdog, callWatchdog.js):
 //   {type:'queued', id, position}  the call waits; position = calls ahead of it
-//   {type:'started', id}           the call left the queue and runs
+//   {type:'started', id}           the call runs (unqueued calls send it too)
+// A call whose `cancelled()` is true when its turn comes (the watchdog answered it
+// already) is dropped, never run.
 //
 // A stuck tab answers, it never hangs (feedback #24). The in-page deadlines
 // (20-28 s) normally end a call; HARD_CAP_MS is the backstop. A call that hits
@@ -27,6 +29,8 @@
 export const HARD_CAP_MS = 29_000;
 export const UNQUEUED_ACTIONS = new Set(['fast_list', 'fast_tab', 'fast_switch', 'fast_close']);
 const RUNS_ON_STUCK_TAB = new Set(['fast_nav']);
+// The reply of a dropped call (nobody reads it: the watchdog answered already).
+const CANCELLED = Object.freeze({ error: 'cancelled: the call was answered by the watchdog before it started', code: 'call_timeout' });
 
 // run(action, args) -> Promise<reply>; resolveTabId() -> Promise<number|null>
 // (the current target tab); send(frame) emits a progress frame.
@@ -86,6 +90,7 @@ export function createTabQueue({ run, resolveTabId, send, hardCapMs = HARD_CAP_M
     if (!lane || lane.busy) return;
     let job;
     while ((job = lane.waiting.shift())) {
+      if (job.call.cancelled?.()) { job.resolve(CANCELLED); continue; }
       const s = stuck.get(key);
       if (s && !RUNS_ON_STUCK_TAB.has(job.call.action)) { job.resolve(stuckReply(job.call.action, s)); continue; }
       break;
@@ -102,7 +107,11 @@ export function createTabQueue({ run, resolveTabId, send, hardCapMs = HARD_CAP_M
 
   // Returns Promise<reply> for one {id, action, args} call.
   function submit(call) {
-    if (UNQUEUED_ACTIONS.has(call.action)) return capped(call, null);
+    if (UNQUEUED_ACTIONS.has(call.action)) {
+      if (call.cancelled?.()) return Promise.resolve(CANCELLED);
+      send({ type: 'started', id: call.id });
+      return capped(call, null);
+    }
     return new Promise((resolve) => {
       keyChain = keyChain.then(() => keyFor(call.args)).then((key) => {
         let lane = lanes.get(key);

@@ -95,7 +95,8 @@ test('fast_list and fast_tab skip the queue', async () => {
   const t = h.submit('t', 'fast_tab', { tabId: 4, url: 'https://example.com' });
   await tick(); await tick();
   assert.deepEqual(h.log.sort(), ['start:a', 'start:l', 'start:t']);
-  assert.ok(!h.frames.some((f) => f.id === 'l' || f.id === 't'), 'no progress frames for unqueued calls');
+  // Unqueued calls never wait: no queued frame, but 'started' (the relay and the call watchdog time them from it).
+  assert.deepEqual(h.frames.filter((f) => f.id === 'l' || f.id === 't'), [{ type: 'started', id: 'l' }, { type: 'started', id: 't' }]);
   h.pending.get('l')({ result: [] }); h.pending.get('t')({ result: {} });
   h.pending.get('a')({});
   await Promise.all([a, l, t]);

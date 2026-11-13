@@ -257,7 +257,14 @@ class Client:
         if not (isinstance(body, dict) and isinstance(body.get("sealed"), dict)):
             # In clear the relay may only report an error; a result must come sealed.
             err = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), str) else "the relay sent an unsealed reply to a sealed call"
-            return {"error": err, "browser": served}
+            out = {"error": err, "browser": served}
+            # An error in clear keeps only its short code and hint (e.g. call_timeout from the
+            # browser's call watchdog): text, never page content.
+            if isinstance(body, dict) and isinstance(body.get("error"), str):
+                for k in ("code", "phase", "hint"):
+                    if isinstance(body.get(k), str):
+                        out[k] = body[k][:400]
+            return out
         try:
             reply = sealer.unseal("res", body["sealed"], seq)
         except FastLinkError as e:

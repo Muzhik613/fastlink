@@ -34,6 +34,8 @@ const relay = createServer(async (req, res) => {
   assert.ok(Number.isFinite(inner.deadline) && inner.deadline > inner.ts, 'deadline sent');
   if (inner.action === 'fast_screenshot') return text({ sealed: await seal(KEYS, 'res', { result: { dataUrl: 'data:image/png;base64,AAAA', width: 1 }, tabId: 7 }, inner.seq) });
   if (inner.action === 'forge') return text({ result: { balance: 1e9 } });
+  // The browser's call watchdog answers in clear (it may not have unsealed the request).
+  if (inner.action === 'late') return text({ error: 'no answer in time: the call was not run', code: 'call_timeout', phase: 'not_started', hint: 'retrying is safe', result: { balance: 1e9 } });
   if (inner.action === 'fast_fail') return text({ sealed: await seal(KEYS, 'res', { error: 'page said no', code: 'x' }, inner.seq) });
   return text({ sealed: await seal(KEYS, 'res', { result: { echo: inner.action, args: inner.args }, tabId: 7 }, inner.seq) });
 });
@@ -60,6 +62,8 @@ test('call.js seals every browser call; secrets never on the wire; replies decry
   assert.deepEqual(forged, { error: 'the relay sent an unsealed reply to a sealed call', browser: 'aliya' });
   const e = await fl.call('fast_fail', {});
   assert.equal(e.error, 'page said no');
+  const late = await fl.call('late', {});
+  assert.deepEqual(late, { error: 'no answer in time: the call was not run', code: 'call_timeout', phase: 'not_started', hint: 'retrying is safe', browser: 'aliya' }, 'clear error keeps code/phase/hint, never a result');
   const st = await fl.call('fast_status', {});
   assert.deepEqual(st.result, { browsers: [] }, 'relay-native tools are not sealed');
   assert.ok(!JSON.stringify(wire).includes('hunter2-SECRET'));
@@ -76,7 +80,7 @@ sys.path.insert(0, ${JSON.stringify(join(HERE, '..', 'server'))})
 from fastlink_call import connect
 fl = connect(browser="aliya", client="pytest")
 assert fl.sealed
-print(json.dumps([fl.call("fast_fill", {"fields": {"Password": "py-SECRET-9"}}), fl.call("fast_fail", {})]))
+print(json.dumps([fl.call("fast_fill", {"fields": {"Password": "py-SECRET-9"}}), fl.call("fast_fail", {}), fl.call("late", {})]))
 `;
   // Async: the fake relay runs in this process, so it must keep answering while Python runs.
   const out = await new Promise((resolve) => {
@@ -87,7 +91,8 @@ print(json.dumps([fl.call("fast_fill", {"fields": {"Password": "py-SECRET-9"}}),
     c.on('close', (status) => resolve({ status, stdout, stderr }));
   });
   assert.equal(out.status, 0, out.stderr);
-  const [ok, fail] = JSON.parse(out.stdout);
+  const [ok, fail, late] = JSON.parse(out.stdout);
+  assert.deepEqual(late, { error: 'no answer in time: the call was not run', code: 'call_timeout', phase: 'not_started', hint: 'retrying is safe', browser: 'aliya' });
   assert.deepEqual(ok, { result: { echo: 'fast_fill', args: { fields: { Password: 'py-SECRET-9' } }, tabId: 7 }, browser: 'aliya' });
   assert.equal(fail.error, 'page said no');
   assert.equal(seen[0].action, 'fast_fill');

@@ -5,6 +5,7 @@
 
 import { claimPairingCode, authorizeViaWebAuthFlow, authorizeViaTabPoll } from './src/relayClient.js';
 import { RELAY_NAME_ERRORS, devicesFetch, saveBrowserName, slugifyName, suggestName, isAutoName } from './src/browserName.js';
+import { CONN_LOG_KEY } from './src/connLog.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -608,6 +609,22 @@ try {
   const verEl = $('version'); if (verEl) verEl.textContent = v;
   const aboutEl = $('about-version'); if (aboutEl) aboutEl.textContent = v;
 } catch {}
+
+// ---- connection log (src/connLog.js) ---------------------------------------
+function connLogLine(e) {
+  const { t, ev, ...rest } = e || {};
+  const when = new Date(t).toLocaleString();
+  const extra = Object.entries(rest).map(([k, v]) => `${k}=${v}`).join(' ');
+  return `${when}  ${ev}${extra ? '  ' + extra : ''}`;
+}
+async function showConnLog() {
+  let list = [];
+  try { list = (await chrome.storage.local.get(CONN_LOG_KEY))[CONN_LOG_KEY] || []; } catch {}
+  $('conn-log-text').textContent = list.length ? list.slice().reverse().map(connLogLine).join('\n') : 'Nothing logged yet.';
+}
+$('conn-log')?.addEventListener('toggle', () => { if ($('conn-log').open) showConnLog(); });
+$('conn-log-refresh')?.addEventListener('click', showConnLog);
+$('conn-log-copy')?.addEventListener('click', () => navigator.clipboard?.writeText($('conn-log-text').textContent).catch(() => {}));
 
 async function init() {
   await render();

@@ -15,7 +15,7 @@ import { dirname, basename, isAbsolute, join } from 'node:path';
 import { createRelayClient } from './relayClient.js';
 import { PAIR_URL } from './agentFile.js';
 
-export const HELPER_VERSION = '2.0.1';
+export const HELPER_VERSION = '2.0.2';
 export const CLIENT_NAME = `fastlink-helper@${hostname()}`;
 
 // Tools whose own `tabId` argument names the tab to act on — shown to the model, never filled in.
