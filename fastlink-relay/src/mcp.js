@@ -200,11 +200,12 @@ function hasCaptcha(snap) {
 const MUTATING_TOOLS = new Set([
   'fast_click', 'fast_click_xy', 'fast_fill', 'fast_type',
   'fast_key_press', 'fast_nav',
-  'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_handoff', 'fast_evaluate',
+  'fast_select_option', 'fast_scroll', 'fast_tab', 'fast_close', 'fast_handoff', 'fast_evaluate', 'fast_upload',
 ]);
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.
-const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_handoff_cancel', 'fast_update', 'fast_fetch', 'fast_evaluate']);
+// fast_upload carries file contents (up to 10 MB): one call of its own, never a batch step.
+const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_handoff_cancel', 'fast_update', 'fast_fetch', 'fast_evaluate', 'fast_upload']);
 
 // Relay-native tools that never touch a page → exempt from the per-origin consent
 // gate. (fast_batch's STEPS are gated individually inside runBatch.)
@@ -371,6 +372,30 @@ function checkFetch(args, rules, browser) {
   return { args: { tabId: args.tabId, url: u.href, method, headers, ...(body !== undefined ? { body } : {}), expectOrigin: u.origin } };
 }
 
+// fast_upload: the files a call carries, checked before anything is sent to the browser.
+// 10 MB in all keeps the base64 frame under the 16 MB socket cap.
+export const UPLOAD_MAX_FILES = 10;
+export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+const B64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+export function checkUpload(args) {
+  const files = args?.files;
+  if (!Array.isArray(files) || !files.length) return { error: 'fast_upload needs `files`: [{name, type, data (base64)}].' };
+  if (files.length > UPLOAD_MAX_FILES) return { error: `fast_upload takes at most ${UPLOAD_MAX_FILES} files per call (got ${files.length}).` };
+  let total = 0;
+  const out = [];
+  for (const f of files) {
+    const name = typeof f?.name === 'string' ? f.name.trim() : '';
+    if (!name || name.length > 255 || /[\\/\u0000]/.test(name)) return { error: `fast_upload: bad file name ${JSON.stringify(f?.name ?? null)} (a plain name like "flyer.jpg").` };
+    const data = typeof f.data === 'string' ? f.data.replace(/\s+/g, '') : '';
+    if (!data || data.length % 4 !== 0 || !B64_RE.test(data)) return { error: `fast_upload: ${name} has no base64 \`data\`.` };
+    total += data.length / 4 * 3 - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0);
+    if (total > UPLOAD_MAX_BYTES) return { error: `fast_upload carries at most ${UPLOAD_MAX_BYTES / 1024 / 1024} MB per call.` };
+    const type = typeof f.type === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(f.type) ? f.type.toLowerCase() : 'application/octet-stream';
+    out.push({ name, type, data });
+  }
+  return { args: { ...args, files: out } };
+}
+
 const NO_BROWSER_TOOLS = new Set(['fast_status', 'fast_feedback', 'fast_profile', 'fast_handoff_wait', 'fast_handoff_cancel']);
 
 async function dispatchTool(params, relay, trace) {
@@ -465,6 +490,12 @@ async function dispatchTool(params, relay, trace) {
     relay.audit(name, { origin, fnLength: String(args.fn || '').length }, !(payload && typeof payload === 'object' && 'error' in payload), target);
     if (payload && typeof payload === 'object' && 'error' in payload) return textResult(payload);
     return textResult(payload?.result ?? null);
+  }
+
+  if (name === 'fast_upload') {
+    const chk = checkUpload(args);
+    if (chk.error) return textResult(chk);
+    args = chk.args;
   }
 
   // Human hand-off: a link for the user's phone; the relay serves it (src/handoff.js).

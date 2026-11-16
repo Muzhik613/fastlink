@@ -5,6 +5,7 @@
 //   const r = await fl.call('fast_evaluate', { tabId: 123, fn: '() => location.href' }, { timeoutMs: 40000 });
 //   // r = { result, browser } on success, { error, ...extras, browser } on failure
 //   // a call that takes longer than its time limit throws Error('timeout <action>')
+//   await fl.call('fast_upload', { tabId: 123, paths: ['flyer.jpg'], match: 'photos' }); // from ~/.fastlink/uploads
 //
 // Uses this machine's pairing (~/.fastlink/agent.json, made once with
 // `node index.js pair <CODE>`) and the same relay client as the helper, so a
@@ -20,6 +21,7 @@ import { loadAgent } from './agentFile.js';
 import { loadLockCode, SEALED_JS } from './lockFile.js';
 import { createRelayClient } from './relayClient.js';
 import { CLIENT_NAME, HELPER_VERSION } from './helper.js';
+import { uploadArgs } from './upload.js';
 
 // Answered by the relay itself, never by the browser: not sealed.
 const RELAY_NATIVE = new Set(['fast_status', 'fast_feedback']);
@@ -116,6 +118,12 @@ export async function connect({ browser = null, client = 'script', timeoutMs = D
   }
 
   async function call(name, args = {}, { timeoutMs: ms = timeoutMs } = {}) {
+    // fast_upload {paths}: files from this machine's upload folder (upload.js), sent as contents.
+    if (name === 'fast_upload') {
+      const u = uploadArgs(args);
+      if (u.error) return { error: u.error, browser: null };
+      args = u.args;
+    }
     const target = args.browser ?? browser;
     const keys = RELAY_NATIVE.has(name) ? null : await keysFor(target);
     if (keys) return sealedCall(name, args, ms, target, keys);

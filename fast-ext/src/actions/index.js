@@ -6,6 +6,7 @@ import { clickXY, typeText } from './input.js';
 import { handoffActions } from './handoff.js';
 import { updateSelf } from '../reloadSelf.js';
 import { fetchInPage } from './fetchInPage.js';
+import { uploadFiles } from './upload.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, withSelectorFrameHint, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
 import { isInjectableUrl, missingTabError, wakeTab, explainHostRefused } from '../util.js';
@@ -160,7 +161,10 @@ export async function dispatchAction(action, rawArgs) {
   }
   const evtId = ++__evtSeq;
   const overlayTab = typeof args.tabId === 'number' ? args.tabId : await getTargetTabId();
-  notifyOverlay(overlayTab, { phase: 'start', id: evtId, action, args: showCallDetails ? args : undefined });
+  // fast_upload's file contents (up to 10 MB) never go to the overlay: names and sizes only
+  const shownArgs = action === 'fast_upload' && Array.isArray(args.files)
+    ? { ...args, files: args.files.map((f) => ({ name: f?.name, bytes: Math.floor(String(f?.data || '').length * 3 / 4) })) } : args;
+  notifyOverlay(overlayTab, { phase: 'start', id: evtId, action, args: showCallDetails ? shownArgs : undefined });
   try {
     // card numbers are masked to their last 4 digits in every result (frames.js)
     const tRun = Date.now();
@@ -236,6 +240,7 @@ async function runOne(action, args) {
   if (Object.hasOwn(handoffActions, action)) return handoffActions[action](args);
   if (action === 'fast_update')     return updateSelf();
   if (action === 'fast_fetch')      return fetchInPage(args);
+  if (action === 'fast_upload')     return uploadFiles(args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
   if (action === 'fast_frame_read') return frameRead(args);

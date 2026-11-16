@@ -358,6 +358,32 @@ const BROWSER_TOOLS = [
       required: ['text'],
     },
   },
+  {
+    name: 'fast_upload',
+    description: 'Put files into the page\'s file picker (<input type=file>, hidden or in a frame) as if the user picked them; fires input/change. Works in a background tab. Pick the input by `selector` or `match`; with neither, the page\'s only one. Open the site\'s attach menu first if its input appears only then.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'array', description: 'Up to 10 files, 10 MB in all.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'File name, e.g. "flyer.jpg".' },
+              type: { type: 'string', description: 'MIME type, e.g. "image/jpeg".' },
+              data: { type: 'string', description: 'The file\'s bytes, base64.' },
+            },
+            required: ['name', 'data'],
+          },
+        },
+        selector: { type: 'string', description: 'CSS selector of the file input.' },
+        match: { type: 'string', description: 'Text in the input\'s label, name, accept or surrounding text (e.g. "photo", "image/").' },
+        ref: { type: 'string', description: 'A file input\'s ref from an earlier fast_upload\'s `inputs` list.' },
+        frame: { type: 'string', description: 'Only inputs in frames whose URL contains this.' },
+      },
+      required: ['files'],
+    },
+  },
 ];
 
 // fast_list and fast_tab act on the browser, not a tab, so they take no TAB_ARG;

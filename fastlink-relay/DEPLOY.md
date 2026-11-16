@@ -160,6 +160,16 @@ changes.
 npm run deploy             # = wrangler deploy
 ```
 
+**Then put the Durable Objects on the new code** (since 2026-10-30 Cloudflare defers DO
+code updates until the object hibernates; a user's relay DO with browsers connected
+never does, so it keeps answering with the OLD code while the Worker runs the new one):
+
+```bash
+npx -y wrangler@4.163.0 versions deploy <NEW_VERSION_ID>@100% --durable-objects-code-update-mode immediate --yes
+```
+
+Browsers redial within seconds. Check with a `tools/list` that a new tool shows up.
+
 Uploads the Worker, registers the `UserRelay` Durable Object (migration `v1`,
 SQLite-backed), binds D1 + KV, and provisions the `relay.ytx.app` custom domain
 (auto-creates the DNS record + managed TLS cert — first deploy may take a minute

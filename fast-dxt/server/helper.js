@@ -14,8 +14,9 @@ import { appendFileSync, closeSync, openSync, renameSync, rmSync } from 'node:fs
 import { dirname, basename, isAbsolute, join } from 'node:path';
 import { createRelayClient } from './relayClient.js';
 import { PAIR_URL } from './agentFile.js';
+import { withUploadPaths, uploadArgs } from './upload.js';
 
-export const HELPER_VERSION = '2.0.2';
+export const HELPER_VERSION = '2.0.3';
 export const CLIENT_NAME = `fastlink-helper@${hostname()}`;
 
 // Tools whose own `tabId` argument names the tab to act on — shown to the model, never filled in.
@@ -139,7 +140,7 @@ export function createHelper({ loadAgent, pairCommand, lastBrowserStore = { get:
   async function listTools() {
     if (!ensureRelay()) return { tools: [UNPAIRED_STATUS_TOOL, PROFILE_TOOL] };
     const r = await relay.request('tools/list', {});
-    const tools = (r?.tools || []).filter((t) => t.name !== 'fast_profile').map(stripRoutingArgs).map(withSaveTo);
+    const tools = (r?.tools || []).filter((t) => t.name !== 'fast_profile').map(stripRoutingArgs).map(withSaveTo).map(withUploadPaths);
     return { ...r, tools: [...tools, PROFILE_TOOL] };
   }
 
@@ -200,11 +201,19 @@ export function createHelper({ loadAgent, pairCommand, lastBrowserStore = { get:
       args.tabId = injectedTab;
     }
 
+    // fast_upload names files on this machine (`paths`); they are read here, from the upload folder only.
+    let callArgs = args;
+    if (name === 'fast_upload') {
+      const u = uploadArgs(args);
+      if (u.error) return errorText(`Error: ${u.error}`);
+      callArgs = u.args;
+    }
+
     let result;
     try {
       result = name === 'fast_text' && args.saveTo != null
         ? await saveText(args)
-        : await relay.request('tools/call', { name, arguments: args });
+        : await relay.request('tools/call', { name, arguments: callArgs });
     } catch (e) {
       return errorText(`Error: ${e.message}`);
     }

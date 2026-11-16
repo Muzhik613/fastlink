@@ -103,14 +103,17 @@ function lockState(ws) {
 function extVersion(ws) {
   try { return String((ws.deserializeAttachment() || {}).version || ''); } catch { return ''; }
 }
-// true when `v` (x.y.z) >= TABID_MIN_VERSION; unknown/garbled → false (fail safe).
-export function supportsTabId(v) {
+// true when `v` (x.y.z) >= `min`; unknown/garbled → false (fail safe).
+export function versionAtLeast(v, min) {
   const p = (x) => String(x).split('.').map((n) => parseInt(n, 10));
-  const a = p(v), b = p(TABID_MIN_VERSION);
+  const a = p(v), b = p(min);
   if (!v || a.some(Number.isNaN)) return false;
   for (let i = 0; i < 3; i++) { if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0); }
   return true;
 }
+export const supportsTabId = (v) => versionAtLeast(v, TABID_MIN_VERSION);
+// Actions an older extension doesn't know: refused with "update FastLink", never sent.
+export const ACTION_MIN_VERSION = { fast_upload: '0.4.31' };
 
 export class UserRelay extends DurableObject {
   constructor(ctx, env) {
@@ -603,6 +606,14 @@ export class UserRelay extends DurableObject {
       const v = extVersion(ws) || 'an unknown version';
       return Promise.resolve({
         error: `Browser "${target.name || '?'}" runs FastLink ${v}, which can't act on a specific tab (needs ${TABID_MIN_VERSION} or newer), so "${action}" was not run. Reload the FastLink extension in that browser (click its toolbar icon) to load the update, then retry.`,
+        extensionTooOld: true,
+        extensionVersion: extVersion(ws) || null,
+      });
+    }
+    const minV = ACTION_MIN_VERSION[action];
+    if (minV && !versionAtLeast(extVersion(ws), minV)) {
+      return Promise.resolve({
+        error: `Browser "${target.name || '?'}" runs FastLink ${extVersion(ws) || 'an unknown version'}, which has no ${action} (needs ${minV} or newer). Update it (fast_update), then retry.`,
         extensionTooOld: true,
         extensionVersion: extVersion(ws) || null,
       });

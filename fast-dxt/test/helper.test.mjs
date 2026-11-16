@@ -5,7 +5,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn, execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +39,7 @@ const TOOLS = [
   { name: 'fast_tab', description: 't', inputSchema: { type: 'object', properties: { browser: { type: 'string' }, url: { type: 'string' } } } },
   { name: 'fast_text', description: 'text', inputSchema: { type: 'object', properties: { browser: { type: 'string' }, tabId: { type: 'number' }, selector: { type: 'string' }, offset: { type: 'number' }, maxLen: { type: 'number' } } } },
   { name: 'fast_nav', description: 'n', inputSchema: { type: 'object', properties: { browser: { type: 'string' }, tabId: { type: 'number' }, url: { type: 'string' } } } },
+  { name: 'fast_upload', description: 'up', inputSchema: { type: 'object', properties: { files: { type: 'array' }, match: { type: 'string' }, browser: { type: 'string' }, tabId: { type: 'number' } }, required: ['files'] } },
 ];
 const txt = (o) => ({ content: [{ type: 'text', text: JSON.stringify(o) }] });
 
@@ -112,8 +113,8 @@ const relay = createServer(async (req, res) => {
 let RELAY_URL;
 
 // ---- stdio MCP client to a spawned helper --------------------------------
-function startHelper(agentFile) {
-  const child = spawn(process.execPath, [SERVER], { stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, FASTLINK_AGENT_FILE: agentFile } });
+function startHelper(agentFile, env = {}) {
+  const child = spawn(process.execPath, [SERVER], { stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, FASTLINK_AGENT_FILE: agentFile, ...env } });
   const waiting = new Map();
   createInterface({ input: child.stdout }).on('line', (l) => {
     const m = JSON.parse(l);
@@ -385,4 +386,36 @@ test('fast_text saveTo: a relative path or an old extension fails clearly and le
   assert.ok(old.isError && /too old/.test(old.content[0].text));
   assert.equal(existsSync(file), false);
   assert.deepEqual(readdirSync(tmp).filter((f) => f.includes('.part-')), []);
+});
+
+test('fast_upload: paths are read from the upload folder only, sent as base64 files', async (t) => {
+  const dir = join(tmp, 'uploads');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'flyer.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x01]));
+  writeFileSync(join(tmp, 'secret.txt'), 'no');
+  symlinkSync(join(tmp, 'secret.txt'), join(dir, 'link.txt'));
+  const h = startHelper(writeAgent(join(tmp, 'upload.json')), { FASTLINK_UPLOAD_DIR: dir });
+  t.after(h.stop);
+  await h.rpc('initialize', {});
+  const listed = (await h.rpc('tools/list', {})).result.tools.find((x) => x.name === 'fast_upload');
+  assert.ok(listed.inputSchema.properties.paths, 'paths is listed');
+  assert.equal(listed.inputSchema.properties.files, undefined, 'files is not');
+  assert.deepEqual(listed.inputSchema.required, ['paths']);
+  assert.match(listed.inputSchema.properties.paths.description, new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+  calls.length = 0;
+  const ok = await h.call('fast_upload', { paths: ['flyer.jpg'], match: 'photo' });
+  assert.ok(!ok.isError, JSON.stringify(ok));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].arguments.files, [{ name: 'flyer.jpg', type: 'image/jpeg', data: Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x01]).toString('base64') }]);
+  assert.equal(calls[0].arguments.match, 'photo');
+  assert.equal(calls[0].arguments.paths, undefined);
+
+  calls.length = 0;
+  for (const bad of [[join(tmp, 'secret.txt')], ['../secret.txt'], ['link.txt'], ['missing.png'], []]) {
+    const r = await h.call('fast_upload', { paths: bad });
+    assert.ok(r.isError, `${bad} should be refused`);
+    assert.match(r.content[0].text, /upload folder|No file|needs `paths`/);
+  }
+  assert.equal(calls.length, 0, 'nothing refused reaches the relay');
 });
