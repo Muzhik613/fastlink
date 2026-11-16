@@ -1,6 +1,7 @@
 // fast_fetch (service tokens only; the relay checks the token's allowed origins and builds the
-// request): ONE fixed fetch() in the tab's own page context, so it carries that site's cookies and
-// passes its bot checks. Same origin as the tab only. No other code runs; nothing here takes code.
+// request): ONE fixed fetch() in the tab's own page context, with that site's own cookies.
+// Same origin as the tab only. No other code runs; nothing here takes code.
+// Not in the Web Store zip: scripts/package.sh replaces this file with a stub.
 import { getInjectableTab } from '../util.js';
 
 const BODY_MAX = 512 * 1024;   // the relay socket carries ~1 MB; keep well under it

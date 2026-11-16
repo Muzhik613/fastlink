@@ -1,5 +1,5 @@
 # FastLink: Privacy Policy
-_Last updated: 2026-11-09_
+_Last updated: 2026-11-16_
 
 FastLink is a browser extension that lets an AI assistant you already use (for example Claude Code, claude.ai, or another app that supports remote MCP connectors) read and operate the Chrome tabs you point it at, on your behalf. FastLink is an independent tool, not affiliated with Anthropic, Google or any AI company.
 
@@ -11,6 +11,10 @@ Only when your assistant performs an action you asked for, FastLink captures and
 - the text and structure (links, buttons, form fields) of the tab it works in; password field values are never included;
 - screenshots of that tab;
 - the URL and title of your open tabs when the assistant lists or switches tabs.
+
+When your assistant uploads a file, the file comes from the app you connected (for Claude Code, only from your own `~/.fastlink/uploads` folder). It passes through the relay into the file field of the page, the same as if you had picked it yourself. The relay does not store it.
+
+When your assistant hands a step to you (for example, an "are you human" check it must not solve itself), FastLink sends cropped images of that part of the tab through the relay to a one-time link that you open on your phone. Your taps on that page are sent back to the tab. The link works on one device and expires within 30 minutes. The relay does not store the images. The activity log records that a hand-off happened, but not the images.
 
 FastLink also watches request start/finish events in the browser to tell when a page has finished loading. This is never stored or sent anywhere.
 
@@ -26,7 +30,7 @@ If you change the relay address in FastLink's advanced settings, your browser co
 No one else receives your data.
 
 ## What is stored
-On your device (chrome.storage): this browser's pairing token, the relay address, and your settings. No page content.
+On your device (chrome.storage): this browser's pairing token, the relay address, your settings, and a connection log (the last 200 connection events: drops, reconnects, timeouts; no addresses, page content or call details). No page content.
 
 On the relay:
 - Account: Google account ID and email address.

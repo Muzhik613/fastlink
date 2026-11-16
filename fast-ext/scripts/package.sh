@@ -86,6 +86,16 @@ done
 # --- store manifest: the Web Store rejects "key" and owns updates (no update_url) ---
 node -e "const f='$STAGE/manifest.json',m=JSON.parse(require('fs').readFileSync(f,'utf8'));delete m.key;delete m.update_url;require('fs').writeFileSync(f,JSON.stringify(m,null,2)+'\\n')"
 
+# --- store build: no fast_fetch. The relay offers it only to service tokens (scrapers on the
+# owner's own browsers, which run the feed/secure builds), never to store users, so the store
+# package ships a stub instead of a server-driven credentialed fetch.
+cat > "$STAGE/src/actions/fetchInPage.js" <<'EOF'
+// fast_fetch is not part of the Chrome Web Store build.
+export async function fetchInPage() {
+  return { error: 'fast_fetch is not available in this build of FastLink.' };
+}
+EOF
+
 # --- belt-and-suspenders: drop anything that should never ship ---------------
 find "$STAGE" \( -name '*.md' -o -name '*.sh' -o -name '.DS_Store' \) -delete 2>/dev/null || true
 

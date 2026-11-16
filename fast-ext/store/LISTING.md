@@ -1,32 +1,41 @@
 # FastLink: Chrome Web Store dashboard answers (REVIEWED, paste-ready)
 
-## STATUS (2026-11-09): submitted, Pending review
+## STATUS (2026-11-16): 0.4.14 live and Listed; 0.4.31 packaged, not yet uploaded
 
-**Dashboard item:** `eiifomohibgelcdhadklpmdnoblpalde` (publisher YTX, yaakov@ytx.app verified, non-trader), package `fastlink-0.4.14.zip`, Unlisted. Submitted for review 2026-11-09 ~17:30 CST on Yaakov's OK; dashboard status "Pending review". "Publish automatically after it has passed review" was left on (the default), so it goes live as Unlisted once approved. The dashboard warned of an in-depth review for broad host permissions.
+**Dashboard item:** `eiifomohibgelcdhadklpmdnoblpalde` (publisher YTX, yaakov@ytx.app, non-trader). The live, public version is **0.4.14** (store page checked 2026-11-16: "Updated November 15, 2026", 282 KiB).
 
-**Done for this submission:**
-- **Relay:** the store ID is added via `/admin/extension-ids`. "Sign in & connect" was tested with the 0.4.14 zip loaded under the store's public key (same ID): it connected to the relay. The test devices were removed from D1; backups are in `~/fastlink-store/d1-backup/` on hvm.
-- **0.4.14 (policy review):**
-  - Secure-build lock, sealed calls and `fast_evaluate` code moved to `secure-only/`; the store package has none of it.
-  - UI says "your assistant" instead of "Claude" (except where it names claude.ai or Claude Code).
-  - No anti-bot-sounding wording.
-  - No remote Google Fonts.
-  - Options no longer promises an Allow/Deny prompt.
-  - `claudeScrape.js` renamed to `claudeReply.js`.
-  - Screenshots re-shot from 0.4.14.
-- **Listing:** no first-use Allow/Deny claim (the relay default is allow); neutral debugger wording; "does not track the pages you browse yourself" plus the 30-day action log; User activity ticked; test instructions use an example.com step.
-- **Privacy policy** (`PRIVACY-POLICY.md` = fastlink.ytx.app/privacy, live 2026-11-09): adds feedback notes, timing diagnostics, Cloudflare request logs, a custom relay address, and the Google API Services User Data Policy.
+**Next package:** `fast-ext/dist/fastlink-0.4.31.zip` (`bash fast-ext/scripts/package.sh`; sha256 `53abf52e10aa823b8668d121c41d31ae5a55cf6b81914d682d2736be88a7f94e`, 53 files). It has no `key`, no `update_url`, and fast_fetch is replaced by a stub (see below). Upload steps: `STORE-UPLOAD.md`.
 
-- **Relay `/try`** (deployed 2026-11-09, version aa256def): reviewers without a Claude plan can read and click a tab of their own paired browser. The test instructions (section 5) use it.
+### What changed, 0.4.14 → 0.4.31 (store copy)
+- **Manifest:** only `version`. Permissions, host permissions, content scripts and CSP are unchanged.
+- **debugger:** the same four CDP commands (Input.dispatchMouseEvent, Input.dispatchKeyEvent, Input.insertText, Page.captureScreenshot). The new hand-off feature uses two of them.
+- **Remote code:** none. No eval, new Function, userScripts or Runtime.evaluate. Every injected function is packaged.
+- **New features:**
+  - Hand-off (0.4.16): a person finishes a step, such as an "are you human" check, from their phone. FastLink sends cropped tab images to a one-time relay link, and the person's taps come back.
+  - Remote restart for updates, `fast_update` (0.4.17). In the store copy this means `chrome.runtime.requestUpdateCheck` against the store, then a reload.
+  - File upload into a page's `<input type=file>`, `fast_upload` (0.4.31).
+  - Options → Connection log (0.4.30). Local only; scalar values only.
+- **Fixes (0.4.19–0.4.30):**
+  - Typing: real key presses; a fallback when the tab is in the background; nested editors; password fields.
+  - Frames: one frame enumeration shared by every tool (Stripe and other embedded checkouts).
+  - Discarded tabs are loaded before a tool acts on them.
+  - Large pages are read in windows.
+  - Each call has a watchdog, so every call gets an answer.
+  - Clearer errors: a host the browser blocks for every extension (Edge), a disabled field.
+- **Left out of the store zip on purpose:**
+  - `fast_fetch` (0.4.21) is replaced by a stub. It is a relay-built, credentialed fetch for service tokens only, which run the owner's own feed browsers. The relay never offers it to store users. Keeping it out also keeps a "server-driven request with the user's cookies" off the reviewer's desk.
+  - `update.html` (0.4.18) is not included. It is used only by unpacked copies.
+  - The secure / operator builds are left out, as before.
 
-**Residual risk (accepted, not blocking):**
-- `page.js` runs in the MAIN world on every page at document_start, and the `webRequest` listeners are always on. Both are local-only, but injecting on demand and listening only while a call runs would be narrower.
-- Workers observability logs may include the `/ext?token=` WebSocket URL. Moving the token out of the URL is a relay change.
-- The screenshots show only settings pages; an action shot would be stronger.
+### Before submitting
+1. **Publish the updated privacy policy** (`PRIVACY-POLICY.md`, updated 2026-11-16) to https://fastlink.ytx.app/privacy. It now covers hand-off images, uploaded files and the local connection log. The listing must not promise more than the live policy.
+2. The dashboard's **Privacy practices** answers stay the same. Hand-off images and uploaded files fall under "Website content", which is already ticked. Update the `debugger` justification with the text in section 3.
+
+**Residual risk (unchanged from 0.4.14, accepted):** `page.js` runs in the MAIN world on every page at document_start, and the `webRequest` listeners are always on. The `/ext?token=` URL may appear in Workers logs.
 
 ---
 
-**Package:** `fastlink-0.4.14.zip` (`fast-ext/scripts/package.sh`; no `key`, no `update_url`).
+**Package:** `fastlink-0.4.31.zip` (`fast-ext/scripts/package.sh`; no `key`, no `update_url`).
 
 ## 1. Package
 Upload the zip from `scripts/package.sh` to the draft and save. Submit only with Yaakov's OK.
@@ -48,6 +57,8 @@ WHAT IT DOES
 • Reads the page you point it at as a compact text snapshot of its structure (links, buttons, fields, text).
 • Clicks, types, fills whole forms, selects options, scrolls, navigates, and opens, switches or closes tabs, when your assistant asks it to.
 • Takes screenshots of the tab it is working in, when your assistant asks for one.
+• Puts files your assistant gives it into a page's file-upload field.
+• Hands a step to you when the assistant must not do it itself (for example an "are you human" check): you finish it from your phone through a one-time link.
 
 YOU STAY IN CONTROL
 • Per-site rules: in Options, set any site to Allow, Read-only (read, no clicks or typing) or Block.
@@ -90,7 +101,7 @@ FastLink lets the user's own AI assistant read and operate the user's Chrome tab
 |---|---|
 | `tabs` | To list, open, switch to, navigate and close the tabs the assistant works in, and report their URL and title, including browser pages such as chrome:// that host permissions don't cover. |
 | `scripting` | To run FastLink's own packaged functions in the tab the assistant works in, to read the page structure and to click, type and fill forms. No code from outside the package is run. |
-| `debugger` | "Advanced control" (on by default, user can turn it off in Options). It uses only these Chrome DevTools Protocol commands on the tab the assistant works in: Input.dispatchMouseEvent, Input.dispatchKeyEvent and Input.insertText (input for controls that don't respond to scripted events, e.g. canvas-based editors and custom widgets), and Page.captureScreenshot (screenshot of a tab that isn't in front). No other domains are used (no Runtime, Network or Storage). Attached on first use per tab; Chrome shows its debugging bar; detaches when the tab closes or the user cancels the bar. |
+| `debugger` | "Advanced control" (on by default, user can turn it off in Options). It uses only these Chrome DevTools Protocol commands on the tab the assistant works in: Input.dispatchMouseEvent, Input.dispatchKeyEvent and Input.insertText (input for controls that don't respond to scripted events, e.g. canvas-based editors and custom widgets), and Page.captureScreenshot (screenshot of a tab that isn't in front). The same two commands (Page.captureScreenshot, Input.dispatchMouseEvent) let the user finish a step from their phone when the assistant hands it over: a cropped image goes to the user's one-time link and their taps come back to that tab. No other domains are used (no Runtime, Network or Storage). Attached on first use per tab; Chrome shows its debugging bar; detaches when the tab closes or the user cancels the bar. |
 | `alarms` | To keep the connection to the user's relay account alive and reconnect after the service worker sleeps. |
 | `webRequest` | Observe only: counts requests still in flight in a tab, so the assistant can wait until a page has finished loading. Requests are never blocked or changed, and nothing about them is stored or sent anywhere. |
 | `webNavigation` | `getAllFrames`: to find a page's embedded frames so the assistant can read and fill forms inside them (e.g. checkout or sign-in frames). |
@@ -122,7 +133,7 @@ https://fastlink.ytx.app/privacy
 (Live; same text as `PRIVACY-POLICY.md`, updated 2026-11-08, 30-day activity-log retention.)
 
 ## 4. Distribution
-Unlisted · All regions · Free.
+Public (Listed) · All regions · Free.
 
 ## 5. Test instructions
 (The dashboard field is "Additional instructions", 500 chars max; no credentials.)
