@@ -7,6 +7,15 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-20 — extension 0.4.32 + relay: a call lost on a replaced socket is resent, never run twice (aliya, mpc1)
+- **What:**
+  - Relay `userRelay.js` `#resendUnacked`: when a browser says hello on a new socket, its calls still pending on an older socket with no `queued`/`started`/`result` frame go out again on the new one (same id, same deadline). Sealed calls from 0.4.30, every other call from 0.4.32 (`RESEND_MIN_VERSION`). A replay refusal of a resent sealed copy is ignored (the first copy's held result settles it). `#graceOnClose`: such a call no longer fails after the 10 s close grace; it waits for the redial up to its own deadline.
+  - Extension `relayClient.js` `claimCall`: a call id runs at most once per Chrome session (in memory + `chrome.storage.session` `fastlink.callIds`, last 200). A copy of a running call is dropped (its result comes on the live socket); a copy of one an earlier worker took answers `code:'call_interrupted'` (read the page before retrying). A new Chrome forgets the ids, so it runs a call the dead Chrome never could.
+- **Why:** aliya 11-20 08:59/09:01/09:30 and mpc1 08:16/08:58/09:29: a call went out on a socket the browser had just left (aliya: mid-run redials; mpc1: jewel-api restarts Chrome every 10 min) and sat silent until the relay's 30 s deadline.
+- **Verified:** relay 91/91, fast-ext 62/62; mpc1 on 0.4.32 unpacked from 09:39 (fast_tab/fast_close OK), then ~1 h of jewel-api traffic across its Chrome restarts before the feed release.
+- **Watch out:** aliya's redials themselves are unexplained (its Connection log has the reason); the secure build is not changed. Relay deploys 57e1b177 → fe76cc7b → 3a614bb0 (rollback 5b28273c).
+- **Files:** `fastlink-relay/src/userRelay.js`, `test/sealed.test.mjs`, `test/transport.test.mjs`; `fast-ext/src/relayClient.js`, `test/relayClient.test.js`, `manifest.json`; `release/updates.xml`.
+
 ## 2026-11-16 — extension 0.4.31 + helper 2.0.3 + relay: fast_upload (local files into a page's file input)
 - **What:**
   - New tool `fast_upload` (relay `tools.js`): puts files into an `<input type=file>` like a real pick: `input.files = …` via DataTransfer/File, then `input` + `change` events. Hidden inputs, open shadow roots and cross-origin frames are reached; no OS dialog, no focus, no CDP, so it works in a background tab and on a locked screen. Target: `selector`, `match` (label / name / accept / nearby text), `ref` (from an earlier answer's `inputs` list), `frame` (URL substring); none = the page's only file input. Several matching → `code:'ambiguous'` with the `inputs` list. Refuses a selector that hits a non-file element (`not_file_input`), no file input (`no_file_input`: open the site's attach menu first), a disabled input, several files into a one-file input; flags `acceptMismatch`.
