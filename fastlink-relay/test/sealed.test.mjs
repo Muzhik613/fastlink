@@ -7,7 +7,7 @@ import { getDeviceLock } from '../src/db.js';
 const AGENT = { 'X-Fastlink-Caller': 'agent' };
 const OAUTH = { 'X-Fastlink-Caller': 'oauth' };
 // Wait until the relay has sent the browser a call.
-async function sentCall(ws) { for (let i = 0; i < 50 && !ws.lastCall(); i++) await tick(); return ws.lastCall(); }
+async function sentCall(ws) { for (let i = 0; i < 500 && !ws.lastCall(); i++) await tick(); return ws.lastCall(); }
 
 const FRAME = { v: 1, keyId: 'abcd1234abcd1234', nonce: 'n0nce', ct: 'Q2lwaGVydGV4dA' };
 
@@ -142,4 +142,57 @@ test('fast_status shows a secure browser\'s page-JavaScript state from its hello
   await r.webSocketMessage(ws, JSON.stringify({ type: 'hello', version: '0.4.15', secure: true, locked: true, keyId: FRAME.keyId, evaluate: 'on' }));
   b = (await mcpCall(r, 'fast_status', {}, AGENT)).data.browsers.find((x) => x.name === 'aliya');
   assert.equal(b.evaluate, 'on');
+});
+
+test('a secure browser that redials gets its unacknowledged sealed calls again on the new socket (aliya 11-20)', async () => {
+  const { r, ws } = await secureRelay();
+  // (1) call sent on the old socket, never acknowledged; the browser redials and says hello
+  const p = mcpCall(r, 'fast_sealed', { ...FRAME, browser: 'aliya' }, AGENT);
+  const call = await sentCall(ws);
+  const ws2 = fakeSocket('tokS', Date.now() + 1);
+  r.ctx.getWebSockets().push(ws2);
+  await r.webSocketMessage(ws2, JSON.stringify({ type: 'hello', version: '0.4.30', secure: true, locked: true, keyId: FRAME.keyId }));
+  const again = ws2.lastCall();
+  assert.equal(again.id, call.id, 'same id, so a late answer on either socket settles it');
+  assert.deepEqual(again.args, FRAME);
+  await reply(r, ws2, again.id, { sealed: { v: 1, keyId: FRAME.keyId, nonce: 'x', ct: 'y' } });
+  assert.deepEqual((await p).data, { sealed: { v: 1, keyId: FRAME.keyId, nonce: 'x', ct: 'y' } });
+
+  // (2) a call the browser already acknowledged (started) is never resent
+  const p2 = mcpCall(r, 'fast_sealed', { ...FRAME, browser: 'aliya' }, AGENT);
+  let c2; for (let i = 0; i < 500 && !(c2 = ws2.sent.filter((m) => m.type === 'call').find((m) => m.id !== call.id)); i++) await tick();
+  await r.webSocketMessage(ws2, JSON.stringify({ type: 'started', id: c2.id }));
+  const ws3 = fakeSocket('tokS', Date.now() + 2);
+  r.ctx.getWebSockets().push(ws3);
+  await r.webSocketMessage(ws3, JSON.stringify({ type: 'hello', version: '0.4.30', secure: true, locked: true, keyId: FRAME.keyId }));
+  assert.equal(ws3.sent.filter((m) => m.type === 'call').length, 0);
+  await reply(r, ws3, c2.id, { sealed: { v: 1, keyId: FRAME.keyId, nonce: 'a', ct: 'b' } });
+  await p2;
+});
+
+test('an unsealed call is never resent on a redial', async () => {
+  const a1 = fakeSocket('tokA', 1);
+  const sockets = [a1];
+  const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets });
+  r.callExtension('fast_text', {}, undefined, { ws: a1, name: 'w', deviceToken: 'tokA' });
+  const a2 = fakeSocket('tokA', 2); sockets.push(a2);
+  await r.webSocketMessage(a2, JSON.stringify({ type: 'hello', version: '0.4.30' }));
+  assert.equal(a2.sent.filter((m) => m.type === 'call').length, 0);
+});
+
+test('resend: a replay refusal of the resent copy is ignored (the first copy\'s held result settles it); browsers before 0.4.30 get no resend', async () => {
+  const { r, ws } = await secureRelay();   // hello said 0.4.10
+  const p = mcpCall(r, 'fast_sealed', { ...FRAME, browser: 'aliya' }, AGENT);
+  const call = await sentCall(ws);
+  const old = fakeSocket('tokS', Date.now() + 1);
+  r.ctx.getWebSockets().push(old);
+  await r.webSocketMessage(old, JSON.stringify({ type: 'hello', version: '0.4.29', secure: true, locked: true, keyId: FRAME.keyId }));
+  assert.equal(old.sent.filter((m) => m.type === 'call').length, 0, 'no resend before 0.4.30');
+  const ws2 = fakeSocket('tokS', Date.now() + 2);
+  r.ctx.getWebSockets().push(ws2);
+  await r.webSocketMessage(ws2, JSON.stringify({ type: 'hello', version: '0.4.30', secure: true, locked: true, keyId: FRAME.keyId }));
+  assert.equal(ws2.lastCall().id, call.id);
+  await reply(r, ws2, call.id, { error: 'sealed: replayed request', code: 'sealed' });
+  await reply(r, ws2, call.id, { sealed: { v: 1, keyId: FRAME.keyId, nonce: 'h', ct: 'eld' } });
+  assert.deepEqual((await p).data, { sealed: { v: 1, keyId: FRAME.keyId, nonce: 'h', ct: 'eld' } });
 });

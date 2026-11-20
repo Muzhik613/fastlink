@@ -77,6 +77,8 @@ const NATIVE_TAB_ACTIONS = new Set(['fast_switch', 'fast_close']);
 // SEALED calls only — `fast_sealed`, whose args are ciphertext the relay can't read
 // (fast-ext/secure-only/src/secure/sealed.js). null for a normal browser.
 export const SEALED_ACTION = 'fast_sealed';
+// Sealed calls lost on a replaced socket are resent from this extension version on.
+const RESEND_MIN_VERSION = '0.4.30';
 function secureInfo(ws) {
   try { const a = ws.deserializeAttachment() || {}; return a.secure ? { locked: !!a.locked, keyId: a.keyId || null, evaluate: a.evaluate || null } : null; } catch { return null; }
 }
@@ -461,6 +463,10 @@ export class UserRelay extends DurableObject {
       // different browser can never settle this call.
       if (this.#tokenOf(ws) !== entry.deviceToken) return;
 
+      // A resent copy the browser refuses as a replay means the first copy reached it and
+      // ran: keep waiting for that one's (held) result instead of failing the call.
+      if (entry.resent && msg.type === 'result' && msg.code === 'sealed' && msg.error === 'sealed: replayed request') return;
+      entry.acked = true;   // the browser has this call: never re-sent (#resendSealed)
       if (msg.type === 'queued') {
         this.#arm(msg.id, entry, entry.sentAt + Math.max(QUEUE_MAX_MS, entry.timeoutMs));
         return;
@@ -502,6 +508,7 @@ export class UserRelay extends DurableObject {
         if (token && this.env.DB) {
           try { await this.#recordLock(token, keyId); } catch { /* non-fatal */ }
         }
+        this.#resendSealed(ws);
       }
       // The extension re-asserts the user's pause toggle on (re)connect when it
       // carries one, so the durable relay flag converges with the popup's state.
@@ -542,6 +549,24 @@ export class UserRelay extends DurableObject {
     for (const [id, entry] of this.pending) {
       if (entry.ws !== ws || entry.grace) continue;
       entry.grace = setTimeout(() => this.#settle(id, { error: 'Extension disconnected before response' }), CLOSE_GRACE_MS);
+    }
+  }
+
+  // A secure browser redialed (aliya 11-20: the socket was replaced ~1 s after a sealed
+  // call went out on the old one, which the browser never read; the call sat silent
+  // until the 30 s deadline). Its sealed calls still unanswered on an OLDER socket, with
+  // no queued/started/result frame, go out again on this one, same id and deadline.
+  // Safe: the browser accepts each sealed seq once (replay window in chrome.storage),
+  // so a copy it already ran is refused, never run twice. Unsealed calls are never resent.
+  // Only from 0.4.30, which acknowledges every call it receives (queued/started).
+  #resendSealed(ws) {
+    const token = this.#tokenOf(ws);
+    if (!token || !versionAtLeast(extVersion(ws), RESEND_MIN_VERSION)) return;
+    for (const [id, e] of this.pending) {
+      if (e.deviceToken !== token || e.ws === ws || e.acked || e.action !== SEALED_ACTION) continue;
+      e.ws = ws; e.resent = true;
+      clearTimeout(e.grace); e.grace = null;
+      try { ws.send(JSON.stringify({ type: 'call', id, action: e.action, args: e.args })); } catch { /* deadline still fails it */ }
     }
   }
 
@@ -623,7 +648,7 @@ export class UserRelay extends DurableObject {
       // tabKey: which tab's origin this result reports — the call's own tabId, else
       // the browser's current target tab.
       const tabKey = typeof rest.tabId === 'number' ? rest.tabId : null;
-      const entry = { resolve, timer: null, grace: null, ws, deviceToken: target.deviceToken || null, tabKey, action, sentAt: Date.now(), timeoutMs };
+      const entry = { resolve, timer: null, grace: null, ws, deviceToken: target.deviceToken || null, tabKey, action, args: rest, sentAt: Date.now(), timeoutMs, acked: false };
       this.pending.set(id, entry);
       this.#arm(id, entry, entry.sentAt + timeoutMs);
       try {
