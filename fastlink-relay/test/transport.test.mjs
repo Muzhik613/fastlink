@@ -203,3 +203,20 @@ test('the same browser reconnecting: the live new socket wins over its dead old 
   assert.equal(t.ws, neu);
   assert.equal((await r.deviceList())[0].version, '0.4.8');
 });
+
+test('socket close: an unacked call to a 0.4.32+ browser waits for the redial past the grace, and is resent on hello', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const a1 = fakeSocket('tokA', 1, '0.4.32');
+  const sockets = [a1];
+  const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets });
+  const p = r.callExtension('fast_tab', { url: 'https://x.test' }, undefined, { ws: a1, name: 'w', deviceToken: 'tokA' });
+  const call = a1.lastCall();
+  a1.close(); await r.webSocketClose(a1);
+  t.mock.timers.tick(15_000);                      // Chrome restart takes longer than the 10 s grace
+  assert.equal((await state(p)).done, false);
+  const a2 = fakeSocket('tokA', 2); sockets.push(a2);
+  await r.webSocketMessage(a2, JSON.stringify({ type: 'hello', version: '0.4.32' }));
+  assert.equal(a2.lastCall().id, call.id);
+  await reply(r, a2, call.id, { result: 'opened' });
+  assert.equal((await p).result, 'opened');
+});

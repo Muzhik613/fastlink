@@ -547,9 +547,14 @@ export class UserRelay extends DurableObject {
 
   // The socket a call went out on died. Its result may still arrive on the
   // device's redialed socket, so give each such call CLOSE_GRACE_MS before failing it.
+  // A call the browser never acked, from a version that takes resends, instead waits up to
+  // its own deadline: the redialed socket's hello resends it (#resendUnacked; mpc1 08:16,
+  // a Chrome restart took longer than the grace).
   #graceOnClose(ws) {
+    const v = extVersion(ws);
     for (const [id, entry] of this.pending) {
       if (entry.ws !== ws || entry.grace) continue;
+      if (!entry.acked && versionAtLeast(v, entry.action === SEALED_ACTION ? RESEND_MIN_VERSION.sealed : RESEND_MIN_VERSION.any)) continue;
       entry.grace = setTimeout(() => this.#settle(id, { error: 'Extension disconnected before response' }), CLOSE_GRACE_MS);
     }
   }
