@@ -10,7 +10,7 @@ globalThis.chrome = {
   alarms: { create: noop, clear: noop },
   windows: { getAll: (_q, cb) => cb([{ id: 1 }]) },
   storage: {
-    session: { get: async () => ({}) },
+    session: { _d: {}, async get(k) { return { [k]: this._d[k] }; }, async set(o) { Object.assign(this._d, o); } },
     local: { set: noop, remove: noop },
     onChanged: { addListener: noop },
   },
@@ -74,5 +74,29 @@ test('a result ready while no socket is open is flushed when one opens', async (
   second.open();                                 // hello, then the held result
   assert.deepEqual(second.sent.map((f) => f.type), ['hello', 'result']);
   assert.equal(second.sent[1].id, 'c2');
+  stopRelay();
+});
+
+test('a resent call runs once: a copy while it runs is dropped; one an earlier worker lost answers call_interrupted', async () => {
+  sockets.length = 0;
+  let runs = 0; let release;
+  const handle = () => { runs++; return new Promise((r) => { release = () => r({ result: 'once' }); }); };
+  startRelayConnection(handle, { wssUrl: 'wss://relay.test/ext', deviceToken: 'tok', onState: noop, resolveTabId: async () => 1 });
+  await until(() => sockets.length === 1);
+  const ws = sockets[0];
+  ws.open();
+  ws.deliver({ type: 'call', id: 'r1', action: 'fast_tab', args: {} });
+  await until(() => ws.sent.some((f) => f.type === 'started'));
+  ws.deliver({ type: 'call', id: 'r1', action: 'fast_tab', args: {} });   // the relay's resend
+  await wait(30);
+  release();
+  await until(() => ws.sent.some((f) => f.type === 'result'));
+  assert.equal(runs, 1);
+  assert.equal(ws.sent.filter((f) => f.type === 'result').length, 1);
+  // a worker restart forgets the in-memory set; session storage still has r1
+  ws.deliver({ type: 'call', id: 'r1', action: 'fast_tab', args: {} });
+  await until(() => ws.sent.filter((f) => f.type === 'result').length === 2);
+  assert.equal(runs, 1);
+  assert.equal(ws.sent.filter((f) => f.type === 'result')[1].code, 'call_interrupted');
   stopRelay();
 });

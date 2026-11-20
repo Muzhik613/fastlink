@@ -170,14 +170,24 @@ test('a secure browser that redials gets its unacknowledged sealed calls again o
   await p2;
 });
 
-test('an unsealed call is never resent on a redial', async () => {
+test('an unsealed call is resent on a redial only to 0.4.32+ (runs each call id once); an acked one never (mpc1 11-20)', async () => {
   const a1 = fakeSocket('tokA', 1);
   const sockets = [a1];
   const { r } = await makeRelay({ devices: [{ name: 'w', token: 'tokA' }], sockets });
-  r.callExtension('fast_text', {}, undefined, { ws: a1, name: 'w', deviceToken: 'tokA' });
+  const p = r.callExtension('fast_tab', { url: 'https://x.test' }, undefined, { ws: a1, name: 'w', deviceToken: 'tokA' });
+  const id = a1.lastCall().id;
   const a2 = fakeSocket('tokA', 2); sockets.push(a2);
-  await r.webSocketMessage(a2, JSON.stringify({ type: 'hello', version: '0.4.30' }));
-  assert.equal(a2.sent.filter((m) => m.type === 'call').length, 0);
+  await r.webSocketMessage(a2, JSON.stringify({ type: 'hello', version: '0.4.31' }));
+  assert.equal(a2.sent.filter((m) => m.type === 'call').length, 0, 'no resend before 0.4.32');
+  const a3 = fakeSocket('tokA', 3); sockets.push(a3);
+  await r.webSocketMessage(a3, JSON.stringify({ type: 'hello', version: '0.4.32' }));
+  assert.deepEqual(a3.lastCall(), a1.lastCall(), 'the same call frame again');
+  await r.webSocketMessage(a3, JSON.stringify({ type: 'started', id }));
+  const a4 = fakeSocket('tokA', 4); sockets.push(a4);
+  await r.webSocketMessage(a4, JSON.stringify({ type: 'hello', version: '0.4.32' }));
+  assert.equal(a4.sent.filter((m) => m.type === 'call').length, 0, 'acked: not resent');
+  await reply(r, a4, id, { result: 'tab', tabId: 9 });
+  assert.equal((await p).result, 'tab');
 });
 
 test('resend: a replay refusal of the resent copy is ignored (the first copy\'s held result settles it); browsers before 0.4.30 get no resend', async () => {

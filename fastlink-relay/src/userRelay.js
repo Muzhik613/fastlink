@@ -77,8 +77,10 @@ const NATIVE_TAB_ACTIONS = new Set(['fast_switch', 'fast_close']);
 // SEALED calls only — `fast_sealed`, whose args are ciphertext the relay can't read
 // (fast-ext/secure-only/src/secure/sealed.js). null for a normal browser.
 export const SEALED_ACTION = 'fast_sealed';
-// Sealed calls lost on a replaced socket are resent from this extension version on.
-const RESEND_MIN_VERSION = '0.4.30';
+// Calls lost on a replaced socket are resent from these extension versions on (#resendUnacked):
+// sealed calls from 0.4.30 (acks every call it receives; each sealed seq runs once), every
+// other call from 0.4.32 (runs each call id once per Chrome session).
+const RESEND_MIN_VERSION = { sealed: '0.4.30', any: '0.4.32' };
 function secureInfo(ws) {
   try { const a = ws.deserializeAttachment() || {}; return a.secure ? { locked: !!a.locked, keyId: a.keyId || null, evaluate: a.evaluate || null } : null; } catch { return null; }
 }
@@ -466,7 +468,7 @@ export class UserRelay extends DurableObject {
       // A resent copy the browser refuses as a replay means the first copy reached it and
       // ran: keep waiting for that one's (held) result instead of failing the call.
       if (entry.resent && msg.type === 'result' && msg.code === 'sealed' && msg.error === 'sealed: replayed request') return;
-      entry.acked = true;   // the browser has this call: never re-sent (#resendSealed)
+      entry.acked = true;   // the browser has this call: never re-sent (#resendUnacked)
       if (msg.type === 'queued') {
         this.#arm(msg.id, entry, entry.sentAt + Math.max(QUEUE_MAX_MS, entry.timeoutMs));
         return;
@@ -508,8 +510,8 @@ export class UserRelay extends DurableObject {
         if (token && this.env.DB) {
           try { await this.#recordLock(token, keyId); } catch { /* non-fatal */ }
         }
-        this.#resendSealed(ws);
       }
+      this.#resendUnacked(ws);
       // The extension re-asserts the user's pause toggle on (re)connect when it
       // carries one, so the durable relay flag converges with the popup's state.
       if (typeof msg.drivingPaused === 'boolean') {
@@ -552,18 +554,20 @@ export class UserRelay extends DurableObject {
     }
   }
 
-  // A secure browser redialed (aliya 11-20: the socket was replaced ~1 s after a sealed
-  // call went out on the old one, which the browser never read; the call sat silent
-  // until the 30 s deadline). Its sealed calls still unanswered on an OLDER socket, with
-  // no queued/started/result frame, go out again on this one, same id and deadline.
-  // Safe: the browser accepts each sealed seq once (replay window in chrome.storage),
-  // so a copy it already ran is refused, never run twice. Unsealed calls are never resent.
-  // Only from 0.4.30, which acknowledges every call it receives (queued/started).
-  #resendSealed(ws) {
+  // A browser redialed. Its calls still unanswered on an OLDER socket, with no
+  // queued/started/result frame, go out again on this one, same id and deadline.
+  // aliya 11-20: the socket was replaced ~1 s after a sealed call went out on the old one;
+  // mpc1 11-20: jewel-api restarts Chrome every 10 min and a fast_tab sent in the gap went
+  // to the dead Chrome's socket. Either way the call sat silent until the 30 s deadline.
+  // Never run twice: a sealed seq is accepted once (replay window in chrome.storage), and
+  // from 0.4.32 a call id runs once per Chrome session (relayClient claimCall).
+  #resendUnacked(ws) {
     const token = this.#tokenOf(ws);
-    if (!token || !versionAtLeast(extVersion(ws), RESEND_MIN_VERSION)) return;
+    if (!token) return;
+    const v = extVersion(ws);
     for (const [id, e] of this.pending) {
-      if (e.deviceToken !== token || e.ws === ws || e.acked || e.action !== SEALED_ACTION) continue;
+      if (e.deviceToken !== token || e.ws === ws || e.acked) continue;
+      if (!versionAtLeast(v, e.action === SEALED_ACTION ? RESEND_MIN_VERSION.sealed : RESEND_MIN_VERSION.any)) continue;
       e.ws = ws; e.resent = true;
       clearTimeout(e.grace); e.grace = null;
       try { ws.send(JSON.stringify({ type: 'call', id, action: e.action, args: e.args })); } catch { /* deadline still fails it */ }

@@ -218,10 +218,49 @@ async function onMessage(ws, e) {
     return;
   }
   if (msg.type !== 'call' || msg.id == null || !msg.action) return;   // events/hello/etc. — ignore inbound
-  const reply = await watch.run(msg.id, msg.action, (ctl) =>
-    runCall(msg, (action, args) => queue.submit({ id: msg.id, action, args, cancelled: ctl.timedOut }), resolveTarget));
-  // Spread reply so {result} or {error, ...extras} (plus origin/tabId) reach the relay verbatim.
-  if (!replies.sendResult({ type: 'result', id: msg.id, ...reply }, ws)) connLog('result_held', { action: msg.action });
+  // The relay resends a call it got no ack for when this browser redials (the first copy
+  // may have gone to a socket that was already gone). A call id runs at most once per
+  // Chrome session: a copy of one this worker is running is dropped (its result comes on
+  // the live socket); one an earlier worker took and lost answers call_interrupted.
+  const seen = await claimCall(msg.id);
+  if (seen === 'running') { connLog('resend_dropped', { action: msg.action }); return; }
+  if (seen === 'interrupted') {
+    connLog('resend_interrupted', { action: msg.action });
+    replies.sendResult({ type: 'result', id: msg.id, code: 'call_interrupted', error: 'FastLink restarted while running this call, so it may have partly run: read the page before retrying.' }, ws);
+    return;
+  }
+  try {
+    const reply = await watch.run(msg.id, msg.action, (ctl) =>
+      runCall(msg, (action, args) => queue.submit({ id: msg.id, action, args, cancelled: ctl.timedOut }), resolveTarget));
+    // Spread reply so {result} or {error, ...extras} (plus origin/tabId) reach the relay verbatim.
+    if (!replies.sendResult({ type: 'result', id: msg.id, ...reply }, ws)) connLog('result_held', { action: msg.action });
+  } finally {
+    runningCalls.delete(msg.id);
+  }
+}
+
+// Call ids this Chrome session has taken: in memory (this worker) and in
+// chrome.storage.session (survives a worker restart, cleared when Chrome restarts, so a
+// new Chrome runs a resent call). Returns 'new' (claimed: run it), 'running' or 'interrupted'.
+const CALL_IDS_KEY = 'fastlink.callIds';
+const CALL_IDS_MAX = 200;
+const runningCalls = new Set();
+let callIdsWrite = Promise.resolve();
+function claimCall(id) {
+  if (runningCalls.has(id)) return 'running';
+  runningCalls.add(id);
+  // Serialized read-modify-write, so two calls arriving together both get recorded.
+  const step = callIdsWrite.then(async () => {
+    let ids = [];
+    try { ids = (await chrome.storage.session.get(CALL_IDS_KEY))[CALL_IDS_KEY] || []; } catch { /* no session storage: memory only */ }
+    if (ids.includes(id)) return 'interrupted';
+    ids.push(id);
+    if (ids.length > CALL_IDS_MAX) ids.splice(0, ids.length - CALL_IDS_MAX);
+    try { await chrome.storage.session.set({ [CALL_IDS_KEY]: ids }); } catch { /* memory only */ }
+    return 'new';
+  });
+  callIdsWrite = step.catch(() => {});
+  return step.then((r) => { if (r !== 'new') runningCalls.delete(id); return r; });
 }
 
 function scheduleReconnect() {
