@@ -1,12 +1,12 @@
 # FastLink: Chrome Web Store dashboard answers (REVIEWED, paste-ready)
 
-## STATUS (2026-11-16): 0.4.14 live and Listed; 0.4.31 packaged, not yet uploaded
+## STATUS (2026-11-22): 0.4.14 live and Listed; 0.4.32 packaged, not yet uploaded (0.4.31 was never uploaded)
 
-**Dashboard item:** `eiifomohibgelcdhadklpmdnoblpalde` (publisher YTX, yaakov@ytx.app, non-trader). The live, public version is **0.4.14** (store page checked 2026-11-16: "Updated November 15, 2026", 282 KiB).
+**Dashboard item:** `eiifomohibgelcdhadklpmdnoblpalde` (publisher YTX, yaakov@ytx.app, non-trader). The live, public version is **0.4.14** (store page checked 2026-11-16 and again 2026-11-22: "Updated November 15, 2026", 282 KiB).
 
-**Next package:** `fast-ext/dist/fastlink-0.4.31.zip` (`bash fast-ext/scripts/package.sh`; sha256 `53abf52e10aa823b8668d121c41d31ae5a55cf6b81914d682d2736be88a7f94e`, 53 files). It has no `key`, no `update_url`, and fast_fetch is replaced by a stub (see below). Upload steps: `STORE-UPLOAD.md`.
+**Next package:** `fast-ext/dist/fastlink-0.4.32.zip` (`bash fast-ext/scripts/package.sh`; sha256 `646da865066ff3440d34541e64bd8397906ab8e4667298dfce0a6d90339a53d8`, same file list as 0.4.31). It has no `key`, no `update_url`, and fast_fetch is replaced by a stub (see below). Upload steps: `STORE-UPLOAD.md`.
 
-### What changed, 0.4.14 → 0.4.31 (store copy)
+### What changed, 0.4.14 → 0.4.32 (store copy)
 - **Manifest:** only `version`. Permissions, host permissions, content scripts and CSP are unchanged.
 - **debugger:** the same four CDP commands (Input.dispatchMouseEvent, Input.dispatchKeyEvent, Input.insertText, Page.captureScreenshot). The new hand-off feature uses two of them.
 - **Remote code:** none. No eval, new Function, userScripts or Runtime.evaluate. Every injected function is packaged.
@@ -15,12 +15,13 @@
   - Remote restart for updates, `fast_update` (0.4.17). In the store copy this means `chrome.runtime.requestUpdateCheck` against the store, then a reload.
   - File upload into a page's `<input type=file>`, `fast_upload` (0.4.31).
   - Options → Connection log (0.4.30). Local only; scalar values only.
-- **Fixes (0.4.19–0.4.30):**
+- **Fixes (0.4.19–0.4.32):**
   - Typing: real key presses; a fallback when the tab is in the background; nested editors; password fields.
   - Frames: one frame enumeration shared by every tool (Stripe and other embedded checkouts).
   - Discarded tabs are loaded before a tool acts on them.
   - Large pages are read in windows.
   - Each call has a watchdog, so every call gets an answer.
+  - A call lost when the connection is replaced (for example, a Chrome restart) is resent and runs once (0.4.32). This is a relayClient.js change only; manifest, permissions and listing text are unchanged.
   - Clearer errors: a host the browser blocks for every extension (Edge), a disabled field.
 - **Left out of the store zip on purpose:**
   - `fast_fetch` (0.4.21) is replaced by a stub. It is a relay-built, credentialed fetch for service tokens only, which run the owner's own feed browsers. The relay never offers it to store users. Keeping it out also keeps a "server-driven request with the user's cookies" off the reviewer's desk.
@@ -35,7 +36,7 @@
 
 ---
 
-**Package:** `fastlink-0.4.31.zip` (`fast-ext/scripts/package.sh`; no `key`, no `update_url`).
+**Package:** `fastlink-0.4.32.zip` (`fast-ext/scripts/package.sh`; no `key`, no `update_url`).
 
 ## 1. Package
 Upload the zip from `scripts/package.sh` to the draft and save. Submit only with Yaakov's OK.
