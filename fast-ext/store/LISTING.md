@@ -1,6 +1,6 @@
 # FastLink: Chrome Web Store dashboard answers (REVIEWED, paste-ready)
 
-## STATUS (2026-11-22): 0.4.14 live and Listed; 0.4.32 packaged, not yet uploaded (0.4.31 was never uploaded)
+## STATUS (2026-11-22): 0.4.14 live; 0.4.32 SUBMITTED for review 2026-11-22 15:4x CT (auto-publish on pass) by the boss
 
 **Dashboard item:** `eiifomohibgelcdhadklpmdnoblpalde` (publisher YTX, yaakov@ytx.app, non-trader). The live, public version is **0.4.14** (store page checked 2026-11-16 and again 2026-11-22: "Updated November 15, 2026", 282 KiB).
 
