@@ -188,7 +188,7 @@ being actively edited right now, so it is a **landmine, not a delete** (§6).
 | `fastlink-cloud-mcp/` | **0** (gitignored) | 3.7M / 62 files | `rm -rf` — **no commit needed** |
 | `fast-ext-dad/` | **0** (gitignored) | 1.5M / 113 files | `rm -rf` — **but confirm with owner first** (see §6) |
 | `fastlink-proxy/` | 4 | 632K | delete + commit; superseded by `fastlink-relay/` per CLAUDE.md |
-| `fastlink-site/` | 7 | 84K | **flag only** — a marketing site the owner never mentioned; not mine to remove |
+| `fastlink-site/` | 7 | 84K | **deleted 2026-11-22** — stale June draft; the live fastlink.ytx.app is built from `~/code/ytx` |
 
 **Tier C ≈ 5.8M / ~35,000 lines**, of which only ~18,000 lines (4 files) are even in git.
 
@@ -437,7 +437,7 @@ a 1,064-line module into a ~40-line fallback. Do **not** invest in refactoring P
 
 1. **`fast-ext-dad/`** — does a Chrome profile still load it unpacked from this path? It is
    gitignored; deletion is unrecoverable.
-2. **`fastlink-site/`** — keep, or out with the legacy trees?
+2. ~~**`fastlink-site/`**~~ — resolved 2026-11-22: deleted (the live site's source is `~/code/ytx`).
 3. **`fast_evaluate`** — confirm: keep implemented for the bench scorer + Claude Code dev use, hidden
    from every model toolset, with a local gate added? (Deleting it outright would blind the benchmark.)
 4. **Tester install channel** (`release/`, `scripts/install-tester*`, `pull-extension*`) — are there
