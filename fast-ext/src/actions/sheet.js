@@ -18,6 +18,7 @@ async function findTarget(targetId, hosts) {
   const t = ts.find((x) => x.id === targetId);
   if (!t) return { error: `No page target ${targetId} (the sheet closed?). fast_list shows the open ones.`, code: 'no_target' };
   if (t.tabId != null) return { error: `Target ${targetId} is tab ${t.tabId}: use tabId for tabs.`, code: 'is_tab' };
+  if (t.type !== 'page') return { error: `Target ${targetId} is a frame inside a tab, not a sheet: use that tab's tabId.`, code: 'not_sheet' };
   if (!isWeb(t.url)) return { error: 'That target is not a web page.', code: 'no_target' };
   if (hosts && !hosts.includes(hostOf(t.url))) return { error: `This token may use only sheets on ${hosts.join(', ')}.`, code: 'host_blocked' };
   return { target: t };
@@ -38,7 +39,11 @@ export async function listSheets(hosts = null) {
   try { ts = await chrome.debugger.getTargets(); } catch { return []; }
   const out = [];
   for (const t of ts) {
-    if (t.tabId != null || !(t.type === 'page' || t.type === 'other') || !isWeb(t.url)) continue;
+    // a sheet is a whole page with no tab; cross-origin iframes also come back tab-less (as 'other')
+    if (t.tabId != null || t.type !== 'page' || !isWeb(t.url)) {
+      if (attached.has(t.id)) { attached.delete(t.id); chrome.debugger.detach({ targetId: t.id }).catch(() => {}); }
+      continue;
+    }
     if (hosts && !hosts.includes(hostOf(t.url))) continue;
     let openerTabId;
     try {

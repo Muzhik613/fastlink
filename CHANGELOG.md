@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.37: sheets are tab-less *page* targets only
+- **What:** `sheet.js` lists (and acts on) only `type:'page'` targets with no tab; tab-less cross-origin iframes (type `other`: accounts.google.com RotateCookiesPage in Messages, kaptcha on Dunkin) are no longer listed as sheets, and any session 0.4.36 held on them is detached.
+- **Why:** live on hvm-boss right after 0.4.36: fast_list showed those frames as sheets.
+
 ## 2026-11-26 — extension 0.4.36 + relay: Google Pay sheet by targetId; origin-limited tokens; blob:/binary fast_fetch
 - **What:**
   - `fast-ext/src/actions/sheet.js`: page targets that are not tabs (the Google Pay payment sheet `pay.google.com/gp/p/ui/pay`, a Payment Handler window chrome.tabs never sees) are listed after the tabs in fast_list as `{targetId, kind:'sheet', url, title, openerTabId}` (chrome.debugger.getTargets), and fast_snapshot / fast_screenshot / fast_click / fast_click_xy take `targetId`: a debugger session on that target, controls read with top-page coordinates (same-origin frames included), clicks as real mouse input. Read and click only. Service tokens: only pay.google.com sheets, only when the token has Dunkin origins (`sheetHosts`); needs 0.4.36 (`SHEET_MIN_VERSION`).
