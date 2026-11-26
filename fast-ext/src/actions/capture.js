@@ -10,7 +10,7 @@
 
 import { cdp, onDebuggerAttach } from './input.js';
 import { getInjectableTab } from '../util.js';
-import { registerKind, addWatch, watchesOnTab, registrySync, pushEvents, endWatch, ready } from './watch.js';
+import { registerKind, addWatch, watchesOnTab, registrySync, pushEvents, endWatch, ready, originOf } from './watch.js';
 
 export const BODY_MAX_DEFAULT = 512 * 1024;
 const POST_DATA_MAX = 64 * 1024;
@@ -45,9 +45,12 @@ export async function captureStart(args = {}) {
   const got = await getInjectableTab(args.tabId);
   if (got.error) return got;
   const tabId = got.tab.id;
+  const origin = originOf(got.tab.url);
+  if (!origin) return { error: 'fast_capture works only on an http(s) page' };
+  if (chk.spec.origins && !chk.spec.origins.includes(origin)) return { error: `fast_capture: the tab is on ${origin}, not an allowed origin` };
   try { await cdp(tabId, 'Network.enable', { maxPostDataSize: POST_DATA_MAX }); }
   catch (e) { return { error: `fast_capture could not watch this tab's network: ${e?.message || e}`, ...(e?.code ? { code: e.code } : {}) }; }
-  await addWatch(id, { kind: 'request', tabId, spec: chk.spec });
+  await addWatch(id, { kind: 'request', tabId, origin, spec: chk.spec });
   return { watchId: id, tabId, url: chk.spec.url, ...(chk.spec.method ? { method: chk.spec.method } : {}), body: chk.spec.body };
 }
 
@@ -117,7 +120,9 @@ try {
     if (method === 'Network.requestWillBeSent') {
       const url = p.request?.url || '';
       const m = String(p.request?.method || 'GET').toUpperCase();
-      const ids = caps.filter(([, w]) => requestMatches(w.spec, url, m)).map(([id]) => id);
+      // only requests made by a page on the watch's own origin (never the next site's document)
+      const doc = originOf(p.documentURL || '');
+      const ids = caps.filter(([, w]) => doc === w.origin && requestMatches(w.spec, url, m)).map(([id]) => id);
       if (!ids.length) { inFlight.delete(p.requestId); return; }   // a redirect off the pattern
       const wire = extraHeaders.get(p.requestId);
       inFlight.set(p.requestId, {

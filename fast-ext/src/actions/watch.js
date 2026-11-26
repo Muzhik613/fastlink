@@ -64,6 +64,10 @@ export function registrySync() { return registry; }
 export function watchesOnTab(tabId, kind) {
   return Object.entries(registry || {}).filter(([, w]) => w.tabId === tabId && (!kind || w.kind === kind));
 }
+// The origin a watch was approved on (the relay's consent gate and a service token's scope
+// judged that one site): a tab that commits any other origin ends its watches.
+export function originOf(url) { try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.origin : ''; } catch { return ''; } }
+
 export async function addWatch(id, w) {
   await ready;
   registry[id] = { ...w, createdAt: Date.now() };
@@ -149,7 +153,7 @@ async function installIn(tabId, id, spec) {
   const r = await injectInTab({ world: 'ISOLATED', tabId, func: installWatch, args: [id, spec] });
   if (r.error) return r;
   const out = JSON.parse(r.result);
-  return out.error ? out : { ...out, tabId: r.tab.id };
+  return out.error ? out : { ...out, tabId: r.tab.id, origin: originOf(r.tab.url) };
 }
 
 // fast_watch {watchId, tabId, selector, fields?, key?, limit?} → the items now.
@@ -163,19 +167,22 @@ export async function watchStart(args = {}) {
     const r = await installIn(args.tabId, id, chk.spec);
     if (r.error) return r;
     const items = maskCardNumbers(r.items);
-    await addWatch(id, { kind: 'dom', tabId: r.tabId, spec: chk.spec });
+    if (!r.origin) return { error: 'fast_watch works only on an http(s) page' };
+    await addWatch(id, { kind: 'dom', tabId: r.tabId, origin: r.origin, spec: chk.spec });
     await session.set(STATE_PREFIX + id, stateOf(items, chk.spec.key));
     return { watchId: id, tabId: r.tabId, matches: r.matches, items };
   });
 }
 
-// A page reported its list (or a reload re-read it): push what changed.
+// A page reported its list (or a reload re-read it): push what changed. Only from the
+// watch's own origin.
 // An empty list right after a load is a page still rendering, never "everything removed".
-function onItems(id, tabId, items) {
+function onItems(id, tabId, items, origin) {
   return serial(id, async () => {
     await ready;
     const w = registry[id];
     if (!w || w.kind !== 'dom' || w.tabId !== tabId) return false;
+    if (origin !== w.origin) return false;   // a report from a page on another site is never sent
     const prev = (await session.get(STATE_PREFIX + id)) || [];
     if (!items.length && prev.length) return true;
     const next = stateOf(maskCardNumbers(items), w.spec.key);
@@ -199,20 +206,30 @@ try {
     if (msg?.type !== 'fastlink:watch-items' || typeof msg.watchId !== 'string' || !Array.isArray(msg.items)) return false;
     const tabId = sender?.tab?.id;
     if (typeof tabId !== 'number' || sender.id !== chrome.runtime.id) return false;
-    onItems(msg.watchId, tabId, msg.items).then((known) => {
+    onItems(msg.watchId, tabId, msg.items, originOf(sender.url || sender.tab?.url || '')).then((known) => {
       // a page still running a watch this browser has stopped: stop it there
       if (known === false) stopDomInPage(msg.watchId, { tabId });
     }).catch(() => {});
     return false;
   });
+  // The tab committed a page: watches approved for another site end before it loads anything.
+  chrome.webNavigation.onCommitted.addListener(async (d) => {
+    if (d.frameId !== 0) return;
+    await ready;
+    const now = originOf(d.url);
+    for (const [id, w] of watchesOnTab(d.tabId)) {
+      if (w.origin && now !== w.origin) endWatch(id, `the tab left ${w.origin} (now ${now || 'a non-web page'})`).catch(() => {});
+    }
+  });
   chrome.webNavigation.onCompleted.addListener(async (d) => {
     if (d.frameId !== 0) return;
     await ready;
     for (const [id, w] of watchesOnTab(d.tabId, 'dom')) {
+      if (originOf(d.url) !== w.origin) continue;
       serial(id, async () => {
         const r = await installIn(d.tabId, id, w.spec);
         return r.error ? null : r.items;
-      }).then((items) => items && onItems(id, d.tabId, items)).catch(() => {});
+      }).then((items) => items && onItems(id, d.tabId, items, originOf(d.url))).catch(() => {});
     }
   });
   chrome.tabs.onRemoved.addListener(async (tabId) => {

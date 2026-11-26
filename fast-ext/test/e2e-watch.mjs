@@ -190,6 +190,18 @@ try {
   await sleep(1500);
   check('no frames after stop', watchFrames.length === nAfterStop);
 
+  // a navigation to another origin (localhost ≠ 127.0.0.1) ends both kinds, nothing from the new site is sent
+  await call('fast_watch', { watchId: 'w-test-000003', tabId, selector: '.row' });
+  await call('fast_capture', { watchId: 'c-test-000003', tabId, url: '/api/cart' });
+  await sleep(1000);
+  await call('fast_nav', { tabId, url: `http://localhost:${PORT}/page`, noSnapshot: true });
+  await until(() => eventsOf('w-test-000003').some((e) => e.kind === 'ended') && eventsOf('c-test-000003').some((e) => e.kind === 'ended'), 5000);
+  await sleep(2000);
+  const cross = [...eventsOf('w-test-000003'), ...eventsOf('c-test-000003')];
+  check('other origin → both ended', cross.filter((e) => e.kind === 'ended' && /left http:\/\/127\.0\.0\.1/.test(e.reason)).length === 2, JSON.stringify(cross.filter((e) => e.kind === 'ended')));
+  check('nothing captured from the other origin', !cross.some((e) => /localhost/.test(e.url || '')));
+  await call('fast_nav', { tabId, url: `http://127.0.0.1:${PORT}/page?quiet`, noSnapshot: true });
+
   // tab close ends a watch
   await call('fast_watch', { watchId: 'w-test-000002', tabId, selector: '.row' });
   await call('fast_close', { tabId });

@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.34: a watch ends when its tab leaves the site it was approved on (security review)
+- **What:** `watch.js` / `capture.js`: every watch records the origin it started on. A top-frame commit to any other origin ends the tab's watches (`ended`, reason "the tab left …") before that page loads; DOM reports from another origin are dropped; a capture records only requests whose `documentURL` is on its origin (the next site's own document request included).
+- **Why:** 0.4.33 re-installed a DOM watch after any navigation and kept capturing across sites, so a watch approved for one site (consent gate, service-token origin scope) could stream another site's content.
+- **Verified:** fast-ext 70/70; e2e 19/19 incl. 127.0.0.1 → localhost navigation ends both kinds with nothing from the new origin sent.
+
 ## 2026-11-26 — extension 0.4.33 + relay: live watches (fast_watch, fast_capture, fast_watch_read, fast_watch_stop) and fast_text `limit`
 - **What:**
   - `fast_watch {tabId, selector, fields?, key?, limit?}`: a MutationObserver in the page's isolated world re-reads the matching items after every DOM burst (a microtask, so a background tab is not throttled); the service worker diffs against the last list (kept in `chrome.storage.session`) and pushes add / change / remove events. A page load re-installs the watch and diffs against the stored list; an empty list right after a load is "still rendering", never "all removed".
