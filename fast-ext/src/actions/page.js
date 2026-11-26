@@ -2791,8 +2791,36 @@ async function runPageAction(action, args) {
       el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
       el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
     } else {
-      el.innerText = append ? (el.innerText + v) : v; // contenteditable: "" clears
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: v }));
+      // contenteditable: the events a real paste produces, so framework models (Angular in
+      // Messages for web, Lexical, ProseMirror) take the text: select the content, send a
+      // cancelable beforeinput (insertFromPaste + the text); an editor that cancels it applied the
+      // text itself. Else write it through the editing pipeline (execCommand insertText fires
+      // input), or — refused without window focus — at the selection, then send input.
+      const kind = v === '' ? 'deleteContentBackward' : 'insertFromPaste';
+      let dt = null;
+      try { dt = new DataTransfer(); dt.setData('text/plain', v); } catch {}
+      const evInit = { bubbles: true, composed: true, inputType: kind, data: v || null, ...(dt ? { dataTransfer: dt } : {}) };
+      let range = null;
+      try {
+        el.focus({ preventScroll: true });
+        const sel = window.getSelection();
+        range = document.createRange();
+        range.selectNodeContents(el);
+        if (append) range.collapse(false);
+        sel.removeAllRanges(); sel.addRange(range);
+      } catch { range = null; }
+      const handled = !el.dispatchEvent(new InputEvent('beforeinput', { ...evInit, cancelable: true }));
+      if (!handled) {
+        let viaEditing = false;
+        try { viaEditing = v === '' ? (append || document.execCommand('delete', false)) : document.execCommand('insertText', false, v); } catch { viaEditing = false; }
+        if (viaEditing && v && !(el.innerText || '').replace(/\u00a0/g, ' ').includes(v.split('\n')[0])) viaEditing = false;
+        if (!viaEditing) {
+          if (range && !append) { range.deleteContents(); if (v) range.insertNode(document.createTextNode(v)); }
+          else if (append) el.append(document.createTextNode(v));
+          else el.innerText = v; // contenteditable: "" clears
+          el.dispatchEvent(new InputEvent('input', evInit));
+        }
+      }
     }
     const out = { filled: { tag: found.tag, label: found.label, placeholder: found.placeholder, name: found.name }, valueSet: v };
     // fast_fill writes the value with no key presses. A sign-in page's risk check can
