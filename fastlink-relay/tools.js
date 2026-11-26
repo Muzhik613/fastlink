@@ -108,14 +108,14 @@ const BROWSER_TOOLS = [
   },
   {
     name: 'fast_fetch',
-    description: 'Service tokens only: fetch(url) from inside an open tab on the same site, with the page\'s own cookies. Returns {status, body} (body cut at 512 KB). Only origins allowed for the token; GET, POST or HEAD.',
+    description: 'Service tokens only: fetch(url) from inside an open tab on the same site, with the page\'s own cookies. Returns {status, body} (body cut at 512 KB). Only origins and methods allowed for the token.',
     inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'Absolute https URL on the tab\'s own origin.' },
-        method: { type: 'string', enum: ['GET', 'POST', 'HEAD'], description: 'Default GET.' },
+        method: { type: 'string', enum: ['GET', 'POST', 'DELETE', 'HEAD'], description: 'Default GET.' },
         headers: { type: 'object', description: 'Extra request headers (strings).' },
-        body: { type: 'string', description: 'Request body for POST (up to 64 KB).' },
+        body: { type: 'string', description: 'Request body for POST or DELETE (up to 64 KB).' },
       },
       required: ['url', 'tabId'],
     },

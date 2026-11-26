@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — relay: per-token tool allowlist (agents.tools), fast_fetch DELETE; jewel-api scope widened, deskhub-rcs token
+- **What:** migration 0012 `agents.tools` (JSON list): the worker passes it as `X-Fastlink-Tools`; tools/list shows only those and any other call is refused (`toolNotAllowed`). `fast_fetch` takes DELETE (a body with POST or DELETE); methods stay per origin and browser in `fetch_origins`. D1: jewel-api browsers winytx, mpc1, hvm-ytx, hvm-boss; origins jewelosco (hvm-ytx GET/HEAD/POST/DELETE, mpc1 GET/POST, winytx + hvm-boss GET/HEAD), www/api-idp.dunkindonuts.com (hvm-ytx + hvm-boss GET/HEAD/POST/DELETE). New token deskhub-rcs: hvm-boss only, tools fast_list/fast_text/fast_watch/fast_watch_read/fast_watch_stop, no fetch origins (→ no capture), in `~/.secrets/fastlink-rcs.json` on hvm.
+- **Why:** uber-android (Jewel + Dunkin) and deskhub (rcswatch) move off hvm-boss CDP.
+- **Verified:** relay 94/94 subtests.
+
 ## 2026-11-26 — extension 0.4.34: a watch ends when its tab leaves the site it was approved on (security review)
 - **What:** `watch.js` / `capture.js`: every watch records the origin it started on. A top-frame commit to any other origin ends the tab's watches (`ended`, reason "the tab left …") before that page loads; DOM reports from another origin are dropped; a capture records only requests whose `documentURL` is on its origin (the next site's own document request included).
 - **Why:** 0.4.33 re-installed a DOM watch after any navigation and kept capturing across sites, so a watch approved for one site (consent gate, service-token origin scope) could stream another site's content.

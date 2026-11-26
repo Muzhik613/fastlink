@@ -16,7 +16,12 @@ Every call is one JSON-RPC `tools/call`. No MCP client library is needed.
   - A call to any other browser, or a sealed call, is refused.
   - `fast_status` lists only those browsers.
   - Always pass `browser`, unless the token has exactly one.
-- **Revoke:** set `revoked = 1` on its row in the relay's `agents` table (label `jewel-api`).
+- **Tools:** a token with an `agents.tools` list sees and may call only those tools (others are
+  refused with `toolNotAllowed`).
+- **Tokens (11-26):** `jewel-api` (`~/.secrets/fastlink-relay.json`): browsers winytx, mpc1, hvm-ytx,
+  hvm-boss; fetch/capture origins below. `deskhub-rcs` (`~/.secrets/fastlink-rcs.json`): hvm-boss
+  only; tools fast_list, fast_text, fast_watch, fast_watch_read, fast_watch_stop; no fetch/capture.
+- **Revoke:** set `revoked = 1` on its row in the relay's `agents` table (by `label`).
 
 ## Request / response
 
@@ -47,19 +52,23 @@ POST /mcp
 - **Read text:** `fast_text {browser, tabId, selector?, offset?, maxLen?}` → `{truncated, next?, text, offset, length}`. One call returns at most 2,000,000 characters; while `truncated:true`, call again with `offset:next` (same selector) and join the pieces.
 - **Close the tab:** `fast_close {browser, tabId}`.
 - **Calls are capped at about 30 s each.** Split long waits into several `fast_wait` calls.
-- **Fetch from inside a tab (`fast_fetch`):** `{browser, tabId, url, method?, headers?, body?}` →
+- **Fetch from inside a tab (`fast_fetch`):** `{browser, tabId, url, method?, headers?, body?}` (method GET, POST, DELETE or HEAD; a body with POST or DELETE) →
   `{status, ok, url, contentType, length, truncated, body}`.
   - It runs one fixed `fetch()` in the tab's own page, with that site's cookies and bot-check
     state, so the site's own JSON API answers as it would for the page (~0.5 s).
   - Only for tokens with allowed fetch origins (jewel-api: `https://www.jewelosco.com`), and only
-    same-origin as the tab. GET, POST or HEAD; a body only with POST (up to 64 KB).
+    same-origin as the tab. A body only with POST or DELETE (up to 64 KB).
   - `Cookie`, `Host`, `Origin`, `Referer` headers are dropped (the browser sets them).
   - The response body is cut at 512 KB (`truncated:true`) and returned byte-exact.
   - Pattern: open one tab on the site (`fast_tab`, background + scoped), keep it, call
     `fast_fetch` against it repeatedly; reopen it if a call says the tab is gone or moved.
-  - Methods per browser for jewel-api: mpc1 GET/POST (clean always-on Chrome on mpc, no
-    account); winytx GET/HEAD only (it is Yaakov's own logged-in profile; the relay refuses POST
-    there).
+  - Methods per origin and browser for jewel-api (anything else is refused by the relay):
+    - `https://www.jewelosco.com`: mpc1 GET/POST; hvm-ytx GET/HEAD/POST/DELETE; winytx and
+      hvm-boss GET/HEAD (logged-in personal profiles).
+    - `https://www.dunkindonuts.com`, `https://api-idp.dunkindonuts.com`: hvm-ytx and hvm-boss
+      GET/HEAD/POST/DELETE.
+  - The URL must be on the tab's own origin: a call to `api-idp.dunkindonuts.com` needs a tab open
+    on that origin (from a `www` tab use `fast_capture` to see those requests instead).
 
 ## Watching a page or its requests (extension 0.4.33+)
 

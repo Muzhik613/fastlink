@@ -65,7 +65,7 @@ test('fast_fetch: other origins, non-https, no tabId, bad method and GET with a 
     { tabId: 5, url: 'https://evil.example/x' },
     { tabId: 5, url: 'http://www.jewelosco.com/x' },
     { url: 'https://www.jewelosco.com/x' },
-    { tabId: 5, url: 'https://www.jewelosco.com/x', method: 'DELETE' },
+    { tabId: 5, url: 'https://www.jewelosco.com/x', method: 'PUT' },
     { tabId: 5, url: 'https://www.jewelosco.com/x', body: 'q=1' },
   ];
   for (const a of bad) assert.ok((await mcpCall(r, 'fast_fetch', { browser: 'office', ...a }, FETCH)).data.error, JSON.stringify(a));

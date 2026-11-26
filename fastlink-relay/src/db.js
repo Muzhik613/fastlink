@@ -545,7 +545,7 @@ export async function lookupAgent(db, agentToken) {
   if (!agentToken) return null;
   const hash = await sha256Hex(agentToken);
   const row = await db
-    .prepare(`SELECT user_id, label, revoked, browsers, fetch_origins FROM agents WHERE token_hash = ?`)
+    .prepare(`SELECT user_id, label, revoked, browsers, fetch_origins, tools FROM agents WHERE token_hash = ?`)
     .bind(hash)
     .first();
   if (!row) return null;
@@ -556,7 +556,9 @@ export async function lookupAgent(db, agentToken) {
   try { const b = row.browsers ? JSON.parse(row.browsers) : null; if (Array.isArray(b)) browsers = b.map((x) => String(x).toLowerCase()); } catch { browsers = []; }   // unreadable scope = nothing
   let fetchOrigins = null;
   try { const f = row.fetch_origins ? JSON.parse(row.fetch_origins) : null; if (Array.isArray(f)) fetchOrigins = f; } catch { fetchOrigins = null; }   // entries: "https://site" or {origin, browsers:{name:[methods]}}
-  return { userId: row.user_id, label: row.label, revoked: !!row.revoked, browsers, fetchOrigins };
+  let tools = null;
+  try { const t = row.tools ? JSON.parse(row.tools) : null; if (Array.isArray(t)) tools = t.map(String); } catch { tools = []; }   // unreadable allowlist = nothing
+  return { userId: row.user_id, label: row.label, revoked: !!row.revoked, browsers, fetchOrigins, tools };
 }
 
 // A machine's public id: the first 12 hex chars of its token hash (never the token).

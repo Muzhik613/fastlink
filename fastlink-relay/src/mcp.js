@@ -117,9 +117,11 @@ async function handleOne(rpc, relay, trace) {
     case 'tools/list':
       // fast_fetch exists only for service tokens that have fetch origins.
       {
-        const tools = fetchScope(trace) ? TOOLS : TOOLS.filter((t) => t.name !== 'fast_fetch');
+        let tools = fetchScope(trace) ? TOOLS : TOOLS.filter((t) => t.name !== 'fast_fetch');
+        const allow = toolScope(trace);
+        if (allow) tools = tools.filter((t) => allow.includes(t.name));
         // fast_evaluate only for an operator account (never a scoped service token).
-        const evalOn = !browserScope(trace) && (await relay.evalPolicy()).allowEvaluate;
+        const evalOn = !browserScope(trace) && !allow && (await relay.evalPolicy()).allowEvaluate;
         return ok(id, { tools: evalOn ? [...tools, EVALUATE_TOOL] : tools });
       }
     case 'tools/call': {
@@ -335,6 +337,12 @@ function browserScope(trace) {
   if (!h) return null;
   try { const a = JSON.parse(h); return Array.isArray(a) ? a.map((x) => String(x).toLowerCase()) : []; } catch { return []; }
 }
+// Tools this caller may list and call (set only by the worker, agents.tools), else null.
+function toolScope(trace) {
+  const h = trace?.request?.headers?.get('X-Fastlink-Tools');
+  if (!h) return null;
+  try { const a = JSON.parse(h); return Array.isArray(a) ? a.map(String) : []; } catch { return []; }
+}
 // Origins where this caller may use fast_fetch (set only by the worker), else null.
 function fetchScope(trace) {
   const h = trace?.request?.headers?.get('X-Fastlink-Fetch-Origins');
@@ -346,7 +354,8 @@ function fetchScope(trace) {
     return a.map((r) => (typeof r === 'string' ? { origin: r } : { origin: String(r?.origin || ''), browsers: r?.browsers || null }));
   } catch { return null; }
 }
-const FETCH_METHODS = new Set(['GET', 'POST', 'HEAD']);
+const FETCH_METHODS = new Set(['GET', 'POST', 'DELETE', 'HEAD']);
+const BODY_METHODS = new Set(['POST', 'DELETE']);
 const FETCH_BODY_MAX = 64 * 1024;
 // fast_fetch args → the exact request the browser will send, or {error}. Same origin as the
 // allowed list only, a fixed set of methods, string headers minus the ones a page can't set anyway.
@@ -370,7 +379,7 @@ function checkFetch(args, rules, browser) {
   }
   const body = args.body == null ? undefined : String(args.body);
   if (body && body.length > FETCH_BODY_MAX) return { error: `fast_fetch: body is over ${FETCH_BODY_MAX} characters.` };
-  if (body && method !== 'POST') return { error: 'fast_fetch: a body needs method POST.' };
+  if (body && !BODY_METHODS.has(method)) return { error: 'fast_fetch: a body needs method POST or DELETE.' };
   return { args: { tabId: args.tabId, url: u.href, method, headers, ...(body !== undefined ? { body } : {}), expectOrigin: u.origin } };
 }
 
@@ -405,6 +414,10 @@ async function dispatchTool(params, relay, trace) {
   // `browser` / `lastBrowser` are routing-only: consumed here, never forwarded.
   let { browser, lastBrowser, ...args } = params?.arguments || {};
   if (!name) return errorResult('missing tool name');
+  const allowTools = toolScope(trace);
+  if (allowTools && !allowTools.includes(name)) {
+    return textResult({ error: `This token may call only: ${allowTools.join(', ') || '(nothing)'}.`, toolNotAllowed: true });
+  }
   const scope = browserScope(trace);
   if (scope) {
     if (name === SEALED_ACTION) return textResult({ error: 'This service token cannot send sealed calls.', scoped: scope });
