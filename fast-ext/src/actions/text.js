@@ -5,7 +5,7 @@ export async function getText(args = {}) {
     world: 'ISOLATED',
     tabId: args.tabId,
     func: extractText,
-    args: [args.selector || null, args.offset ?? 0, args.maxLen ?? null, !!args.html],
+    args: [args.selector || null, args.offset ?? 0, args.maxLen ?? null, !!args.html, args.limit ?? null],
   });
   // JSON string across executeScript (Chrome sorts returned object keys) so
   // `truncated` stays the first field.
@@ -23,7 +23,10 @@ export async function getText(args = {}) {
 // field:{tag, label, value} (fields:[…] for several matches). A read whose text
 // is empty says so (empty:true) — Maps run 61581163 read "" from the Destination
 // <input> and took it as "nothing contradicts me".
-export function extractText(selector, offset, maxLen, html) {
+// `limit` N (with a selector): the first N matches only, one entry each in `items` (a form
+// control as its value), plus `matches` = how many there are. No offset windows: an items
+// read is cut at CHUNK_MAX characters in all (truncated:true).
+export function extractText(selector, offset, maxLen, html, first = null) {
   // The most characters one call returns. A result goes back in ONE relay WebSocket frame
   // (escaped again at each hop); a ~15 MB page in one frame dropped the browser's relay
   // socket and the caller's MCP connection (winshore 11-10). Bigger text: read in windows.
@@ -82,6 +85,19 @@ export function extractText(selector, offset, maxLen, html) {
 
   const roots = selector ? Array.from(document.querySelectorAll(selector)) : [document.body];
   if (!roots.length) return JSON.stringify({ error: `selector "${selector}" not found` });
+  if (first != null) {
+    if (!selector) return JSON.stringify({ error: 'limit needs a selector: the first N elements it matches' });
+    if (!(Number.isInteger(first) && first > 0 && first <= 1000)) return JSON.stringify({ error: `limit must be a whole number 1-1000 (got ${JSON.stringify(first)})` });
+    const items = [];
+    let total = 0, cut = false;
+    for (const el of roots.slice(0, first)) {
+      const t = String(html ? (el.outerHTML || '') : isControl(el) ? readValue(el).value : (el.innerText || el.textContent || ''));
+      if (total + t.length > CHUNK_MAX) { cut = true; break; }
+      total += t.length;
+      items.push(t);
+    }
+    return JSON.stringify({ truncated: cut, items, matches: roots.length, from: selector, kind: html ? 'outerHTML' : 'innerText' });
+  }
   const controls = !html && selector ? roots.filter(isControl) : [];
   let raw, kind, extra = {};
   if (controls.length) {

@@ -57,8 +57,65 @@ POST /mcp
   - The response body is cut at 512 KB (`truncated:true`) and returned byte-exact.
   - Pattern: open one tab on the site (`fast_tab`, background + scoped), keep it, call
     `fast_fetch` against it repeatedly; reopen it if a call says the tab is gone or moved.
-  - Methods per browser for jewel-api: office GET/POST/HEAD; winytx GET/HEAD only (it is
-    Yaakov's own logged-in profile; the relay refuses POST there).
+  - Methods per browser for jewel-api: mpc1 GET/POST (clean always-on Chrome on mpc, no
+    account); winytx GET/HEAD only (it is Yaakov's own logged-in profile; the relay refuses POST
+    there).
+
+## Watching a page or its requests (extension 0.4.33+)
+
+A watch runs in the browser and pushes each change to the relay as it happens. The relay keeps
+the events (numbered `seq` 1, 2, … per watch), so a reader that polls late still gets every
+event since its cursor. Two kinds, one reader:
+
+- **Watch a list in the page:** `fast_watch {browser, tabId, selector, fields?, key?, limit?}` →
+  `{watchId, after:0, items, matches}` (`items` = the list now).
+  - `selector` matches ONE item (e.g. a conversation row). Without `fields` an item is `{text}`.
+  - `fields`: `{name: spec}`, spec = `"css"` (text of that child), `"css@attr"` (its attribute),
+    `"@attr"` (the item's own attribute), `""` (the item's own text). Missing → `null`.
+  - `key`: the field that identifies an item, so an edit is `change` (with `prev`) rather than
+    `remove` + `add`. `limit`: the first N matches (default 50, max 200).
+  - Events: `{seq, at, kind:'add'|'change'|'remove', key, index?, item, prev?}`. A MutationObserver
+    in the page re-reads the list after every DOM change (also in a background tab), so two
+    messages arriving between two polls are two events. A page reload re-installs the watch and
+    reports only what really changed; an empty list right after a load is treated as "still
+    rendering", never as everything removed.
+- **Capture the tab's own requests:** `fast_capture {browser, tabId, url, method?, body?, maxBody?}`
+  → `{watchId, after:0}`.
+  - Every request the tab makes whose URL contains `url` (and `method`, when given) becomes one
+    event: `{seq, at, kind:'request', url, method, resourceType, requestHeaders, postData?, status,
+    responseHeaders, mimeType, body, bodyLength, base64?, truncated?}` (or `failed` instead of
+    the response). `requestHeaders` are the headers as sent on the wire (auth headers and
+    `Cookie` included). `body` is cut at `maxBody` (default and limit 512 KB).
+  - Uses Chrome's debugger on that tab (the "FastLink is debugging this browser" banner shows).
+    Opening DevTools on the tab or dismissing the banner ends the capture (`ended` event).
+  - Service tokens: only on a tab whose origin is one of the token's fetch origins, and only
+    requests to those origins are recorded.
+  - Start the capture first, then make the page do the request (reload, open the cart …).
+- **Read:** `fast_watch_read {watchId, after, waitSec?}` → `{state, events, next, more, gap?}`.
+  - Returns at once when there are events with `seq > after`, else waits up to `waitSec`
+    (0-25, default 20) for the first. Loop: `after = result.next`.
+  - `more:true`: the answer was cut at ~8 MB; read again right away.
+  - `gap:N`: N events were dropped before this read (a watch keeps its last 1000 DOM events or
+    100 requests). `{kind:'dropped', count}`: the browser couldn't reach the relay for a long time.
+  - `state:'ended'` + `reason` (also an `{kind:'ended'}` event): the tab closed, the debugger was
+    detached, or Chrome / FastLink restarted in that browser. Start a new watch.
+  - `{error, watchGone:true}`: no such watch (stopped, or ended over an hour ago).
+- **Stop:** `fast_watch_stop {watchId}`. At most 50 watches per account.
+
+```js
+let { watchId, items } = await call('fast_watch', { browser: 'hvm', tabId,
+  selector: 'mws-conversation-list-item', key: 'name',
+  fields: { name: '.name', snippet: '.snippet-text', time: 'mws-relative-timestamp' } });
+for (let after = 0;;) {
+  const r = await call('fast_watch_read', { watchId, after, waitSec: 25 });
+  if (r.error || r.state === 'ended') break;          // start again
+  for (const e of r.events) handle(e);                // add / change / remove
+  after = r.next;
+}
+```
+
+**Cheaper one-off read:** `fast_text {browser, tabId, selector, limit: N}` → `{items:[text …], matches}`,
+the first N matches only.
 
 There is no JavaScript evaluation for services (fast_fetch takes a URL, never code). `fast_evaluate` exists only in the locked secure
 build. Read pages with `fast_snapshot` / `fast_text`.

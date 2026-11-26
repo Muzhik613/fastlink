@@ -53,9 +53,59 @@ const RELAY_TOOLS = [
       required: ['handoffId'],
     },
   },
+  {
+    name: 'fast_watch_read',
+    description: 'Events of a fast_watch / fast_capture with seq > `after`, oldest first; waits up to `waitSec` for the first. Call again with after = the result\'s `next`: nothing between reads is lost. state "ended" = it stopped (see reason).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        watchId: { type: 'string', description: 'The watchId fast_watch or fast_capture returned.' },
+        after: { type: 'number', description: 'Last seq already read (default 0 = from the start).' },
+        waitSec: { type: 'number', description: 'Seconds to wait when there is nothing new, 0-25 (default 20).' },
+      },
+      required: ['watchId'],
+    },
+  },
+  {
+    name: 'fast_watch_stop',
+    description: 'End a fast_watch or fast_capture: the browser stops watching and its events are deleted.',
+    inputSchema: {
+      type: 'object',
+      properties: { watchId: { type: 'string', description: 'The watchId to end.' } },
+      required: ['watchId'],
+    },
+  },
 ];
 
 const BROWSER_TOOLS = [
+  {
+    name: 'fast_watch',
+    description: 'Watch a list in the page: every element matching `selector` becomes an item ({text}, or your `fields`); each change is pushed as an add / change / remove event, read with fast_watch_read. Works in a background tab. Returns watchId and the items now.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector of ONE item (e.g. a list row).' },
+        fields: { type: 'object', description: '{name: "css" (text of that child) | "css@attr" | "@attr" (the item\'s attribute) | "" (the item\'s text)}. Default {text}.' },
+        key: { type: 'string', description: 'Field that identifies an item, so an edit is a change, not remove + add.' },
+        limit: { type: 'number', description: 'Watch the first N matches, 1-200 (default 50).' },
+      },
+      required: ['selector'],
+    },
+  },
+  {
+    name: 'fast_capture',
+    description: 'Record the tab\'s own network requests whose URL contains `url`: request headers as sent and body, status, response headers and body (cut at maxBody). Each is one event, read with fast_watch_read. Uses the debugger (banner shows).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Text the request URL contains, e.g. "/api/cart".' },
+        method: { type: 'string', description: 'Only this HTTP method.' },
+        body: { type: 'boolean', description: 'Default true: include the response body.' },
+        maxBody: { type: 'number', description: 'Response body cap in bytes (default and limit 524288).' },
+      },
+      required: ['url'],
+    },
+  },
   {
     name: 'fast_fetch',
     description: 'Service tokens only: fetch(url) from inside an open tab on the same site, with the page\'s own cookies. Returns {status, body} (body cut at 512 KB). Only origins allowed for the token; GET, POST or HEAD.',
@@ -233,6 +283,7 @@ const BROWSER_TOOLS = [
         html: { type: 'boolean', description: 'Return HTML instead of text.' },
         offset: { type: 'number', description: 'Start at this character (default 0); a truncated result\'s `next`.' },
         maxLen: { type: 'number', description: 'Max characters for this call (default and limit 2000000).' },
+        limit: { type: 'number', description: 'With `selector`: the first N matches as `items` (one text each), plus `matches` = the total.' },
       },
     },
   },

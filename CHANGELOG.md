@@ -7,6 +7,16 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.33 + relay: live watches (fast_watch, fast_capture, fast_watch_read, fast_watch_stop) and fast_text `limit`
+- **What:**
+  - `fast_watch {tabId, selector, fields?, key?, limit?}`: a MutationObserver in the page's isolated world re-reads the matching items after every DOM burst (a microtask, so a background tab is not throttled); the service worker diffs against the last list (kept in `chrome.storage.session`) and pushes add / change / remove events. A page load re-installs the watch and diffs against the stored list; an empty list right after a load is "still rendering", never "all removed".
+  - `fast_capture {tabId, url, method?, body?, maxBody?}`: the tab's requests whose URL contains `url`, via the Network domain on the shared debugger session (input.js `cdp()`, re-enabled after any re-attach): wire request headers, postData, status, response headers, body (≤512 KB). Service tokens: only on a tab on one of their fetch origins, and only requests to those origins. Stubbed in the Web Store build (like fast_fetch).
+  - Delivery `fast-ext/src/watchOutbox.js`: numbered batches per watch, unacked ones kept in session storage and resent on every socket open; the relay stores a batch once (`lastN`) and acks it.
+  - Relay `src/watch.js`: events in DO storage, `seq` per watch, last 1000 DOM / 100 request events kept (`gap` when a reader was later than that); `fast_watch_read {watchId, after, waitSec≤25}` long-polls. The hello now lists the browser's live watch ids; active watches it no longer runs end (Chrome / FastLink restarted). Tab closed / debugger detached → `ended` event. ≤50 watches per account; ended ones deleted after 1 h. New actions need 0.4.33 (`ACTION_MIN_VERSION`).
+  - `fast_text {selector, limit:N}` → `{items, matches}`: the first N matches only.
+- **Why:** hvm-boss Chrome drops `--remote-debugging-port 9225` (Yaakov 11-26); rcswatch (Messages conversation list every 3 s + a page MutationObserver) and Jewel (cart request auth, purchase-history body) read through CDP and move to FastLink. A poll can miss two messages that land between polls; a watch can't.
+- **Verified:** relay 92/92 subtests (routing.test.mjs fails at file level before and after), fast-ext 70/70; local Chromium e2e (unpacked extension against a fake relay): two edits 10 ms apart = two events, add/remove, wire `authorization` header + body captured, reload diff, capture across reload, service-worker kill, stop, tab close → ended.
+
 ## 2026-11-20 — extension 0.4.32 + relay: a call lost on a replaced socket is resent, never run twice (aliya, mpc1)
 - **What:**
   - Relay `userRelay.js` `#resendUnacked`: when a browser says hello on a new socket, its calls still pending on an older socket with no `queued`/`started`/`result` frame go out again on the new one (same id, same deadline). Sealed calls from 0.4.30, every other call from 0.4.32 (`RESEND_MIN_VERSION`). A replay refusal of a resent sealed copy is ignored (the first copy's held result settles it). `#graceOnClose`: such a call no longer fails after the 10 s close grace; it waits for the redial up to its own deadline.

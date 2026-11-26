@@ -30,7 +30,8 @@ export function fakeStorage() {
   const m = new Map();
   return {
     m,
-    async get(k) { return m.get(k); },
+    // an array of keys → a Map of the ones present (the DO storage API)
+    async get(k) { return Array.isArray(k) ? new Map(k.filter((x) => m.has(x)).map((x) => [x, m.get(x)])) : m.get(k); },
     async put(k, v) { if (typeof k === 'object') for (const [a, b] of Object.entries(k)) m.set(a, b); else m.set(k, v); },
     async delete(k) { for (const x of [].concat(k)) m.delete(x); },
     async list({ prefix }) { return new Map([...m].filter(([k]) => k.startsWith(prefix))); },

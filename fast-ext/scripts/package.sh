@@ -95,6 +95,13 @@ export async function fetchInPage() {
   return { error: 'fast_fetch is not available in this build of FastLink.' };
 }
 EOF
+# Same for fast_capture (a tab's request headers and bodies, for the same service tokens).
+cat > "$STAGE/src/actions/capture.js" <<'EOF'
+// fast_capture is not part of the Chrome Web Store build.
+export async function captureStart() {
+  return { error: 'fast_capture is not available in this build of FastLink.' };
+}
+EOF
 
 # --- belt-and-suspenders: drop anything that should never ship ---------------
 find "$STAGE" \( -name '*.md' -o -name '*.sh' -o -name '.DS_Store' \) -delete 2>/dev/null || true

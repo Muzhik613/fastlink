@@ -5,7 +5,7 @@
 // in arrival order; calls on different tabs run in parallel. Actions that never
 // touch the page skip the queue (UNQUEUED_ACTIONS): fast_list, fast_tab opening a
 // new tab, fast_switch pinning one, fast_close closing one (the way out of a
-// frozen tab, so it must never wait behind it).
+// frozen tab, so it must never wait behind it), fast_watch_stop ending a watch.
 //
 // Progress frames for the relay's timers (and the call watchdog, callWatchdog.js):
 //   {type:'queued', id, position}  the call waits; position = calls ahead of it
@@ -27,7 +27,7 @@
 // Under the relay's 30 s post-'started' timer, so the relay hears the error from
 // the extension instead of timing the call out itself.
 export const HARD_CAP_MS = 29_000;
-export const UNQUEUED_ACTIONS = new Set(['fast_list', 'fast_tab', 'fast_switch', 'fast_close']);
+export const UNQUEUED_ACTIONS = new Set(['fast_list', 'fast_tab', 'fast_switch', 'fast_close', 'fast_watch_stop']);
 const RUNS_ON_STUCK_TAB = new Set(['fast_nav']);
 // The reply of a dropped call (nobody reads it: the watchdog answered already).
 const CANCELLED = Object.freeze({ error: 'cancelled: the call was answered by the watchdog before it started', code: 'call_timeout' });

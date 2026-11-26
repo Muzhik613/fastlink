@@ -60,3 +60,13 @@ test('a window on another page re-reads instead of using a stale cache', () => {
   assert.equal(read(null, 4, 4, false).text, 'yyyy');
   assert.equal(p.reads(), 1);
 });
+
+test('limit: the first N matches as items, with the total count', () => {
+  globalThis.location = { href: 'https://x.test/l' };
+  const el = (t) => ({ tagName: 'DIV', innerText: t, getAttribute: () => null });
+  globalThis.document = { body: {}, querySelectorAll: () => [el('a'), el('b'), el('c')] };
+  globalThis.__fastlinkTextCache = null;
+  assert.deepEqual(read('.row', 0, null, false, 2), { truncated: false, items: ['a', 'b'], matches: 3, from: '.row', kind: 'innerText' });
+  assert.match(read(null, 0, null, false, 2).error || read('.row', 0, null, false, 0).error, /limit/);
+  assert.match(read('.row', 0, null, false, 0).error, /limit must be/);
+});

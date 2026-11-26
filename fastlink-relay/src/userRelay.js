@@ -20,6 +20,8 @@
 //   ext → relay :  { type:'queued',  id, position }       optional: waiting behind another call on that tab
 //                  { type:'started', id }                 the call left the queue and runs
 //                  { type:'result',  id, origin, tabId, ...reply }   reply = {result} | {error,...extras}
+//                  { type:'watch', watchId, n, events } watch events (src/watch.js)
+//   relay → ext :  { type:'watch_ack'|'watch_gone', watchId, n? }
 //   keepalive   :  ext sends {"ping":true} → DO auto-responds {"pong":true}
 // A result is matched by id on ANY live socket of the device the call went to
 // (the extension answers on its current socket, which may be a redial).
@@ -27,6 +29,7 @@
 // See SPEC.md §3d.
 
 import { handoffRequest } from './handoff.js';
+import { watchIngest, watchReconcile } from './watch.js';
 import { DurableObject } from 'cloudflare:workers';
 import { handleMcpRequest } from './mcp.js';
 import { readTrace } from './timing.js';
@@ -117,7 +120,7 @@ export function versionAtLeast(v, min) {
 }
 export const supportsTabId = (v) => versionAtLeast(v, TABID_MIN_VERSION);
 // Actions an older extension doesn't know: refused with "update FastLink", never sent.
-export const ACTION_MIN_VERSION = { fast_upload: '0.4.31' };
+export const ACTION_MIN_VERSION = { fast_upload: '0.4.31', fast_watch: '0.4.33', fast_capture: '0.4.33', fast_watch_stop: '0.4.33' };
 
 export class UserRelay extends DurableObject {
   constructor(ctx, env) {
@@ -493,6 +496,12 @@ export class UserRelay extends DurableObject {
       return;
     }
 
+    // Watch events (fast_watch / fast_capture), stored for fast_watch_read (src/watch.js).
+    if (msg.type === 'watch') {
+      await watchIngest(this, ws, this.#tokenOf(ws), msg);
+      return;
+    }
+
     if (msg.type === 'hello') {
       // Diagnostics only. MERGE (never replace) — the attachment also carries the
       // connectedAt/deviceToken identity stamp that named routing and targeted
@@ -512,6 +521,10 @@ export class UserRelay extends DurableObject {
         }
       }
       this.#resendUnacked(ws);
+      // The browser's live watches: the relay ends the ones it no longer runs.
+      if (Array.isArray(msg.watches)) {
+        try { await watchReconcile(this, this.#tokenOf(ws), msg.watches); } catch { /* non-fatal */ }
+      }
       // The extension re-asserts the user's pause toggle on (re)connect when it
       // carries one, so the durable relay flag converges with the popup's state.
       if (typeof msg.drivingPaused === 'boolean') {

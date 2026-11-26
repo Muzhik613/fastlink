@@ -21,6 +21,7 @@ import { runBatch } from './batch.js';
 import { resolveTraceSession, startTraceSession, recordTiming, traceClient } from './timing.js';
 import { sanitizeDeviceName, getUserEmail, insertFeedback } from './db.js';
 import { SEALED_ACTION } from './userRelay.js';
+import { watchCreate, watchRead, watchStop } from './watch.js';
 
 // Guidance the client sees in the initialize result — steers it toward the FAST
 // tools instead of its default "screenshot + read it myself" instinct.
@@ -205,7 +206,8 @@ const MUTATING_TOOLS = new Set([
 
 // Diagnostic/orchestration tools that may NOT appear as a batch/macro step.
 // fast_upload carries file contents (up to 10 MB): one call of its own, never a batch step.
-const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_handoff_cancel', 'fast_update', 'fast_fetch', 'fast_evaluate', 'fast_upload']);
+// Watches live past the call (an event stream, src/watch.js): never batch steps either.
+const DIAGNOSTIC_ONLY = new Set(['fast_status', 'fast_feedback', 'fast_batch', 'fast_handoff', 'fast_handoff_wait', 'fast_handoff_cancel', 'fast_update', 'fast_fetch', 'fast_evaluate', 'fast_upload', 'fast_watch', 'fast_capture', 'fast_watch_read', 'fast_watch_stop']);
 
 // Relay-native tools that never touch a page → exempt from the per-origin consent
 // gate. (fast_batch's STEPS are gated individually inside runBatch.)
@@ -396,7 +398,7 @@ export function checkUpload(args) {
   return { args: { ...args, files: out } };
 }
 
-const NO_BROWSER_TOOLS = new Set(['fast_status', 'fast_feedback', 'fast_profile', 'fast_handoff_wait', 'fast_handoff_cancel']);
+const NO_BROWSER_TOOLS = new Set(['fast_status', 'fast_feedback', 'fast_profile', 'fast_handoff_wait', 'fast_handoff_cancel', 'fast_watch_read', 'fast_watch_stop']);
 
 async function dispatchTool(params, relay, trace) {
   const name = params?.name;
@@ -443,6 +445,12 @@ async function dispatchTool(params, relay, trace) {
   if (name === 'fast_feedback') return textResult(await handleFeedback(relay, args, browser, lastBrowser, trace));
   if (name === 'fast_handoff_wait') return textResult(await handoffWait(relay, args, scope));
   if (name === 'fast_handoff_cancel') return textResult(await handoffCancel(relay, args, scope));
+  if (name === 'fast_watch_read') return textResult(await watchRead(relay, args, scope));
+  if (name === 'fast_watch_stop') {
+    const r = await watchStop(relay, args, scope);
+    relay.audit(name, args, !r.error, null);
+    return textResult(r);
+  }
 
   // WHICH BROWSER: the named one, else the only one online, else the caller's
   // lastBrowser hint — resolved once and threaded through every sub-step below.
@@ -472,6 +480,27 @@ async function dispatchTool(params, relay, trace) {
     relay.audit('fast_fetch', { method: chk.args.method, url: new URL(chk.args.url).origin + new URL(chk.args.url).pathname }, !(payload && 'error' in payload), target);
     if (payload && typeof payload === 'object' && 'error' in payload) return textResult(payload);
     return textResult(payload?.result ?? null);
+  }
+
+  // Live watches: a DOM list (fast_watch) or the tab's own requests (fast_capture), events read
+  // with fast_watch_read. A service token captures only on, and only requests to, its fetch origins.
+  if (name === 'fast_watch' || name === 'fast_capture') {
+    const { tabId, selector, fields, key, limit, url, method, body, maxBody } = args;
+    let extArgs = name === 'fast_watch' ? { tabId, selector, fields, key, limit } : { tabId, url, method, body, maxBody };
+    if (name === 'fast_capture' && scope) {
+      const origins = fetchScope(trace);
+      if (!origins) return textResult({ error: 'fast_capture is only for service tokens with allowed fetch origins.' });
+      if (typeof tabId !== 'number') return textResult({ error: 'fast_capture: tabId is required (a tab this service opened on that site).' });
+      const allowed = origins.filter((r) => !r.browsers || r.browsers[target.name]).map((r) => r.origin);
+      const origin = await relay.currentOrigin(target, tabId);
+      if (!allowed.includes(origin)) return textResult({ error: `fast_capture: the tab is on ${origin || 'an unknown site'}, not an allowed origin for this token on "${target.name}" (${allowed.join(', ') || 'none'}).` });
+      extArgs = { ...extArgs, origins: allowed };
+    }
+    if (typeof extArgs.tabId !== 'number') delete extArgs.tabId;
+    const payload = await watchCreate(relay, target, name, extArgs);
+    relay.audit(name, args, !(payload && 'error' in payload), target);
+    if (payload && typeof payload === 'object' && 'error' in payload) return textResult(payload);
+    return textResult(payload.result);
   }
 
   // Page JavaScript for an operator account, on an operator-build browser, on an allowed origin.

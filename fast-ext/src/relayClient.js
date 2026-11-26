@@ -19,7 +19,9 @@
 //              {"pong":true} WITHOUT waking from hibernation (exact string match
 //              via setWebSocketAutoResponse). So the ping must be EXACTLY
 //              {"ping":true} with no extra fields. Inbound {"pong":true} is ignored.
-//   on open:  {type:'hello', version} — diagnostics only; auth is the URL token.
+//   on open:  {type:'hello', version, watches?} — diagnostics + this browser's live watch ids.
+//   watches:  out {type:'watch', watchId, n, events}; in {type:'watch_ack'|'watch_gone', watchId, n?}
+//             (watchOutbox.js)
 //   close 4401: device token rejected/revoked -> clear token, stop, prompt re-pair.
 //
 // Lifecycle: a 30s chrome.alarms tick survives MV3 service-worker death, plus
@@ -40,8 +42,19 @@ let resolveTarget = async () => null;
 initCallHooks(() => { if (socket && socket.readyState === WebSocket.OPEN) sendHello(socket); });
 
 function sendHello(ws) {
-  try { ws.send(JSON.stringify({ type: 'hello', version: VERSION, drivingPaused, ...helloFields() })); } catch {}
+  const watches = relayHooks.watchIds();   // undefined until the watch registry has loaded
+  try { ws.send(JSON.stringify({ type: 'hello', version: VERSION, drivingPaused, ...helloFields(), ...(watches ? { watches } : {}) })); } catch {}
 }
+
+// Watch delivery (watch.js): frames it sends, the acks it gets, a flush on every open, and the
+// ids of its live watches in the hello (the relay ends the ones this browser no longer runs).
+const relayHooks = { onOpen: () => {}, onFrame: () => {}, watchIds: () => undefined };
+export function setRelayHooks(h) { Object.assign(relayHooks, h); }
+export function sendRelayFrame(obj) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  try { socket.send(JSON.stringify(obj)); return true; } catch { return false; }
+}
+export function resendHello() { if (socket && socket.readyState === WebSocket.OPEN) whenReady(() => sendHello(socket)); }
 
 const RECONNECT_ALARM = 'fastlink-relay-reconnect';
 const PING_MS = 20_000;
@@ -168,6 +181,7 @@ async function connect() {
     connLog('open', { dialMs: openedAt - connectStartedAt, ...(closedAt ? { downMs: openedAt - closedAt } : {}) });
     whenReady(() => sendHello(ws));
     replies.flush();                                  // results finished while no socket was open
+    relayHooks.onOpen();                              // unacked watch events go out again
     startPingLoop(ws);
     setBadgeForState('connected');
   };
@@ -217,6 +231,7 @@ async function onMessage(ws, e) {
     } catch {}
     return;
   }
+  if (msg.type === 'watch_ack' || msg.type === 'watch_gone') { relayHooks.onFrame(msg); return; }
   if (msg.type !== 'call' || msg.id == null || !msg.action) return;   // events/hello/etc. — ignore inbound
   // The relay resends a call it got no ack for when this browser redials (the first copy
   // may have gone to a socket that was already gone). A call id runs at most once per

@@ -7,6 +7,8 @@ import { handoffActions } from './handoff.js';
 import { updateSelf } from '../reloadSelf.js';
 import { fetchInPage } from './fetchInPage.js';
 import { uploadFiles } from './upload.js';
+import { watchStart, watchStop } from './watch.js';
+import { captureStart } from './capture.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, withSelectorFrameHint, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
 import { isInjectableUrl, missingTabError, wakeTab, explainHostRefused } from '../util.js';
@@ -119,9 +121,10 @@ function notifyOverlay(tabId, payload) {
 // Actions that resolve their own tab: the tab actions (fast_tab opens one,
 // fast_switch/fast_close find one, fast_list reads all) and fast_screenshot,
 // which defaults to the user's FOREGROUND tab. Every other action acts on one page.
-const SELF_TARGETING = new Set([...TAB_ACTIONS, 'fast_screenshot', 'fast_update']);
+const SELF_TARGETING = new Set([...TAB_ACTIONS, 'fast_screenshot', 'fast_update', 'fast_watch_stop']);
 // Tab actions whose result names a different tab by design (the new, switched-to or closed one).
-const NAMES_OWN_TAB = new Set(['fast_tab', 'fast_list', 'fast_close', 'fast_switch', 'fast_update']);
+const RAW_ITEMS = new Set(['fast_watch', 'fast_capture', 'fast_watch_stop']);
+const NAMES_OWN_TAB = new Set(['fast_tab', 'fast_list', 'fast_close', 'fast_switch', 'fast_update', 'fast_watch_stop']);
 
 export async function dispatchAction(action, rawArgs) {
   let args = rawArgs || {};
@@ -170,7 +173,8 @@ export async function dispatchAction(action, rawArgs) {
     const tRun = Date.now();
     // fast_fetch returns a site API's raw body to a service: masking 13-19 digit runs would corrupt it (EAN-13 product codes)
     const raw = await runOne(action, args);
-    const r = slimResult(action === 'fast_fetch' ? raw : maskCardNumbers(raw));
+    // a watch's items are the caller's own fields: never slimmed like snapshot items (which drop `name`/`text`)
+    const r = action === 'fast_fetch' ? slimResult(raw) : RAW_ITEMS.has(action) ? maskCardNumbers(raw) : slimResult(maskCardNumbers(raw));
     // debug-only phase timings (page.js `_debug`): add the service worker's whole time — frame
     // routing, dry runs, bridge round trips — so page time and extension time can be told apart
     if (r && typeof r === 'object' && r._debug && typeof r._debug === 'object') r._debug = { ...r._debug, swTotalMs: Date.now() - tRun };
@@ -241,6 +245,9 @@ async function runOne(action, args) {
   if (action === 'fast_update')     return updateSelf();
   if (action === 'fast_fetch')      return fetchInPage(args);
   if (action === 'fast_upload')     return uploadFiles(args);
+  if (action === 'fast_watch')      return watchStart(args);
+  if (action === 'fast_capture')    return captureStart(args);
+  if (action === 'fast_watch_stop') return watchStop(args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
   if (action === 'fast_frame_read') return frameRead(args);

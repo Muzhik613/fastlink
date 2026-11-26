@@ -35,7 +35,14 @@ async function ensureAttached(tabId) {
     await chrome.debugger.attach({ tabId }, CDP_VERSION);
   }
   attached.add(tabId);
+  // A fresh session starts with every domain off: whoever kept one on (fast_capture's
+  // Network) turns it on again here.
+  for (const fn of attachHooks) { try { await fn(tabId); } catch { /* non-fatal */ } }
 }
+
+const attachHooks = [];
+// fn(tabId) runs after every new attach, before the command that needed it.
+export function onDebuggerAttach(fn) { attachHooks.push(fn); }
 
 // Drop our bookkeeping if Chrome detaches us (tab closed, devtools opened, etc.)
 try {
