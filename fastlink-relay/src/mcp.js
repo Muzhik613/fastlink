@@ -343,6 +343,38 @@ function toolScope(trace) {
   if (!h) return null;
   try { const a = JSON.parse(h); return Array.isArray(a) ? a.map(String) : []; } catch { return []; }
 }
+const SHEET_TOOLS = new Set(['fast_snapshot', 'fast_screenshot', 'fast_click', 'fast_click_xy']);
+// Sheet hosts a service token may reach: pay.google.com when its fetch origins include Dunkin.
+function sheetHostsFor(trace) {
+  const f = fetchScope(trace) || [];
+  return f.some((r) => /(^|\.)dunkindonuts\.com$/.test(new URL(r.origin || 'http://x').hostname)) ? ['pay.google.com'] : [];
+}
+// Page origins this caller may act on (set only by the worker, agents.origins), else null.
+function originScope(trace) {
+  const h = trace?.request?.headers?.get('X-Fastlink-Origins');
+  if (!h) return null;
+  try { const a = JSON.parse(h); return Array.isArray(a) ? a.map(String) : []; } catch { return []; }
+}
+// A token held to some origins: the tab it acts on must be on one, and a URL it loads too.
+// fast_list only lists; watch read/stop answer from the relay. Mutating calls are also pinned to
+// the checked origin (expectOrigin), so the extension refuses if the tab moved in between.
+const ORIGIN_FREE = new Set(['fast_list', 'fast_watch_read', 'fast_watch_stop', 'fast_status', 'fast_feedback']);
+async function originGate(relay, name, args, target, allowed) {
+  if (ORIGIN_FREE.has(name)) return null;
+  const urlOrigin = (u) => { try { return new URL(String(u)).origin; } catch { return ''; } };
+  if (name === 'fast_nav' || name === 'fast_tab') {
+    const o = urlOrigin(args.url);
+    if (!allowed.includes(o)) return { error: `This token may load only ${allowed.join(', ')} (got ${o || 'no URL'}).`, originBlocked: true };
+    if (name === 'fast_tab') return null;
+  }
+  if (name === 'fast_batch' || name === 'fast_switch' || name === 'fast_close') return { error: `${name} is not available to an origin-limited token.`, originBlocked: true };
+  if (typeof args.tabId !== 'number') return { error: 'An origin-limited token must pass tabId (a tab on an allowed origin, from fast_list).', originBlocked: true };
+  // read fresh (not the cache): a tab may have moved since the last call
+  const o = await relay.activeOrigin(target, args.tabId);
+  if (!allowed.includes(o)) return { error: `Tab ${args.tabId} is on ${o || 'an unknown page'}, not ${allowed.join(', ')}.`, originBlocked: true };
+  relay.origins.set(`${target.deviceToken}#${args.tabId}`, o);   // the expectOrigin pin below uses this fresh read
+  return null;
+}
 // Origins where this caller may use fast_fetch (set only by the worker), else null.
 function fetchScope(trace) {
   const h = trace?.request?.headers?.get('X-Fastlink-Fetch-Origins');
@@ -362,7 +394,10 @@ const FETCH_BODY_MAX = 64 * 1024;
 function checkFetch(args, rules, browser) {
   let u;
   try { u = new URL(String(args.url || '')); } catch { return { error: 'fast_fetch: url must be an absolute https URL.' }; }
-  if (u.protocol !== 'https:') return { error: 'fast_fetch: url must be https.' };
+  // blob:https://site/<id> = an object URL the page itself made (e.g. a Messages picture); its origin is the page's
+  const isBlob = u.protocol === 'blob:';
+  if (isBlob && String(args.method || 'GET').toUpperCase() !== 'GET') return { error: 'fast_fetch: a blob: URL takes GET only.' };
+  if (u.protocol !== 'https:' && !(isBlob && u.origin.startsWith('https://'))) return { error: 'fast_fetch: url must be https (or a blob: URL of an https page).' };
   const rule = rules.find((r) => r.origin === u.origin);
   if (!rule) return { error: `fast_fetch: ${u.origin} is not allowed for this token (allowed: ${rules.map((r) => r.origin).join(', ')}).` };
   if (typeof args.tabId !== 'number') return { error: 'fast_fetch: tabId is required (a tab this service opened on that site).' };
@@ -481,6 +516,32 @@ async function dispatchTool(params, relay, trace) {
   {
     const verdict = await consentVerdict(relay, name, target, gateTab(name, args));
     if (verdict) return textResult(verdict);
+  }
+
+  // Pages that are not tabs (the Google Pay sheet), by targetId: read and click only. A service
+  // token reaches only pay.google.com sheets, and only when it has Dunkin origins.
+  const sheetHosts = scope ? (sheetHostsFor(trace) || []) : null;
+  if (args.targetId != null) {
+    if (!SHEET_TOOLS.has(name)) return textResult({ error: `${name} does not take a targetId (sheets: ${[...SHEET_TOOLS].join(', ')}).` });
+    if (typeof args.targetId !== 'string' || !/^[A-Za-z0-9]{8,64}$/.test(args.targetId)) return textResult({ error: 'targetId must be a target id from fast_list (kind:"sheet").' });
+    if (sheetHosts && !sheetHosts.length) return textResult({ error: 'This token may not act on sheets.', sheetBlocked: true });
+    const { tabId: _t, ...rest } = args;
+    const payload = await relay.callExtension(name, { ...rest, ...(sheetHosts ? { sheetHosts } : {}) }, undefined, target);
+    relay.audit(name, { ...rest, sheet: true }, !(payload && 'error' in payload), target);
+    if (payload && typeof payload === 'object' && 'error' in payload) return textResult(payload);
+    const result = payload?.result ?? null;
+    if (IMAGE_TOOLS.has(name) && result?.dataUrl) return imageResult(result);
+    return textResult(result);
+  }
+  if (name === 'fast_list' && sheetHosts) args = { ...args, sheetHosts: sheetHosts.length ? sheetHosts : ['-'] };
+
+  // A token held to some page origins (agents.origins).
+  {
+    const allowed = originScope(trace);
+    if (allowed) {
+      const blocked = await originGate(relay, name, args, target, allowed);
+      if (blocked) return textResult(blocked);
+    }
   }
 
   // Page fetch for service tokens: a fixed fetch() inside the tab, same origin, allowed origins only.

@@ -1,6 +1,7 @@
 import { getActiveTab, missingTabError } from '../util.js';
 import { setTargetTab, clearTargetTab, resolveTargetTab } from './targetTab.js';
 import { trailOf } from './trail.js';
+import { listSheets } from './sheet.js';
 
 // ── SINGLE SOURCE OF TRUTH for "which tab does the assistant act on?" ──────────────
 // Every action/snapshot/overlay must resolve its tab through these, NOT through
@@ -30,7 +31,7 @@ const MAIN_WORLD_FILES = ['src/actions/page.js'];
 export async function handleTabAction(action, args = {}) {
   if (action === 'fast_tab')    return openTab(args);
   if (action === 'fast_nav')    return navigateTab(args);
-  if (action === 'fast_list')   return listTabs();
+  if (action === 'fast_list')   return listTabs(args);
   if (action === 'fast_close')  return closeTab(args);
   if (action === 'fast_switch') return switchTab(args);
   return { error: `Unknown tab action: ${action}` };
@@ -234,7 +235,8 @@ async function navigateTab({ url, waitMs, tabId: callTabId }) {
 // same way. `active` is per window, so `windowId` says which window each tab is active in.
 // The CURRENT window's tabs come FIRST: callers that take "the first active tab" when nothing is
 // pinned (fast-dxt/server/batch.js tabUrl) keep meaning the current window, as before.
-async function listTabs() {
+// Then the page targets that are not tabs (the Google Pay payment sheet): {targetId, kind:'sheet', …}.
+async function listTabs(args = {}) {
   const all = await chrome.tabs.query({});
   let cur = new Set();
   try { cur = new Set((await chrome.tabs.query({ currentWindow: true })).map((t) => t.id)); } catch { /* no current window */ }
@@ -242,7 +244,8 @@ async function listTabs() {
   const pinnedId = (await resolveTargetTab())?.id;
   // `trail`: the tab's timestamped URL changes (trail.js ring, ≤50) — a watcher
   // polling every few seconds still sees a 2s stop.
-  return Promise.all(tabs.map(async t => {
+  const sheets = await listSheets(Array.isArray(args.sheetHosts) ? args.sheetHosts : null);
+  const rows = await Promise.all(tabs.map(async t => {
     const trail = await trailOf(t.id);
     return {
       id: t.id, windowId: t.windowId, url: t.url, title: t.title, active: t.active,
@@ -251,6 +254,7 @@ async function listTabs() {
       ...(trail.length ? { trail } : {}),
     };
   }));
+  return [...rows, ...sheets];
 }
 
 // `match` wins over `tabId`: a per-session client fills tabId with its own tab on

@@ -147,6 +147,7 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        targetId: { type: 'string', description: 'A page that is not a tab (fast_list rows with kind:"sheet", e.g. the Google Pay sheet): act on it instead of a tab.' },
         frame: { type: 'string', description: 'A frame by origin or id ("f7"): act inside it (see fast_snapshot `frames`).' },
         viewport: { type: 'boolean', description: 'Only on-screen items.' },
         overlay: { type: 'boolean', description: 'Also list items of an open menu or popover.' },
@@ -163,6 +164,7 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        targetId: { type: 'string', description: 'A page that is not a tab (fast_list rows with kind:"sheet", e.g. the Google Pay sheet): act on it instead of a tab.' },
         text: { type: 'string', description: 'Visible text, label, aria-label or placeholder to match.' },
         id: { type: 'string', description: 'Snapshot item id: "42", or "f7:42" inside a frame.' },
         frame: { type: 'string', description: 'A frame by origin or id ("f7"): act inside it (see fast_snapshot `frames`).' },
@@ -222,7 +224,7 @@ const BROWSER_TOOLS = [
   },
   {
     name: 'fast_list',
-    description: 'List open tabs in every window: id, windowId, url, title, active.',
+    description: 'List open tabs in every window: id, windowId, url, title, active. Pages that are not tabs (the Google Pay sheet) follow as {targetId, kind:"sheet", url, openerTabId}.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -309,6 +311,7 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        targetId: { type: 'string', description: 'A page that is not a tab (fast_list rows with kind:"sheet", e.g. the Google Pay sheet): act on it instead of a tab.' },
         format: { type: 'string', enum: ['png', 'jpeg'], description: 'png (default) or jpeg.' },
         quality: { type: 'number', description: 'JPEG quality 0-100.' },
         fresh: { type: 'boolean', description: 'Force a new frame if the last image looked stale.' },
@@ -388,6 +391,7 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        targetId: { type: 'string', description: 'A page that is not a tab (fast_list rows with kind:"sheet", e.g. the Google Pay sheet): act on it instead of a tab.' },
         x: { type: 'number', description: 'X in CSS pixels.' },
         y: { type: 'number', description: 'Y in CSS pixels.' },
         button: { type: 'string', description: 'left (default), right or middle.' },

@@ -12,12 +12,19 @@ async function pageFetch(url, method, headers, body, max) {
   const t = setTimeout(() => ctl.abort(), 25000);
   try {
     const r = await fetch(url, { method, headers, body, credentials: 'include', signal: ctl.signal, redirect: 'follow' });
-    const text = method === 'HEAD' ? '' : await r.text();
-    return {
-      status: r.status, ok: r.ok, url: r.url, redirected: r.redirected,
-      contentType: r.headers.get('content-type') || '',
-      length: text.length, truncated: text.length > max, body: text.length > max ? text.slice(0, max) : text,
-    };
+    const contentType = r.headers.get('content-type') || '';
+    const head = { status: r.status, ok: r.ok, url: r.url, redirected: r.redirected, contentType };
+    if (method === 'HEAD') return { ...head, length: 0, truncated: false, body: '' };
+    // binary (an image, a blob: picture): base64 of the bytes, cut at `max` base64 characters
+    if (/^(image|audio|video|font)\/|^application\/(octet-stream|pdf|zip)/i.test(contentType)) {
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      const keep = bytes.subarray(0, Math.floor(max / 4) * 3);
+      let bin = '';
+      for (let i = 0; i < keep.length; i += 0x8000) bin += String.fromCharCode.apply(null, keep.subarray(i, i + 0x8000));
+      return { ...head, base64: true, length: bytes.length, truncated: keep.length < bytes.length, body: btoa(bin) };
+    }
+    const text = await r.text();
+    return { ...head, length: text.length, truncated: text.length > max, body: text.length > max ? text.slice(0, max) : text };
   } catch (e) {
     return { error: `fetch failed: ${e && e.name === 'AbortError' ? 'timed out after 25 s' : (e && e.message) || e}` };
   } finally { clearTimeout(t); }

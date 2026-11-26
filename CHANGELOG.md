@@ -7,6 +7,14 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.36 + relay: Google Pay sheet by targetId; origin-limited tokens; blob:/binary fast_fetch
+- **What:**
+  - `fast-ext/src/actions/sheet.js`: page targets that are not tabs (the Google Pay payment sheet `pay.google.com/gp/p/ui/pay`, a Payment Handler window chrome.tabs never sees) are listed after the tabs in fast_list as `{targetId, kind:'sheet', url, title, openerTabId}` (chrome.debugger.getTargets), and fast_snapshot / fast_screenshot / fast_click / fast_click_xy take `targetId`: a debugger session on that target, controls read with top-page coordinates (same-origin frames included), clicks as real mouse input. Read and click only. Service tokens: only pay.google.com sheets, only when the token has Dunkin origins (`sheetHosts`); needs 0.4.36 (`SHEET_MIN_VERSION`).
+  - Relay migration 0013 `agents.origins`: a token held to page origins acts only on a tab whose origin (read fresh) is on the list, pinned with expectOrigin; fast_nav / fast_tab only to URLs there; fast_batch / fast_switch / fast_close refused.
+  - fast_fetch: `blob:https://site/…` URLs of an allowed origin (GET only); binary responses (image/audio/video/font/pdf/zip/octet-stream) come back base64 (`base64:true`).
+- **Why:** Dunkin's Google Pay orders were stuck at the sheet (uber-android, urgent); deskhub's RCS sender needs a send token held to messages.google.com that can read picture blobs.
+- **Verified:** relay 98/98 subtests; fast-ext 70/70; Chromium: the sheet snapshot reads a control inside a frame and the CDP click lands; extension debugger attach by targetId to a pay.google.com page works.
+
 ## 2026-11-26 — extension 0.4.35 + relay: fast_fetch and fast_capture bodies up to 2 MB
 - **What:** `fetchInPage.js` BODY_MAX 512 KB → 2 MB (characters, one relay frame like fast_text); `capture.js` maxBody default/limit 2 MB. Relay `watch.js`: a capture body over 400k characters is stored in pieces (`wbd:<id>:<seq>:<k>`, one DO value is ≤ 2 MB) and joined on read; trim and stop delete the pieces.
 - **Why:** Jewel's coupon gallery (`/abs/pub/xapi/offers/companiongalleryoffer`) is 778 KB (uber-android).

@@ -9,6 +9,7 @@ import { fetchInPage } from './fetchInPage.js';
 import { uploadFiles } from './upload.js';
 import { watchStart, watchStop } from './watch.js';
 import { captureStart } from './capture.js';
+import { sheetAction } from './sheet.js';
 import { waitForNetworkIdle, pendingNow } from './waitIdle.js';
 import { frameRead, waitTextAnyFrame, snapshotWithFrames, actWithFrames, inNamedFrame, maskCardNumbers, withFrameHitSnapshot, framesAppeared, withSelectorFrameHint, capRead, READ_MAX, READ_MAX_FULL } from './frames.js';
 import { isInjectableUrl, missingTabError, wakeTab, explainHostRefused } from '../util.js';
@@ -141,6 +142,11 @@ export async function dispatchAction(action, rawArgs) {
   // divert it.
   // A call that names a tab acts on THAT tab or fails: a tabId that is present but not a
   // number (e.g. "1220610012") is refused, never read as "no tab" (which meant the target tab).
+  // A page target that is not a tab (the Google Pay sheet): read / click it over the debugger.
+  if (args.targetId != null) {
+    const r = await sheetAction(action, args);
+    return r && typeof r === 'object' && 'error' in r ? r : { result: r };
+  }
   if (args.tabId != null && typeof args.tabId !== 'number') {
     return { error: `tabId must be a number (a tab id from fast_list); got ${JSON.stringify(args.tabId)}. Nothing was run.`, code: 'bad_tab' };
   }
