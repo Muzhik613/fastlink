@@ -4,7 +4,7 @@
 // Not in the Web Store zip: scripts/package.sh replaces this file with a stub.
 import { getInjectableTab } from '../util.js';
 
-const BODY_MAX = 512 * 1024;   // the relay socket carries ~1 MB; keep well under it
+const BODY_MAX = 2 * 1024 * 1024;   // characters; one relay frame (fast_text sends 2M too)
 
 // Runs in the page (MAIN world). Self-contained: chrome.scripting serializes it.
 async function pageFetch(url, method, headers, body, max) {

@@ -143,3 +143,23 @@ test('past the per-watch cap the oldest go and a late read says gap', async () =
   assert.equal(rd.events.length, 100);
   assert.equal(rd.events[0].seq, 6);
 });
+
+test('a 1.9 MB capture body is stored in pieces and read back whole; trimming and stop delete the pieces', async () => {
+  const a = fakeSocket('tokA', Date.now(), '0.4.35');
+  const { r, storage } = await makeRelay({ devices: [{ name: 'hvm', token: 'tokA' }], sockets: [a] });
+  const { out } = await started(r, a, 'fast_capture', { tabId: 5, url: '/offers' });
+  const body = 'x'.repeat(1_900_001);
+  await push(r, a, out.watchId, 1, [{ kind: 'request', url: 'https://www.jewelosco.com/abs/pub/xapi/offers/companiongalleryoffer', status: 200, body, bodyLength: body.length }]);
+  assert.ok([...storage.m.keys()].filter((k) => k.startsWith('wbd:')).length === 5);
+  const rd = (await mcpCall(r, 'fast_watch_read', { watchId: out.watchId, waitSec: 0 })).data;
+  assert.equal(rd.events[0].body, body);
+  assert.equal(rd.events[0].bodyParts, undefined);
+  for (let n = 2; n <= 101; n++) await push(r, a, out.watchId, n, [{ kind: 'request', i: n }]);
+  assert.equal([...storage.m.keys()].filter((k) => k.startsWith('wbd:')).length, 0, 'the trimmed event took its pieces');
+  await push(r, a, out.watchId, 102, [{ kind: 'request', body }]);
+  const p = mcpCall(r, 'fast_watch_stop', { watchId: out.watchId });
+  for (let i = 0; i < 200 && a.lastCall().action !== 'fast_watch_stop'; i++) await tick();
+  await reply(r, a, a.lastCall().id, { result: { stopped: true } });
+  await p;
+  assert.equal([...storage.m.keys()].filter((k) => k.startsWith('wbd:') || k.startsWith('wev:')).length, 0);
+});

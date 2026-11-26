@@ -22,8 +22,13 @@
 const META = 'watch:';
 const EV = 'wev:';
 const evKey = (id, seq) => `${EV}${id}:${String(seq).padStart(10, '0')}`;
+// A capture body over BODY_CHUNK characters is stored in pieces (one DO value is ≤ 2 MB).
+const BD = 'wbd:';
+const BODY_CHUNK = 400_000;
+const bodyPrefix = (id, seq) => `${BD}${id}:${seq == null ? '' : String(seq).padStart(10, '0') + ':'}`;
+const bodyKey = (id, seq, k) => `${bodyPrefix(id, seq)}${String(k).padStart(4, '0')}`;
 export const WATCH_MAX_PER_ACCOUNT = 50;
-// Kept per watch: a DOM watch's events are small; a capture's carry bodies up to 512 KB.
+// Kept per watch: a DOM watch's events are small; a capture's carry bodies up to 2 MB.
 const KEEP = { dom: 1000, request: 100 };
 const EVENT_MAX_CHARS = 1_500_000;       // one stored value (DO SQLite values are ≤ 2 MB)
 const READ_MAX_CHARS = 8_000_000;        // one fast_watch_read answer
@@ -65,6 +70,7 @@ async function allMetas(relay) {
 async function deleteWatch(relay, meta) {
   const keys = [META + meta.id];
   for (let s = meta.firstSeq; s <= meta.lastSeq; s++) keys.push(evKey(meta.id, s));
+  keys.push(...(await relay.ctx.storage.list({ prefix: bodyPrefix(meta.id) })).keys());
   for (let i = 0; i < keys.length; i += 128) await relay.ctx.storage.delete(keys.slice(i, i + 128));
   wake(relay, meta.id);
 }
@@ -74,6 +80,12 @@ async function append(relay, meta, events) {
   const puts = {};
   for (const e of events) {
     let ev = { ...e, seq: ++meta.lastSeq };
+    if (typeof ev.body === 'string' && ev.body.length > BODY_CHUNK) {
+      const n = Math.ceil(ev.body.length / BODY_CHUNK);
+      for (let k = 0; k < n; k++) puts[bodyKey(meta.id, ev.seq, k)] = ev.body.slice(k * BODY_CHUNK, (k + 1) * BODY_CHUNK);
+      const { body, ...rest } = ev;
+      ev = { ...rest, bodyParts: n };
+    }
     if (JSON.stringify(ev).length > EVENT_MAX_CHARS) {
       const { body, postData, ...rest } = ev;
       ev = { ...rest, tooLarge: true, note: 'event over 1.5 MB: body dropped (lower maxBody)' };
@@ -84,7 +96,11 @@ async function append(relay, meta, events) {
   if (meta.firstSeq === 0 && meta.lastSeq > 0) meta.firstSeq = 1;
   const keep = KEEP[meta.kind] || 1000;
   const drop = [];
-  while (meta.lastSeq - meta.firstSeq + 1 > keep) { drop.push(evKey(meta.id, meta.firstSeq)); meta.firstSeq++; }
+  while (meta.lastSeq - meta.firstSeq + 1 > keep) {
+    drop.push(evKey(meta.id, meta.firstSeq));
+    drop.push(...(await relay.ctx.storage.list({ prefix: bodyPrefix(meta.id, meta.firstSeq) })).keys());
+    meta.firstSeq++;
+  }
   puts[META + meta.id] = meta;
   const entries = Object.entries(puts);
   for (let i = 0; i < entries.length; i += 128) await relay.ctx.storage.put(Object.fromEntries(entries.slice(i, i + 128)));
@@ -166,8 +182,13 @@ export async function watchRead(relay, args = {}, scope = null) {
     for (let k = s; k < s + 64 && k <= meta.lastSeq; k++) keys.push(evKey(meta.id, k));
     const got = await relay.ctx.storage.get(keys);
     for (const k of keys) {
-      const ev = got.get(k);
+      let ev = got.get(k);
       if (!ev) continue;
+      if (ev.bodyParts) {
+        const parts = await relay.ctx.storage.get(Array.from({ length: ev.bodyParts }, (_, i) => bodyKey(meta.id, ev.seq, i)));
+        const { bodyParts, ...rest } = ev;
+        ev = { ...rest, body: Array.from({ length: bodyParts }, (_, i) => parts.get(bodyKey(meta.id, ev.seq, i)) || '').join('') };
+      }
       const n = JSON.stringify(ev).length;
       if (events.length && chars + n > READ_MAX_CHARS) { more = true; break; }
       chars += n;

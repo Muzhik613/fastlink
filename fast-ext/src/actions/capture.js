@@ -12,7 +12,7 @@ import { cdp, onDebuggerAttach } from './input.js';
 import { getInjectableTab } from '../util.js';
 import { registerKind, addWatch, watchesOnTab, registrySync, pushEvents, endWatch, ready, originOf } from './watch.js';
 
-export const BODY_MAX_DEFAULT = 512 * 1024;
+export const BODY_MAX_DEFAULT = 2 * 1024 * 1024;
 const POST_DATA_MAX = 64 * 1024;
 const WATCH_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
 const IN_FLIGHT_MAX = 500;

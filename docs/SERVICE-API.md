@@ -59,7 +59,7 @@ POST /mcp
   - Only for tokens with allowed fetch origins (jewel-api: `https://www.jewelosco.com`), and only
     same-origin as the tab. A body only with POST or DELETE (up to 64 KB).
   - `Cookie`, `Host`, `Origin`, `Referer` headers are dropped (the browser sets them).
-  - The response body is cut at 512 KB (`truncated:true`) and returned byte-exact.
+  - The response body is cut at 2 MB (`truncated:true`, `length` = the full size) and returned byte-exact (extension 0.4.35+; older: 512 KB).
   - Pattern: open one tab on the site (`fast_tab`, background + scoped), keep it, call
     `fast_fetch` against it repeatedly; reopen it if a call says the tab is gone or moved.
   - Methods per origin and browser for jewel-api (anything else is refused by the relay):
@@ -94,7 +94,7 @@ event since its cursor. Two kinds, one reader:
     event: `{seq, at, kind:'request', url, method, resourceType, requestHeaders, postData?, status,
     responseHeaders, mimeType, body, bodyLength, base64?, truncated?}` (or `failed` instead of
     the response). `requestHeaders` are the headers as sent on the wire (auth headers and
-    `Cookie` included). `body` is cut at `maxBody` (default and limit 512 KB).
+    `Cookie` included). `body` is cut at `maxBody` (default and limit 2 MB; extension 0.4.35+, older 512 KB).
   - Uses Chrome's debugger on that tab (the "FastLink is debugging this browser" banner shows).
     Opening DevTools on the tab or dismissing the banner ends the capture (`ended` event).
   - Service tokens: only on a tab whose origin is one of the token's fetch origins, and only

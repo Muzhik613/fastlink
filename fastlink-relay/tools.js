@@ -101,14 +101,14 @@ const BROWSER_TOOLS = [
         url: { type: 'string', description: 'Text the request URL contains, e.g. "/api/cart".' },
         method: { type: 'string', description: 'Only this HTTP method.' },
         body: { type: 'boolean', description: 'Default true: include the response body.' },
-        maxBody: { type: 'number', description: 'Response body cap in bytes (default and limit 524288).' },
+        maxBody: { type: 'number', description: 'Response body cap in bytes (default and limit 2097152).' },
       },
       required: ['url'],
     },
   },
   {
     name: 'fast_fetch',
-    description: 'Service tokens only: fetch(url) from inside an open tab on the same site, with the page\'s own cookies. Returns {status, body} (body cut at 512 KB). Only origins and methods allowed for the token.',
+    description: 'Service tokens only: fetch(url) from inside an open tab on the same site, with the page\'s own cookies. Returns {status, body} (body cut at 2 MB). Only origins and methods allowed for the token.',
     inputSchema: {
       type: 'object',
       properties: {
