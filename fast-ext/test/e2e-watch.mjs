@@ -14,7 +14,7 @@ const CHROME = process.argv[3];
 const PORT = 18777, CDP = 9339;
 const log = (...a) => console.log(new Date().toISOString().slice(11, 23), ...a);
 
-const PAGE = `<!doctype html><html><body><div id=pick tabindex=0 onfocus="document.getElementById('st').textContent='FOCUSED'">Pick size</div><span id=st>none</span><ul id=l></ul><script>
+const PAGE = `<!doctype html><html><body><div id=pick tabindex=0 onfocus="document.getElementById('st').textContent='FOCUSED'">Pick size</div><span id=st>none</span><div id=sc style="height:120px;overflow:auto"><div style="height:3000px">older</div></div><script>document.getElementById('sc').scrollTop=2800</script><ul id=l></ul><script>
 let n = 0;
 const add = (who, s) => { const li = document.createElement('li'); li.className = 'row'; li.dataset.id = who; li.innerHTML = '<b class=who>'+who+'</b> <i class=s>'+s+'</i>'; document.getElementById('l').prepend(li); };
 add('Ann', 'hello'); add('Bob', 'hi');
@@ -128,6 +128,8 @@ try {
   const fc = await call('fast_click', { tabId, text: 'Pick size', noSnapshot: true });
   const stEl = await call('fast_text', { tabId, selector: '#st' });
   check('fast_click focuses an onFocus-only element', stEl.result?.text === 'FOCUSED', JSON.stringify([fc.error || fc.result?.clicked, stEl.result?.text]));
+  const wh = await call('fast_scroll', { tabId, wheel: true, selector: '#sc', steps: 2 });
+  check('fast_scroll wheel scrolls the container up', wh.result?.scrollTopAfter < wh.result?.scrollTopBefore, JSON.stringify(wh.result || wh));
   const txt = await call('fast_text', { tabId, selector: '.row', limit: 1 });
   check('fast_text limit', txt.result?.items?.length === 1 && txt.result.matches >= 2, JSON.stringify(txt.result));
 

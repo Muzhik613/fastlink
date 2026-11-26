@@ -567,3 +567,51 @@ function keyInfo(k) {
   }
   return { keyCode: 0, code: s, key: s };
 }
+
+// fast_scroll {wheel:true}: a real mouse-wheel scroll (CDP Input mouseWheel) at the centre of
+// `selector` (else of the viewport). Pages that load more on wheel/scroll events (Messages for
+// web loading older bubbles) see it as a person's scroll. `pixels` (default -800 = up) per step,
+// `steps` (1-20, default 3).
+export async function wheelScroll({ tabId: callTabId, selector, pixels, steps } = {}) {
+  const got = await getInjectableTab(callTabId);
+  if (got.error) return got;
+  const tabId = got.tab.id;
+  const dy = typeof pixels === 'number' && pixels !== 0 ? pixels : -800;
+  const n = Math.min(20, Math.max(1, Number.isInteger(steps) ? steps : 3));
+  const [{ result: at }] = await chrome.scripting.executeScript({
+    target: { tabId }, world: 'ISOLATED', args: [selector || null],
+    func: (sel) => {
+      const el = sel ? document.querySelector(sel) : null;
+      if (sel && !el) return { error: `selector "${sel}" not found` };
+      const r = el ? el.getBoundingClientRect() : { left: 0, top: 0, width: innerWidth, height: innerHeight };
+      const s = el || document.scrollingElement;
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), before: s ? s.scrollTop : 0 };
+    },
+  });
+  if (at?.error) return at;
+  // A hidden tab may never ack real input (no frames): each step is time-boxed, and a wheel that
+  // did not land falls back to a page wheel event + scrollBy, reported as mode:'page'.
+  const boxed = (p) => Promise.race([p.then(() => true), new Promise((r) => setTimeout(() => r(false), 2500))]);
+  let real = await boxed(cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y, button: 'none', buttons: 0 }));
+  for (let i = 0; i < n && real; i++) {
+    real = await boxed(cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: at.x, y: at.y, deltaX: 0, deltaY: dy }));
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  if (!real) {
+    await chrome.scripting.executeScript({
+      target: { tabId }, world: 'ISOLATED', args: [selector || null, dy, n],
+      func: (sel, d, k) => {
+        const el = (sel && document.querySelector(sel)) || document.scrollingElement;
+        for (let i = 0; i < k; i++) {
+          el.dispatchEvent(new WheelEvent('wheel', { deltaY: d, deltaMode: 0, bubbles: true, cancelable: true, composed: true }));
+          el.scrollBy(0, d);
+        }
+      },
+    });
+  }
+  const [{ result: after }] = await chrome.scripting.executeScript({
+    target: { tabId }, world: 'ISOLATED', args: [selector || null],
+    func: (sel) => { const s = (sel && document.querySelector(sel)) || document.scrollingElement; return s ? s.scrollTop : 0; },
+  });
+  return { wheel: true, mode: real ? 'input' : 'page', steps: n, deltaY: dy, at: { x: at.x, y: at.y }, scrollTopBefore: at.before, scrollTopAfter: after, tabId };
+}

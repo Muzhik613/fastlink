@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.40: fast_scroll {wheel:true}
+- **What:** `input.js` wheelScroll: real CDP mouseWheel input at the centre of `selector` (else the viewport), `pixels` per step (default -800 = up), `steps` 1-20 (default 3); each step time-boxed, and a wheel a hidden tab never acks falls back to a page WheelEvent + scrollBy (`mode:'page'`). Result: scrollTopBefore / scrollTopAfter.
+- **Why:** deskhub: Messages for web loads older bubbles on wheel scroll.
+- **Verified:** fast-ext 70/70; e2e 21/21 (headless background tab: mode page, container scrolled up).
+
 ## 2026-11-26 — extension 0.4.39 + relay: read and click inside a sheet's cross-origin frames
 - **What:** `sheet.js` snapshot auto-attaches (Target.setAutoAttach flatten) to the sheet's cross-origin frames (OOPIFs, nested too), reads each in its own session and shifts its controls into the sheet's coordinates (DOM.getFrameOwner + DOM.getBoxModel), tagged `frame:<host>`; fast_click by id/text then clicks there with real mouse input. Relay: Dunkin tokens' sheet hosts are pay.google.com + payments.google.com (frames on other hosts are listed under framesNotRead).
 - **Why:** the Google Pay buyflow (card row, "Pay Dunkin $3.75", the Pay button) is payments.google.com/gp/w/u/0/buyflow2, a cross-origin frame inside the sheet; 0.4.37 returned no items (uber-android 14:56).

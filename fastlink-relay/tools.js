@@ -339,6 +339,8 @@ const BROWSER_TOOLS = [
         to: { type: 'string', description: 'top, bottom or a percentage like "50%".' },
         pixels: { type: 'number', description: 'Pixels (negative = up).' },
         selector: { type: 'string', description: 'CSS selector of the scroll container.' },
+        wheel: { type: 'boolean', description: 'Scroll with real mouse-wheel input at the container (pages that load more on wheel, e.g. older chat messages); pixels per step (default -800 = up).' },
+        steps: { type: 'number', description: 'With wheel: how many wheel steps, 1-20 (default 3).' },
         noSnapshot: { type: 'boolean', description: 'Skip the page preview.' },
       },
     },

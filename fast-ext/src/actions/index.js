@@ -2,7 +2,7 @@ import { handleTabAction, getTargetTab, getTargetTabId } from './tab.js';
 import { showCallDetails, extraActions } from '../callHooks.js';
 import { takeScreenshot }  from './screenshot.js';
 import { getText }         from './text.js';
-import { clickXY, typeText } from './input.js';
+import { clickXY, typeText, wheelScroll } from './input.js';
 import { handoffActions } from './handoff.js';
 import { updateSelf } from '../reloadSelf.js';
 import { fetchInPage } from './fetchInPage.js';
@@ -254,6 +254,7 @@ async function runOne(action, args) {
   if (action === 'fast_watch')      return watchStart(args);
   if (action === 'fast_capture')    return captureStart(args);
   if (action === 'fast_watch_stop') return watchStop(args);
+  if (action === 'fast_scroll' && args?.wheel) return wheelScroll(args);
   if (action === 'fast_click_xy')   return clickXY(args);
   if (action === 'fast_type')       return typeText(args);
   if (action === 'fast_frame_read') return frameRead(args);
