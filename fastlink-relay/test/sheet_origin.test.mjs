@@ -52,3 +52,15 @@ test('an origin-limited token acts only on tabs on its origins and loads only UR
   assert.equal((await ok).data.clicked, 'Send');
   assert.equal(calls(a)[2].args.expectOrigin, 'https://messages.google.com');
 });
+
+test('an origin-limited token may fast_switch by tabId (focus only), never by match', async () => {
+  const a = fakeSocket('tokA', Date.now(), '0.4.45');
+  const { r } = await makeRelay({ devices: [{ name: 'hvm-boss', token: 'tokA' }], sockets: [a] });
+  const H = { 'X-Fastlink-Browsers': JSON.stringify(['hvm-boss']), 'X-Fastlink-Origins': JSON.stringify(['https://messages.google.com']) };
+  assert.match(JSON.stringify((await mcpCall(r, 'fast_switch', { match: 'dunkin' }, H)).data), /by tabId only/);
+  const p = mcpCall(r, 'fast_switch', { tabId: 9, focus: true }, H);
+  await answer(r, a, 1, { result: { switched: 9 }, tabId: 9 });
+  assert.equal((await p).data.switched, 9);
+  assert.equal(calls(a)[0].action, 'fast_switch');
+  assert.equal(calls(a)[0].args.focus, true);
+});

@@ -367,7 +367,13 @@ async function originGate(relay, name, args, target, allowed) {
     if (!allowed.includes(o)) return { error: `This token may load only ${allowed.join(', ')} (got ${o || 'no URL'}).`, originBlocked: true };
     if (name === 'fast_tab') return null;
   }
-  if (name === 'fast_batch' || name === 'fast_switch' || name === 'fast_close') return { error: `${name} is not available to an origin-limited token.`, originBlocked: true };
+  // fast_switch only moves focus (no read, no write): by tabId, to any tab, so a sender can bring
+  // its tab to the front for real input and then put the user's tab back.
+  if (name === 'fast_switch') {
+    if (typeof args.tabId !== 'number' || args.match != null) return { error: 'An origin-limited token switches tabs by tabId only (from fast_list).', originBlocked: true };
+    return null;
+  }
+  if (name === 'fast_batch' || name === 'fast_close') return { error: `${name} is not available to an origin-limited token.`, originBlocked: true };
   if (typeof args.tabId !== 'number') return { error: 'An origin-limited token must pass tabId (a tab on an allowed origin, from fast_list).', originBlocked: true };
   // read fresh (not the cache): a tab may have moved since the last call
   const o = await relay.activeOrigin(target, args.tabId);
