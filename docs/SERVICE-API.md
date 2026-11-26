@@ -126,6 +126,29 @@ for (let after = 0;;) {
 **Cheaper one-off read:** `fast_text {browser, tabId, selector, limit: N}` → `{items:[text …], matches}`,
 the first N matches only.
 
+## Payment sheets (Google Pay) — extension 0.4.36+
+
+The Google Pay sheet (`pay.google.com/gp/p/ui/pay`) is a Chrome Payment Handler window, not a tab.
+- `fast_list` lists it after the tabs: `{targetId, kind:'sheet', url, title, openerTabId}` (opener = the
+  tab that opened it).
+- `fast_snapshot {targetId}` → `{items:[{i, tag, role?, label, x, y, disabled?, checked?}], text,
+  crossOriginFrames?}`; `fast_click {targetId, id | text, role?, index?}` clicks with real mouse input;
+  `fast_screenshot {targetId}` and `fast_click_xy {targetId, x, y}` for anything the snapshot can't read.
+- Read and click only (no typing, no navigation). Service tokens: only pay.google.com sheets, and only a
+  token with Dunkin fetch origins (jewel-api). Never press Pay unless the order is meant to go through.
+
+## Origin-limited tokens
+
+A token with `agents.origins` (deskhub-rcs-send: `https://messages.google.com`) must pass `tabId`; the
+tab must be on one of its origins (checked fresh on every call), fast_nav / fast_tab only load URLs
+there, and fast_batch / fast_switch / fast_close are refused.
+`~/.secrets/fastlink-rcs-send.json`: hvm-boss only; tools fast_list, fast_snapshot, fast_text, fast_click,
+fast_fill, fast_type, fast_key_press, fast_wait, fast_nav, fast_screenshot, fast_fetch (GET on
+messages.google.com, including the page's own `blob:https://messages.google.com/…` picture URLs).
+
+`fast_fetch` returns binary responses (image, audio, video, font, pdf, zip, octet-stream) as base64
+(`base64:true`, `length` = bytes).
+
 There is no JavaScript evaluation for services (fast_fetch takes a URL, never code). `fast_evaluate` exists only in the locked secure
 build. Read pages with `fast_snapshot` / `fast_text`.
 
