@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.43: sheet frames read through their own debugger targets
+- **What:** `sheet.js` drops Target.setAutoAttach (chrome.debugger delivers no child-frame sessions to extensions: 0.4.41 saw no frames at all, so the GPay sheet snapshot came back empty). The sheet's own scan lists its cross-origin frames with boxes; each is matched to a tab-less frame target from chrome.debugger.getTargets() (origin + path, then host), attached directly, read, and its controls shifted by its box (nested frames too). Unreadable frames are reported in framesNotRead with the reason and box.
+- **Why:** uber-android 15:16: fast_snapshot {targetId} on the live sheet = items:[], text:"", no frame info.
+
 ## 2026-11-26 — extension 0.4.42: fast_update never reloads when Chrome throttles the check
 - **What:** `reloadSelf.js` updateSelf: updateCheck "throttled" answers reloading:false with a hint (retry in ~10 min, or chrome://extensions Update) instead of a plain reload.
 - **Why:** 11-26 15:13: two throttled fast_update calls on hvm-boss/hvm-ytx reloaded FastLink for nothing (a ~5 s disconnect, watches ended). hvm got 0.4.41 instead via chrome.developerPrivate.autoUpdate() on each profile's chrome://extensions page.
