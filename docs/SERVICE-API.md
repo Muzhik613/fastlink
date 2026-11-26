@@ -134,6 +134,11 @@ The Google Pay sheet (`pay.google.com/gp/p/ui/pay`) is a Chrome Payment Handler 
 - `fast_snapshot {targetId}` → `{items:[{i, tag, role?, label, x, y, disabled?, checked?}], text,
   crossOriginFrames?}`; `fast_click {targetId, id | text, role?, index?}` clicks with real mouse input;
   `fast_screenshot {targetId}` and `fast_click_xy {targetId, x, y}` for anything the snapshot can't read.
+- The buyflow frame inside the sheet (payments.google.com) shows up 1-2 s after the sheet opens:
+  poll fast_snapshot {targetId} until items carry frame:"payments.google.com". After a click that
+  opens a list (the card list: role=option rows in a role=listbox), wait ~1.5 s for it to settle
+  before clicking a row, or the click only hovers it. The sheet drops its #__WA__ URL fragment soon
+  after loading, so don't rely on it.
 - Read and click only (no typing, no navigation). Service tokens: only pay.google.com sheets, and only a
   token with Dunkin fetch origins (jewel-api). Never press Pay unless the order is meant to go through.
 
