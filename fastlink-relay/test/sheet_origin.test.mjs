@@ -13,6 +13,10 @@ test('sheets: read/click tools only; service tokens only with Dunkin origins, he
   const plain = { 'X-Fastlink-Browsers': JSON.stringify(['hvm-boss']) };
   assert.match(JSON.stringify((await mcpCall(r, 'fast_type', { targetId: 'ABCDEF0123456789', text: 'x' })).data), /does not take a targetId/);
   assert.match(JSON.stringify((await mcpCall(r, 'fast_click', { targetId: 'ABCDEF0123456789', text: 'Pay' }, plain)).data), /may not act on sheets/);
+  const originOnly = { 'X-Fastlink-Origins': JSON.stringify(['https://messages.google.com']), 'X-Fastlink-Fetch-Origins': JSON.stringify(['https://www.dunkindonuts.com']) };
+  assert.match(JSON.stringify((await mcpCall(r, 'fast_snapshot', { targetId: 'ABCDEF0123456789' }, originOnly)).data), /origin-limited token may not act on sheets/);
+  const toolsOnly = { 'X-Fastlink-Tools': JSON.stringify(['fast_snapshot']) };
+  assert.match(JSON.stringify((await mcpCall(r, 'fast_snapshot', { targetId: 'ABCDEF0123456789' }, toolsOnly)).data), /may not act on sheets/);
   assert.equal(calls(a).length, 0);
   const p = mcpCall(r, 'fast_click', { targetId: 'ABCDEF0123456789', text: 'Continue', tabId: 3 }, dunkin);
   await answer(r, a, 1, { result: { clicked: 'Continue' } });

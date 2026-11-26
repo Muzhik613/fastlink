@@ -520,9 +520,13 @@ async function dispatchTool(params, relay, trace) {
 
   // Pages that are not tabs (the Google Pay sheet), by targetId: read and click only. A service
   // token reaches only pay.google.com sheets, and only when it has Dunkin origins.
-  const sheetHosts = scope ? (sheetHostsFor(trace) || []) : null;
+  // Fail closed: any restricted token (browsers, tools, origins or fetch origins) is held to the
+  // Dunkin rule; only an unrestricted caller (the owner's own helper / connector) is not.
+  const restricted = !!(scope || toolScope(trace) || originScope(trace) || fetchScope(trace));
+  const sheetHosts = restricted ? (originScope(trace) ? [] : sheetHostsFor(trace)) : null;
   if (args.targetId != null) {
     if (!SHEET_TOOLS.has(name)) return textResult({ error: `${name} does not take a targetId (sheets: ${[...SHEET_TOOLS].join(', ')}).` });
+    if (originScope(trace)) return textResult({ error: 'An origin-limited token may not act on sheets.', originBlocked: true });
     if (typeof args.targetId !== 'string' || !/^[A-Za-z0-9]{8,64}$/.test(args.targetId)) return textResult({ error: 'targetId must be a target id from fast_list (kind:"sheet").' });
     if (sheetHosts && !sheetHosts.length) return textResult({ error: 'This token may not act on sheets.', sheetBlocked: true });
     const { tabId: _t, ...rest } = args;
