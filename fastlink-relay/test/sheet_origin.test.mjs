@@ -22,7 +22,7 @@ test('sheets: read/click tools only; service tokens only with Dunkin origins, he
   await answer(r, a, 1, { result: { clicked: 'Continue' } });
   assert.equal((await p).data.clicked, 'Continue');
   const c = calls(a)[0];
-  assert.deepEqual(c.args.sheetHosts, ['pay.google.com']);
+  assert.deepEqual(c.args.sheetHosts, ['pay.google.com', 'payments.google.com']);
   assert.equal(c.args.tabId, undefined);
   const l = mcpCall(r, 'fast_list', {}, plain);
   await answer(r, a, 2, { result: [] });

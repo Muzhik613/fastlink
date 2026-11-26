@@ -347,7 +347,7 @@ const SHEET_TOOLS = new Set(['fast_snapshot', 'fast_screenshot', 'fast_click', '
 // Sheet hosts a service token may reach: pay.google.com when its fetch origins include Dunkin.
 function sheetHostsFor(trace) {
   const f = fetchScope(trace) || [];
-  return f.some((r) => /(^|\.)dunkindonuts\.com$/.test(new URL(r.origin || 'http://x').hostname)) ? ['pay.google.com'] : [];
+  return f.some((r) => /(^|\.)dunkindonuts\.com$/.test(new URL(r.origin || 'http://x').hostname)) ? ['pay.google.com', 'payments.google.com'] : [];
 }
 // Page origins this caller may act on (set only by the worker, agents.origins), else null.
 function originScope(trace) {

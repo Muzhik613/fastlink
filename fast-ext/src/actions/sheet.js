@@ -8,7 +8,7 @@
 const VERSION = '1.3';
 const attached = new Set();   // targetIds we hold a session on
 
-try { chrome.debugger.onDetach.addListener((src) => { if (src?.targetId) attached.delete(src.targetId); }); } catch { /* node tests */ }
+try { chrome.debugger.onDetach.addListener((src) => { if (src?.targetId) { attached.delete(src.targetId); children.delete(src.targetId); } }); } catch { /* node tests */ }
 
 const hostOf = (url) => { try { return new URL(url).hostname; } catch { return ''; } };
 const isWeb = (url) => /^https?:/.test(url || '');
@@ -23,6 +23,36 @@ async function findTarget(targetId, hosts) {
   if (hosts && !hosts.includes(hostOf(t.url))) return { error: `This token may use only sheets on ${hosts.join(', ')}.`, code: 'host_blocked' };
   return { target: t };
 }
+
+// Child sessions (cross-origin frames inside a sheet), per sheet: sessionId -> {targetId, url, parent}.
+// Filled by Target.attachedToTarget events after Target.setAutoAttach {flatten:true}.
+const children = new Map();   // sheet targetId -> Map(sessionId -> {frameId, url, parentSession})
+try {
+  chrome.debugger.onEvent.addListener((src, method, p) => {
+    const root = src?.targetId;
+    if (!root || !children.has(root)) return;
+    const m = children.get(root);
+    if (method === 'Target.attachedToTarget' && p?.targetInfo?.type === 'iframe') {
+      m.set(p.sessionId, { frameId: p.targetInfo.targetId, url: p.targetInfo.url, parentSession: src.sessionId || null });
+      // its own cross-origin children too
+      chrome.debugger.sendCommand({ targetId: root, sessionId: p.sessionId }, 'Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
+    } else if (method === 'Target.detachedFromTarget') m.delete(p?.sessionId);
+    else if (method === 'Target.targetInfoChanged' && p?.targetInfo) {
+      for (const c of m.values()) if (c.frameId === p.targetInfo.targetId) c.url = p.targetInfo.url;
+    }
+  });
+} catch { /* node tests */ }
+
+async function frameSessions(targetId) {
+  if (!children.has(targetId)) {
+    children.set(targetId, new Map());
+    await tcdp(targetId, 'Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+    await new Promise((r) => setTimeout(r, 400));   // the attach events for frames already there
+  }
+  return children.get(targetId);
+}
+const send = (targetId, sessionId, method, params = {}) =>
+  chrome.debugger.sendCommand(sessionId ? { targetId, sessionId } : { targetId }, method, params);
 
 async function tcdp(targetId, method, params = {}) {
   if (!attached.has(targetId)) {
@@ -93,10 +123,54 @@ export function sheetSnapshot() {
   return JSON.stringify({ url: location.href, title: document.title, items, text: texts.join('\n').slice(0, 12000), ...(frames.length ? { crossOriginFrames: frames, note: 'cross-origin frames are not read: fast_screenshot + fast_click_xy with this targetId' } : {}) });
 }
 
-async function snap(targetId) {
-  const r = await tcdp(targetId, 'Runtime.evaluate', { expression: `(${sheetSnapshot.toString()})()`, returnByValue: true });
-  if (r?.exceptionDetails) return { error: `sheet read failed: ${r.exceptionDetails.text || 'exception'}` };
+async function evalSnap(targetId, sessionId) {
+  const r = await send(targetId, sessionId, 'Runtime.evaluate', { expression: `(${sheetSnapshot.toString()})()`, returnByValue: true });
+  if (r?.exceptionDetails) throw new Error(r.exceptionDetails.text || 'exception');
   return JSON.parse(r.result.value);
+}
+
+// Where a cross-origin frame's content box sits in its parent's viewport (CSS px).
+async function frameOffset(targetId, parentSession, frameId) {
+  await send(targetId, parentSession, 'DOM.getDocument', { depth: 0 });
+  const { backendNodeId } = await send(targetId, parentSession, 'DOM.getFrameOwner', { frameId });
+  const { model } = await send(targetId, parentSession, 'DOM.getBoxModel', { backendNodeId });
+  return { x: model.content[0], y: model.content[1] };
+}
+
+// The sheet's own document, then every cross-origin frame in it (allowed hosts only), with
+// their controls in the sheet's coordinates: what a person sees and can click.
+async function snap(targetId, frameHosts = null) {
+  await tcdp(targetId, 'Runtime.enable').catch(() => {});
+  const top = await evalSnap(targetId, null);
+  const items = [...top.items];
+  const texts = [top.text];
+  const read = [], skipped = [];
+  const kids = await frameSessions(targetId);
+  // offsets resolve parent-first: a frame's position is its owner box plus its parent frame's
+  const offsets = new Map([[null, { x: 0, y: 0 }]]);
+  const pending = [...kids.entries()];
+  for (let pass = 0; pass < 4 && pending.length; pass++) {
+    for (let k = pending.length - 1; k >= 0; k--) {
+      const [sid, c] = pending[k];
+      if (!offsets.has(c.parentSession)) continue;
+      pending.splice(k, 1);
+      if (frameHosts && !frameHosts.includes(hostOf(c.url))) { skipped.push(hostOf(c.url)); continue; }
+      try {
+        const own = await frameOffset(targetId, c.parentSession, c.frameId);
+        const base = offsets.get(c.parentSession);
+        const off = { x: base.x + own.x, y: base.y + own.y };
+        offsets.set(sid, off);
+        const f = await evalSnap(targetId, sid);
+        for (const it of f.items) items.push({ ...it, i: items.length, x: Math.round(it.x + off.x), y: Math.round(it.y + off.y), frame: hostOf(c.url) });
+        if (f.text) texts.push(f.text);
+        read.push(c.url.slice(0, 120));
+      } catch (e) { skipped.push(`${hostOf(c.url)} (${e?.message || e})`); }
+    }
+  }
+  const out = { url: top.url, title: top.title, items, text: texts.filter(Boolean).join('\n').slice(0, 20000) };
+  if (read.length) out.frames = read;
+  if (skipped.length) out.framesNotRead = skipped;
+  return out;
 }
 
 async function clickAt(targetId, x, y) {
@@ -113,7 +187,7 @@ export async function sheetAction(action, args = {}) {
   const id = found.target.id;
   const base = { targetId: id, url: found.target.url };
   try {
-    if (action === 'fast_snapshot') return { ...base, ...(await snap(id)) };
+    if (action === 'fast_snapshot') return { ...base, ...(await snap(id, hosts)) };
     if (action === 'fast_screenshot') {
       const fmt = args.format === 'jpeg' ? 'jpeg' : 'png';
       const shot = await tcdp(id, 'Page.captureScreenshot', { format: fmt, ...(fmt === 'jpeg' && typeof args.quality === 'number' ? { quality: args.quality } : {}) });
@@ -125,8 +199,7 @@ export async function sheetAction(action, args = {}) {
       return { ...base, clicked: { x: args.x, y: args.y } };
     }
     if (action === 'fast_click') {
-      const s = await snap(id);
-      if (s.error) return s;
+      const s = await snap(id, hosts);
       let it = null;
       if (args.id != null && args.id !== '') it = s.items.find((x) => String(x.i) === String(args.id));
       else if (args.text) {

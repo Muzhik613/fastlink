@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.39 + relay: read and click inside a sheet's cross-origin frames
+- **What:** `sheet.js` snapshot auto-attaches (Target.setAutoAttach flatten) to the sheet's cross-origin frames (OOPIFs, nested too), reads each in its own session and shifts its controls into the sheet's coordinates (DOM.getFrameOwner + DOM.getBoxModel), tagged `frame:<host>`; fast_click by id/text then clicks there with real mouse input. Relay: Dunkin tokens' sheet hosts are pay.google.com + payments.google.com (frames on other hosts are listed under framesNotRead).
+- **Why:** the Google Pay buyflow (card row, "Pay Dunkin $3.75", the Pay button) is payments.google.com/gp/w/u/0/buyflow2, a cross-origin frame inside the sheet; 0.4.37 returned no items (uber-android 14:56).
+- **Verified:** fast-ext 70/70, relay sheet tests; Chromium: a cross-origin frame inside a page is found, offset right, its text read, and the computed click presses its button.
+
 ## 2026-11-26 — extension 0.4.38: fast_click moves focus like a real mousedown
 - **What:** `page.js` pointerSeq: after an uncancelled mousedown, focus the nearest focusable element (a, button, input, select, textarea, [tabindex], [contenteditable]); when the page has no window focus (background tab, locked screen) also dispatch focus + focusin, so React onFocus handlers run.
 - **Why:** mac1 Nordstrom checkout (Papa): a React onFocus-only div ignored fast_click.
