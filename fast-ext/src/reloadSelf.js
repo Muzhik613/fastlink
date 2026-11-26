@@ -12,6 +12,12 @@ export async function updateSelf() {
     try { const r = await chrome.runtime.requestUpdateCheck(); check = r?.status ?? r; } catch (e) { check = 'check failed: ' + (e?.message || e); }
   }
   const version = chrome.runtime.getManifest().version;
+  // Throttled: Chrome won't check again yet, so a reload would only drop the connection (and
+  // every watch) for nothing (hvm-boss 11-26). Say so and stay up.
+  if (check === 'throttled') {
+    return { version, installType, updateCheck: check, reloading: false,
+      hint: 'Chrome is throttling update checks right now: nothing was reloaded. Try fast_update again in about 10 minutes, or use the Update button on chrome://extensions in that browser.' };
+  }
   if (check !== 'update_available') setTimeout(() => chrome.runtime.reload(), 500);
   return { version, installType, updateCheck: check, reloading: true,
     hint: 'FastLink restarts in a few seconds and reconnects by itself; fast_status shows the version it comes back with.' };

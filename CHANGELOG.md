@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.42: fast_update never reloads when Chrome throttles the check
+- **What:** `reloadSelf.js` updateSelf: updateCheck "throttled" answers reloading:false with a hint (retry in ~10 min, or chrome://extensions Update) instead of a plain reload.
+- **Why:** 11-26 15:13: two throttled fast_update calls on hvm-boss/hvm-ytx reloaded FastLink for nothing (a ~5 s disconnect, watches ended). hvm got 0.4.41 instead via chrome.developerPrivate.autoUpdate() on each profile's chrome://extensions page.
+
 ## 2026-11-26 — extension 0.4.41: fast_fill on a contenteditable sends a paste's events
 - **What:** `page.js` fill of a contenteditable: select its content, dispatch a cancelable `beforeinput` (insertFromPaste + the text as DataTransfer); an editor that cancels it applied the text itself; else execCommand insertText (fires input) or, refused without window focus, write at the selection and dispatch `input`. Was: innerText + a bare input event.
 - **Why:** deskhub: Messages for web's Angular compose box didn't take fast_fill text (phone-rcs send off). Also: the 15:03 hvm-boss "disconnect" blamed on fast_key_press was my fast_update reloads (audit: key presses before it all ok).
