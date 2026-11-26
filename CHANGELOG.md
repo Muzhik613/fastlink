@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.38: fast_click moves focus like a real mousedown
+- **What:** `page.js` pointerSeq: after an uncancelled mousedown, focus the nearest focusable element (a, button, input, select, textarea, [tabindex], [contenteditable]); when the page has no window focus (background tab, locked screen) also dispatch focus + focusin, so React onFocus handlers run.
+- **Why:** mac1 Nordstrom checkout (Papa): a React onFocus-only div ignored fast_click.
+- **Verified:** fast-ext 70/70; e2e 20/20 incl. an onfocus-only element clicked in a background tab.
+
 ## 2026-11-26 — extension 0.4.37: sheets are tab-less *page* targets only
 - **What:** `sheet.js` lists (and acts on) only `type:'page'` targets with no tab; tab-less cross-origin iframes (type `other`: accounts.google.com RotateCookiesPage in Messages, kaptcha on Dunkin) are no longer listed as sheets, and any session 0.4.36 held on them is detached.
 - **Why:** live on hvm-boss right after 0.4.36: fast_list showed those frames as sheets.

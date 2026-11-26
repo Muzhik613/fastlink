@@ -2478,7 +2478,20 @@ async function runPageAction(action, args) {
     el.dispatchEvent(new P('pointerover', { ...base, ...ptr }));
     el.dispatchEvent(new MouseEvent('mouseover', base));
     el.dispatchEvent(new P('pointerdown', { ...base, ...ptr, buttons: 1 }));
-    el.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1 }));
+    const downOk = el.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1 }));
+    // A real mousedown moves focus to the nearest focusable element (unless a handler cancelled
+    // it); synthetic events don't, so a widget that opens on onFocus (React) never saw the click.
+    if (downOk && el.isConnected) {
+      const f = el.closest && el.closest('a[href],button,input,select,textarea,[tabindex],[contenteditable]:not([contenteditable=false])');
+      if (f && f !== document.activeElement && !f.disabled) {
+        try { f.focus({ preventScroll: true }); } catch {}
+        // A page without window focus (a background tab, a locked screen) moves activeElement but
+        // fires no focus events: send them, so focus handlers (React onFocus = focusin) still run.
+        if (document.activeElement === f && !document.hasFocus()) {
+          try { f.dispatchEvent(new FocusEvent('focus', { relatedTarget: null })); f.dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true })); } catch {}
+        }
+      }
+    }
     if (!el.isConnected) return;
     el.dispatchEvent(new P('pointerup', { ...base, ...ptr }));
     el.dispatchEvent(new MouseEvent('mouseup', base));

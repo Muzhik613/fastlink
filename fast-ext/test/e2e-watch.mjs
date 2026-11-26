@@ -14,7 +14,7 @@ const CHROME = process.argv[3];
 const PORT = 18777, CDP = 9339;
 const log = (...a) => console.log(new Date().toISOString().slice(11, 23), ...a);
 
-const PAGE = `<!doctype html><html><body><ul id=l></ul><script>
+const PAGE = `<!doctype html><html><body><div id=pick tabindex=0 onfocus="document.getElementById('st').textContent='FOCUSED'">Pick size</div><span id=st>none</span><ul id=l></ul><script>
 let n = 0;
 const add = (who, s) => { const li = document.createElement('li'); li.className = 'row'; li.dataset.id = who; li.innerHTML = '<b class=who>'+who+'</b> <i class=s>'+s+'</i>'; document.getElementById('l').prepend(li); };
 add('Ann', 'hello'); add('Bob', 'hi');
@@ -125,6 +125,9 @@ try {
   log('watch start', JSON.stringify(w));
   check('watch returns items with own field names', w.result?.items?.length === 2 && w.result.items[0].name === 'Bob', JSON.stringify(w.result?.items));
 
+  const fc = await call('fast_click', { tabId, text: 'Pick size', noSnapshot: true });
+  const stEl = await call('fast_text', { tabId, selector: '#st' });
+  check('fast_click focuses an onFocus-only element', stEl.result?.text === 'FOCUSED', JSON.stringify([fc.error || fc.result?.clicked, stEl.result?.text]));
   const txt = await call('fast_text', { tabId, selector: '.row', limit: 1 });
   check('fast_text limit', txt.result?.items?.length === 1 && txt.result.matches >= 2, JSON.stringify(txt.result));
 
