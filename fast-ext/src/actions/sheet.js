@@ -172,6 +172,13 @@ async function snap(targetId, frameHosts = null) {
   return out;
 }
 
+// A real mouse click at sheet (top-page) CSS pixels: the browser routes it into whatever frame is there.
+async function clickAt(targetId, x, y) {
+  await tcdp(targetId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 });
+  await tcdp(targetId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+  await tcdp(targetId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+}
+
 // One entry point for the four tools that take a targetId.
 export async function sheetAction(action, args = {}) {
   const hosts = Array.isArray(args.sheetHosts) ? args.sheetHosts.map(String) : null;

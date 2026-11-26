@@ -7,6 +7,10 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.45: sheet clicks work again (clickAt restored)
+- **What:** `sheet.js` clickAt (mouseMoved / mousePressed / mouseReleased at sheet coordinates) was deleted in the 0.4.43 frame-reader rewrite, so every fast_click / fast_click_xy on a sheet threw "clickAt is not defined". Restored; `test/sheet.test.js` now drives snapshot + clicks with a stubbed chrome.debugger.
+- **Why:** uber-android 15:36 (Mama sheet-test, opening the card list).
+
 ## 2026-11-26 — extension 0.4.44: sheet frames in the sheet's own process (the GPay buyflow)
 - **What:** `sheet.js` snapshot: a cross-origin frame listed by the sheet's scan is first looked up in the sheet's own frame tree (Page.getFrameTree) and read through Page.createIsolatedWorld + Runtime.evaluate {contextId}; only a frame in another process falls back to its own target. Controls are shifted by the frame's box in the sheet.
 - **Why:** live 15:24: payments.google.com/…/buyflow2 is same-site with pay.google.com, so it lives in the sheet's process and has no target; 0.4.43 reported it in framesNotRead.
