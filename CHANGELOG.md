@@ -7,6 +7,11 @@ what a prior change already fixed, so we don't reintroduce a bug we already solv
 **Format for each entry**
 
 ```
+## 2026-11-26 — extension 0.4.44: sheet frames in the sheet's own process (the GPay buyflow)
+- **What:** `sheet.js` snapshot: a cross-origin frame listed by the sheet's scan is first looked up in the sheet's own frame tree (Page.getFrameTree) and read through Page.createIsolatedWorld + Runtime.evaluate {contextId}; only a frame in another process falls back to its own target. Controls are shifted by the frame's box in the sheet.
+- **Why:** live 15:24: payments.google.com/…/buyflow2 is same-site with pay.google.com, so it lives in the sheet's process and has no target; 0.4.43 reported it in framesNotRead.
+- **Verified:** fast-ext 70/70; Chromium: a same-site cross-origin frame read via frame tree + isolated world (card row, Pay button) and the sheet-coordinate click pressed the button.
+
 ## 2026-11-26 — extension 0.4.43: sheet frames read through their own debugger targets
 - **What:** `sheet.js` drops Target.setAutoAttach (chrome.debugger delivers no child-frame sessions to extensions: 0.4.41 saw no frames at all, so the GPay sheet snapshot came back empty). The sheet's own scan lists its cross-origin frames with boxes; each is matched to a tab-less frame target from chrome.debugger.getTargets() (origin + path, then host), attached directly, read, and its controls shifted by its box (nested frames too). Unreadable frames are reported in framesNotRead with the reason and box.
 - **Why:** uber-android 15:16: fast_snapshot {targetId} on the live sheet = items:[], text:"", no frame info.

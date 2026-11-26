@@ -93,8 +93,8 @@ export function sheetSnapshot() {
   return JSON.stringify({ url: location.href, title: document.title, items, text: texts.join('\n').slice(0, 12000), ...(frames.length ? { crossOriginFrames: frames, note: 'cross-origin frames: read separately by fast_snapshot' } : {}) });
 }
 
-async function evalSnap(targetId) {
-  const r = await tcdp(targetId, 'Runtime.evaluate', { expression: `(${sheetSnapshot.toString()})()`, returnByValue: true });
+async function evalSnap(targetId, contextId = null) {
+  const r = await tcdp(targetId, 'Runtime.evaluate', { expression: `(${sheetSnapshot.toString()})()`, returnByValue: true, ...(contextId ? { contextId } : {}) });
   if (r?.exceptionDetails) throw new Error(r.exceptionDetails.text || 'exception');
   return JSON.parse(r.result.value);
 }
@@ -112,6 +112,22 @@ export function frameTargetFor(src, targets, used) {
     || null;
 }
 
+// Every frame of the sheet's own process: [{id, url}] (Page.getFrameTree).
+async function frameList(targetId) {
+  const out = [];
+  try {
+    const { frameTree } = await tcdp(targetId, 'Page.getFrameTree');
+    const walk = (n) => { if (!n) return; out.push({ id: n.frame.id, url: n.frame.url || '' }); for (const c of n.childFrames || []) walk(c); };
+    walk(frameTree);
+  } catch { /* none */ }
+  return out;
+}
+function frameInTree(frames, src, used) {
+  const want = urlKey(src);
+  const pool = frames.slice(1).filter((f) => isWeb(f.url) && !used.has(f.id));
+  return pool.find((f) => urlKey(f.url) === want) || pool.find((f) => hostOf(f.url) === hostOf(src)) || null;
+}
+
 // The sheet's own document, then its cross-origin frames (allowed hosts only, nested too), with
 // their controls in the sheet's coordinates: what a person sees and can click.
 async function snap(targetId, frameHosts = null) {
@@ -122,20 +138,31 @@ async function snap(targetId, frameHosts = null) {
   let targets = [];
   try { targets = await chrome.debugger.getTargets(); } catch {}
   const used = new Set([targetId]);
+  const usedFrames = new Set();
   const queue = (top.crossOriginFrames || []).map((f) => ({ ...f, ox: 0, oy: 0, depth: 1 }));
   while (queue.length) {
     const f = queue.shift();
     const host = hostOf(f.src);
     if (frameHosts && !frameHosts.includes(host)) { notRead.push({ host, why: 'host not allowed for this token' }); continue; }
-    const t = frameTargetFor(f.src, targets, used);
-    if (!t) { notRead.push({ host, src: f.src.slice(0, 120), why: 'no debugger target for this frame (not a separate process?)', box: { x: f.ox + f.x, y: f.oy + f.y, w: f.w, h: f.h } }); continue; }
-    used.add(t.id);
+    // Same-site frames (payments.google.com inside pay.google.com) share the sheet's process:
+    // no target of their own, but a frame in its tree — read through an isolated world there.
+    // A frame in another process has its own target instead.
+    const inTree = frameInTree(await frameList(targetId), f.src, usedFrames);
+    const t = inTree ? null : frameTargetFor(f.src, targets, used);
+    if (!inTree && !t) { notRead.push({ host, src: f.src.slice(0, 120), why: 'frame not found in the sheet or as a target', box: { x: f.ox + f.x, y: f.oy + f.y, w: f.w, h: f.h } }); continue; }
+    if (t) used.add(t.id); else usedFrames.add(inTree.id);
     try {
-      const sub = await evalSnap(t.id);
+      let sub;
+      if (t) sub = await evalSnap(t.id);
+      else {
+        const w = await tcdp(targetId, 'Page.createIsolatedWorld', { frameId: inTree.id, worldName: 'fastlink-sheet', grantUniveralAccess: false });
+        sub = await evalSnap(targetId, w.executionContextId);
+      }
+      const t2 = t || { url: inTree.url };
       const ox = f.ox + f.x, oy = f.oy + f.y;
       for (const it of sub.items) items.push({ ...it, i: items.length, x: Math.round(it.x + ox), y: Math.round(it.y + oy), frame: host });
       if (sub.text) texts.push(sub.text);
-      read.push(t.url.slice(0, 120));
+      read.push(t2.url.slice(0, 120));
       if (f.depth < 4) for (const g of sub.crossOriginFrames || []) queue.push({ ...g, ox, oy, depth: f.depth + 1 });
     } catch (e) { notRead.push({ host, why: e?.message || String(e) }); }
   }
