@@ -2,6 +2,7 @@
 //
 //   fast_watch   {tabId, selector, fields?, key?, limit?}  a DOM list in the page; events
 //                add / change / remove as the page changes (fast-ext/src/actions/watch.js)
+//   fast_watch   {tabId, notifications:true}  each notification the page shows is one event
 //   fast_capture {tabId, url, method?, body?, maxBody?}     the tab's own requests whose URL
 //                contains `url`: request headers + body, status, response headers + body
 //   fast_watch_read {watchId, after, waitSec}  events with seq > after; waits up to 25 s for
@@ -29,7 +30,7 @@ const bodyPrefix = (id, seq) => `${BD}${id}:${seq == null ? '' : String(seq).pad
 const bodyKey = (id, seq, k) => `${bodyPrefix(id, seq)}${String(k).padStart(4, '0')}`;
 export const WATCH_MAX_PER_ACCOUNT = 50;
 // Kept per watch: a DOM watch's events are small; a capture's carry bodies up to 2 MB.
-const KEEP = { dom: 1000, request: 100 };
+const KEEP = { dom: 1000, notify: 1000, request: 100 };
 const EVENT_MAX_CHARS = 1_500_000;       // one stored value (DO SQLite values are ≤ 2 MB)
 const READ_MAX_CHARS = 8_000_000;        // one fast_watch_read answer
 const READ_WAIT_MAX_S = 25;
@@ -129,12 +130,12 @@ export async function watchCreate(relay, target, action, extArgs) {
     return { error: `This account already has ${active.length} watches (the limit is ${WATCH_MAX_PER_ACCOUNT}). Stop some with fast_watch_stop.`, watches: active.map((m) => ({ watchId: m.id, kind: m.kind, browser: m.browser, tabId: m.tabId })) };
   }
   const id = crypto.randomUUID();
-  const kind = action === 'fast_capture' ? 'request' : 'dom';
+  const kind = action === 'fast_capture' ? 'request' : extArgs.notifications === true ? 'notify' : 'dom';
   const meta = {
     id, kind, browser: target.name, deviceToken: target.deviceToken, tabId: extArgs.tabId ?? null,
     state: 'pending', createdAt: Date.now(), firstSeq: 0, lastSeq: 0, lastN: 0,
     what: kind === 'request' ? { url: extArgs.url, ...(extArgs.method ? { method: extArgs.method } : {}) }
-      : extArgs.notifications === true ? { notifications: true } : { selector: extArgs.selector },
+      : kind === 'notify' ? { notifications: true } : { selector: extArgs.selector },
   };
   await relay.ctx.storage.put(META + id, meta);
   const payload = await relay.callExtension(action, { ...extArgs, watchId: id }, undefined, target);
@@ -154,7 +155,7 @@ export async function watchCreate(relay, target, action, extArgs) {
   return {
     result: {
       ...result, watchId: id, after: 0,
-      hint: `Events arrive as the ${kind === 'request' ? 'tab makes matching requests' : extArgs.notifications === true ? 'page shows notifications' : 'page changes'}: call fast_watch_read {watchId:"${id}", after:0} and then after = each result's next. fast_watch_stop ends it.`,
+      hint: `Events arrive as the ${{ request: 'tab makes matching requests', notify: 'page shows notifications', dom: 'page changes' }[kind]}: call fast_watch_read {watchId:"${id}", after:0} and then after = each result's next. fast_watch_stop ends it.`,
     },
     tabId: payload.tabId,
   };

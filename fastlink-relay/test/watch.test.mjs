@@ -163,3 +163,19 @@ test('a 1.9 MB capture body is stored in pieces and read back whole; trimming an
   await p;
   assert.equal([...storage.m.keys()].filter((k) => k.startsWith('wbd:') || k.startsWith('wev:')).length, 0);
 });
+
+test('notifications:true: sent to a 0.4.46+ browser without selector, read back as kind notify; refused on older', async () => {
+  const a = fakeSocket('tokA', Date.now(), '0.4.46');
+  const { r } = await makeRelay({ devices: [{ name: 'hvm', token: 'tokA' }], sockets: [a] });
+  const { out, call } = await started(r, a, 'fast_watch', { tabId: 5, notifications: true });
+  assert.equal(call.args.notifications, true);
+  assert.equal(call.args.selector, undefined);
+  for (let n = 1; n <= 3; n++) await push(r, a, out.watchId, n, [{ kind: 'notification', title: 'Tack', body: `burst ${n}`, tag: 'c1' }]);
+  const rd = (await mcpCall(r, 'fast_watch_read', { watchId: out.watchId, after: 0, waitSec: 0 })).data;
+  assert.equal(rd.kind, 'notify');
+  assert.deepEqual(rd.events.map((e) => e.body), ['burst 1', 'burst 2', 'burst 3']);
+  const old = fakeSocket('tokB', Date.now(), '0.4.45');
+  const { r: r2 } = await makeRelay({ devices: [{ name: 'w', token: 'tokB' }], sockets: [old] });
+  assert.match((await mcpCall(r2, 'fast_watch', { tabId: 5, notifications: true })).data.error, /needs 0\.4\.46/);
+  assert.equal(old.sent.filter((m) => m.type === 'call').length, 0);
+});
