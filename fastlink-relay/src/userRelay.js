@@ -122,6 +122,8 @@ export const supportsTabId = (v) => versionAtLeast(v, TABID_MIN_VERSION);
 // Actions an older extension doesn't know: refused with "update FastLink", never sent.
 // A page target that is not a tab (`targetId`, the Google Pay sheet) from this version on.
 export const SHEET_MIN_VERSION = '0.4.36';
+// fast_watch {notifications:true} (a notify watch) from this version on.
+export const NOTIFY_WATCH_MIN_VERSION = '0.4.46';
 export const ACTION_MIN_VERSION = { fast_upload: '0.4.31', fast_watch: '0.4.33', fast_capture: '0.4.33', fast_watch_stop: '0.4.33' };
 
 export class UserRelay extends DurableObject {
@@ -671,7 +673,7 @@ export class UserRelay extends DurableObject {
     if (rest.targetId != null && !versionAtLeast(extVersion(ws), SHEET_MIN_VERSION)) {
       return Promise.resolve({ error: `Browser "${target.name || '?'}" runs FastLink ${extVersion(ws) || 'an unknown version'}, which can't act on a sheet (targetId needs ${SHEET_MIN_VERSION}). Update it (fast_update), then retry.`, extensionTooOld: true });
     }
-    const minV = ACTION_MIN_VERSION[action];
+    const minV = action === 'fast_watch' && rest.notifications === true ? NOTIFY_WATCH_MIN_VERSION : ACTION_MIN_VERSION[action];
     if (minV && !versionAtLeast(extVersion(ws), minV)) {
       return Promise.resolve({
         error: `Browser "${target.name || '?'}" runs FastLink ${extVersion(ws) || 'an unknown version'}, which has no ${action} (needs ${minV} or newer). Update it (fast_update), then retry.`,

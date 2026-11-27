@@ -133,7 +133,8 @@ export async function watchCreate(relay, target, action, extArgs) {
   const meta = {
     id, kind, browser: target.name, deviceToken: target.deviceToken, tabId: extArgs.tabId ?? null,
     state: 'pending', createdAt: Date.now(), firstSeq: 0, lastSeq: 0, lastN: 0,
-    what: kind === 'dom' ? { selector: extArgs.selector } : { url: extArgs.url, ...(extArgs.method ? { method: extArgs.method } : {}) },
+    what: kind === 'request' ? { url: extArgs.url, ...(extArgs.method ? { method: extArgs.method } : {}) }
+      : extArgs.notifications === true ? { notifications: true } : { selector: extArgs.selector },
   };
   await relay.ctx.storage.put(META + id, meta);
   const payload = await relay.callExtension(action, { ...extArgs, watchId: id }, undefined, target);
@@ -153,7 +154,7 @@ export async function watchCreate(relay, target, action, extArgs) {
   return {
     result: {
       ...result, watchId: id, after: 0,
-      hint: `Events arrive as the ${kind === 'dom' ? 'page changes' : 'tab makes matching requests'}: call fast_watch_read {watchId:"${id}", after:0} and then after = each result's next. fast_watch_stop ends it.`,
+      hint: `Events arrive as the ${kind === 'request' ? 'tab makes matching requests' : extArgs.notifications === true ? 'page shows notifications' : 'page changes'}: call fast_watch_read {watchId:"${id}", after:0} and then after = each result's next. fast_watch_stop ends it.`,
     },
     tabId: payload.tabId,
   };

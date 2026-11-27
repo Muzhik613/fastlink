@@ -80,7 +80,7 @@ const RELAY_TOOLS = [
 const BROWSER_TOOLS = [
   {
     name: 'fast_watch',
-    description: 'Watch a list in the page: every element matching `selector` becomes an item ({text}, or your `fields`); each change is pushed as an add / change / remove event, read with fast_watch_read. Works in a background tab. Returns watchId and the items now.',
+    description: 'Watch a list in the page: each item matching `selector` ({text} or your `fields`) changing is an add / change / remove event, read with fast_watch_read. Works in a background tab. Or notifications:true: each notification the page shows is one {kind:"notification", title, body, tag} event.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -88,8 +88,8 @@ const BROWSER_TOOLS = [
         fields: { type: 'object', description: '{name: "css" (text of that child) | "css@attr" | "@attr" (the item\'s attribute) | "" (the item\'s text)}. Default {text}.' },
         key: { type: 'string', description: 'Field that identifies an item, so an edit is a change, not remove + add.' },
         limit: { type: 'number', description: 'Watch the first N matches, 1-200 (default 50).' },
+        notifications: { type: 'boolean', description: 'true: watch the notifications the page shows instead of a list (no selector).' },
       },
-      required: ['selector'],
     },
   },
   {

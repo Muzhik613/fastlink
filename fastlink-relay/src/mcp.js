@@ -569,8 +569,9 @@ async function dispatchTool(params, relay, trace) {
   // Live watches: a DOM list (fast_watch) or the tab's own requests (fast_capture), events read
   // with fast_watch_read. A service token captures only on, and only requests to, its fetch origins.
   if (name === 'fast_watch' || name === 'fast_capture') {
-    const { tabId, selector, fields, key, limit, url, method, body, maxBody } = args;
-    let extArgs = name === 'fast_watch' ? { tabId, selector, fields, key, limit } : { tabId, url, method, body, maxBody };
+    const { tabId, selector, fields, key, limit, notifications, url, method, body, maxBody } = args;
+    let extArgs = name === 'fast_capture' ? { tabId, url, method, body, maxBody }
+      : notifications === true ? { tabId, notifications: true } : { tabId, selector, fields, key, limit };
     if (name === 'fast_capture' && scope) {
       const origins = fetchScope(trace);
       if (!origins) return textResult({ error: 'fast_capture is only for service tokens with allowed fetch origins.' });

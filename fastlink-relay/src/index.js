@@ -100,8 +100,51 @@ export class FastlinkApiHandler extends WorkerEntrypoint {
     const po = this.ctx?.props?.origins ?? this.props?.origins;
     if (isAgent && Array.isArray(po)) fwd.headers.set('X-Fastlink-Origins', JSON.stringify(po));
     else fwd.headers.delete('X-Fastlink-Origins');
-    const res = await stub.fetch(fwd);
-    return withCors(res, cors);
+    return withCors(await forwardMcp(env, String(userId), stub, fwd), cors);
+  }
+}
+
+// Tools that only read: repeating one after a relay restart changes nothing.
+const READ_ONLY_TOOLS = new Set(['fast_watch_read', 'fast_status', 'fast_list', 'fast_snapshot', 'fast_text', 'fast_screenshot', 'fast_frame_read']);
+
+// A JSON-RPC message that is safe to send again (it can't have acted in a browser twice).
+export function mcpRetrySafe(msg) {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return false;
+  if (msg.method === 'tools/call') return READ_ONLY_TOOLS.has(msg.params?.name);
+  return typeof msg.method === 'string';   // initialize, tools/list, notifications, ping
+}
+
+// The answer for a call the relay lost when the user's Durable Object restarted (a deploy,
+// a Cloudflare runtime restart, a log tail attaching). Without it the throw is a bare
+// Cloudflare 1101 page. A tool call gets a tool error the client can read; others a JSON-RPC error.
+export function restartedReply(msg, retried) {
+  const text = retried
+    ? 'The FastLink relay restarted twice during this call. Call it again.'
+    : 'The FastLink relay restarted during this call, so it may or may not have run in the browser. Check the page before repeating an action.';
+  const id = msg && typeof msg === 'object' && 'id' in msg ? msg.id : null;
+  const body = msg?.method === 'tools/call'
+    ? { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: true, relayRestarted: true } }
+    : { jsonrpc: '2.0', id, error: { code: -32603, message: text, data: { relayRestarted: true } } };
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
+// Forward one /mcp request to the user's DO. A DO reset throws here (retryable); a
+// read-only call is sent once more to a fresh stub, anything else answers "restarted".
+export async function forwardMcp(env, userId, stub, fwd) {
+  const raw = fwd.method === 'POST' ? await fwd.text() : null;
+  const make = () => new Request(fwd.url, { method: fwd.method, headers: fwd.headers, body: raw });
+  try {
+    return await stub.fetch(make());
+  } catch (err) {
+    let msg = null;
+    try { msg = raw ? JSON.parse(raw) : null; } catch { /* not JSON */ }
+    console.log(JSON.stringify({ do_reset: String(err?.message || err).slice(0, 200), retryable: !!err?.retryable, method: msg?.method || null, tool: msg?.params?.name || null }));
+    if (!err?.retryable || !mcpRetrySafe(msg)) return restartedReply(msg, false);
+    try {
+      return await env.USER_RELAY.get(env.USER_RELAY.idFromName(userId)).fetch(make());
+    } catch {
+      return restartedReply(msg, true);
+    }
   }
 }
 
