@@ -91,6 +91,7 @@ async function endLocal(id, reason = null) {
   await saveRegistry();
   try { await store.del(STATE_PREFIX + id); } catch {}
   try { await kinds[w.kind]?.stop?.(id, w); } catch {}
+  if (w.kind === 'notify') await syncNotifyScript();
   if (reason) await pushEvents(id, [{ kind: 'ended', reason }]);
   return true;
 }
@@ -161,7 +162,7 @@ async function installIn(tabId, id, spec) {
 }
 
 // fast_watch {watchId, tabId, selector, fields?, key?, limit?} → the items now.
-// fast_watch {watchId, tabId, notifications:true} → a notify watch (see installNotifyHook).
+// fast_watch {watchId, tabId, notifications:true} → a notify watch (see src/notifyHook.js).
 export async function watchStart(args = {}) {
   const id = args.watchId;
   if (typeof id !== 'string' || !WATCH_ID_RE.test(id)) return { error: 'fast_watch: no watchId (the relay assigns it; update the relay)' };
@@ -182,12 +183,31 @@ export async function watchStart(args = {}) {
 
 // ---- notify watch -----------------------------------------------------------
 
+const NOTIFY_SCRIPT_ID = 'fastlink-notify-hook';
+const NOTIFY_FILE = 'src/notifyHook.js';
+
 async function installNotifyIn(tabId, id) {
-  const r = await injectInTab({ world: 'MAIN', tabId, func: installNotifyHook, args: [] });
+  const r = await injectInTab({ world: 'MAIN', tabId, files: [NOTIFY_FILE] });
   if (r.error) return r;
   const l = await injectInTab({ world: 'ISOLATED', tabId: r.tab.id, func: installNotifyListener, args: [id] });
   if (l.error) return l;
   return { ...JSON.parse(r.result), tabId: r.tab.id, origin: originOf(r.tab.url) };
+}
+
+// The hook runs at document_start on every origin that has a notify watch (and nowhere
+// else), so a page that keeps its own Notification reference from startup is covered
+// from its next load on. Called whenever the set of notify watches changes.
+export function notifyMatches(reg) {
+  return [...new Set(Object.values(reg || {}).filter((w) => w.kind === 'notify' && w.origin).map((w) => `${w.origin}/*`))].sort();
+}
+async function syncNotifyScript() {
+  const matches = notifyMatches(registry);
+  try {
+    const have = await chrome.scripting.getRegisteredContentScripts({ ids: [NOTIFY_SCRIPT_ID] });
+    if (!matches.length) { if (have.length) await chrome.scripting.unregisterContentScripts({ ids: [NOTIFY_SCRIPT_ID] }); return; }
+    const spec = { id: NOTIFY_SCRIPT_ID, matches, js: [NOTIFY_FILE], runAt: 'document_start', world: 'MAIN', allFrames: false, persistAcrossSessions: true };
+    if (have.length) await chrome.scripting.updateContentScripts([spec]); else await chrome.scripting.registerContentScripts([spec]);
+  } catch { /* the runtime install still covers pages that look the API up per call */ }
 }
 
 async function notifyStart(id, args) {
@@ -197,10 +217,11 @@ async function notifyStart(id, args) {
     if (r.error) return r;
     if (!r.origin) return { error: 'fast_watch works only on an http(s) page' };
     await addWatch(id, { kind: 'notify', tabId: r.tabId, origin: r.origin, spec: { notifications: true } });
-    return {
-      watchId: id, tabId: r.tabId, notifications: true, permission: r.permission,
-      ...(r.permission === 'granted' ? {} : { note: `This site's notification permission in Chrome is "${r.permission}", so the page shows none and this watch sees none: allow notifications for ${r.origin} in that browser.` }),
-    };
+    await syncNotifyScript();
+    const notes = [];
+    if (r.permission !== 'granted') notes.push(`This site's notification permission in Chrome is "${r.permission}", so the page shows none and this watch sees none: allow notifications for ${r.origin} in that browser.`);
+    if (!r.early) notes.push('The hook was added after this page loaded. Pages that keep their own reference to Notification from startup (Messages for web does) are only covered after the tab loads again: reload it once (fast_nav to its URL). The watch stays on across reloads.');
+    return { watchId: id, tabId: r.tabId, notifications: true, permission: r.permission, hookedAtLoad: r.early, ...(notes.length ? { note: notes.join(' ') } : {}) };
   });
 }
 
@@ -294,6 +315,7 @@ try {
   chrome.runtime.onInstalled.addListener(async (d) => {
     if (d.reason !== 'update') return;
     await ready;
+    await syncNotifyScript();
     for (const [id, w] of Object.entries(registry)) {
       if (w.kind === 'request') { endWatch(id, 'FastLink was updated in that browser, which ends a capture: start it again').catch(() => {}); continue; }
       reinstall(id, w).then((ok) => { if (!ok) endWatch(id, 'FastLink was updated and the watch could not be put back in its tab (closed or on another site)'); }).catch(() => {});
@@ -306,6 +328,7 @@ try {
     for (const id of Object.keys(registry)) { try { await store.del(STATE_PREFIX + id); } catch {} }
     registry = {};
     await saveRegistry();
+    await syncNotifyScript();
     resendHello();
   });
   // The tab committed a page: watches approved for another site end before it loads anything.
@@ -389,41 +412,6 @@ export function installWatch(watchId, spec) {
   mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
   W.set(watchId, { stop });
   return JSON.stringify(first);
-}
-
-// Runs in the page's MAIN world (self-contained). Wraps the two ways a page shows a
-// notification so each call is also announced as a 'fastlink-notify' DOM event (detail =
-// JSON string: a string crosses into the isolated world). The page's call is unchanged.
-// Idempotent: a second install (another watch, a re-install) finds the wrap in place.
-export function installNotifyHook() {
-  const permission = (() => { try { return Notification.permission; } catch { return 'unsupported'; } })();
-  if (globalThis.__fastlinkNotifyHooked) return JSON.stringify({ permission });
-  const announce = (via, title, opts) => {
-    try {
-      const o = opts && typeof opts === 'object' ? opts : {};
-      let data = null;
-      try { data = o.data === undefined ? null : JSON.parse(JSON.stringify(o.data)); } catch { data = null; }
-      document.dispatchEvent(new CustomEvent('fastlink-notify', { detail: JSON.stringify({ via, title: String(title ?? ''), body: o.body == null ? null : String(o.body), tag: o.tag == null ? null : String(o.tag), timestamp: o.timestamp ?? null, data }) }));
-    } catch { /* never break the page's notification */ }
-  };
-  try {
-    const P = globalThis.ServiceWorkerRegistration?.prototype;
-    if (P && typeof P.showNotification === 'function') {
-      const orig = P.showNotification;
-      P.showNotification = function showNotification(title, opts) { announce('showNotification', title, opts); return orig.apply(this, arguments); };
-    }
-  } catch { /* no service workers here */ }
-  try {
-    const N = globalThis.Notification;
-    if (typeof N === 'function') {
-      const Wrapped = function Notification(title, opts) { announce('Notification', title, opts); return new.target ? Reflect.construct(N, [title, opts], new.target) : N(title, opts); };
-      Object.setPrototypeOf(Wrapped, N);
-      Wrapped.prototype = N.prototype;
-      globalThis.Notification = Wrapped;
-    }
-  } catch { /* leave Notification alone */ }
-  globalThis.__fastlinkNotifyHooked = true;
-  return JSON.stringify({ permission });
 }
 
 // Runs in FastLink's isolated world: forwards 'fastlink-notify' events of watch `watchId`

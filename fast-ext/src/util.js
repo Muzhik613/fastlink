@@ -85,12 +85,13 @@ export async function getInjectableTab(tabId) {
   return { tab };
 }
 
-export async function injectInTab({ world = 'MAIN', func, args = [], tabId }) {
+// `func` (+ `args`) or `files` (the result is the file's completion value).
+export async function injectInTab({ world = 'MAIN', func, args = [], files, tabId }) {
   const got = await getInjectableTab(tabId);
   if (got.error) return got;
   try {
     const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId: got.tab.id }, world, func, args,
+      target: { tabId: got.tab.id }, world, ...(files ? { files } : { func, args }),
     });
     return { tab: got.tab, result };
   } catch (e) {
