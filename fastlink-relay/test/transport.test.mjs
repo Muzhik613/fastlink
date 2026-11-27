@@ -194,6 +194,17 @@ test('a socket with no keepalive for 60 s is dropped: not routed to, closed, its
   assert.equal(STALE_SOCKET_MS, 60000);
 });
 
+test('a browser busy answering calls is live even when the auto-response stamp is old (11-27 Aliya)', async () => {
+  const now = Date.now();
+  // The DO stayed awake through a long run: no auto-response stamp for minutes, but
+  // the browser sent frames seconds ago. Never drop it; a ping the handler sees is answered.
+  const busy = fakeSocket('tokA', now - 600e3, '0.4.8'); busy.lastPing = now - 300e3;
+  const { r } = await makeRelay({ devices: [{ name: 'aliya', token: 'tokA' }], sockets: [busy] });
+  await r.webSocketMessage(busy, JSON.stringify({ ping: true }));
+  assert.equal((await r.resolveTarget('aliya')).ws, busy);
+  assert.notEqual(busy.readyState, 3, 'not closed');
+});
+
 test('the same browser reconnecting: the live new socket wins over its dead old one', async () => {
   const now = Date.now();
   const old = fakeSocket('tokA', now - 7200e3, '0.4.6'); old.lastPing = now - 3500e3;

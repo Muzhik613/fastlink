@@ -136,6 +136,11 @@ export class UserRelay extends DurableObject {
     // while a call is in flight (the /__mcp fetch promise is awaiting), so the
     // map is never lost mid-call; when fully idle there is nothing pending.
     this.pending = new Map();
+    // ws -> ms of the last frame this DO received on it while awake (results, hello,
+    // a ping the handler saw). Liveness counts it next to the runtime's auto-response
+    // timestamp: a browser busy answering calls is alive (11-27: a 4-min Aliya run kept
+    // the DO awake, the auto-response stamp went stale, and live sockets were dropped).
+    this.lastRx = new WeakMap();
     // deviceToken -> recorded lock key id, for sockets accepted while a lock is being
     // recorded (#recordLock). The durable truth is D1 + each socket's serverLock stamp.
     this.locks = new Map();
@@ -263,7 +268,7 @@ export class UserRelay extends DurableObject {
       if (ws.readyState !== 1) continue; // WebSocket.OPEN
       let a = {};
       try { a = ws.deserializeAttachment() || {}; } catch { /* unstamped */ }
-      const seen = Math.max(a.connectedAt || 0, this.#lastPing(ws));
+      const seen = Math.max(a.connectedAt || 0, this.#lastPing(ws), this.lastRx.get(ws) || 0);
       if (now - seen > STALE_SOCKET_MS) {
         try { ws.close(1011, 'no keepalive'); } catch { /* already closing */ }
         for (const [id, e] of this.pending) if (e.ws === ws) this.#settle(id, { error: 'The browser stopped answering (no keepalive), so the relay disconnected it. It reconnects by itself when it is still running.' });
@@ -455,12 +460,16 @@ export class UserRelay extends DurableObject {
 
   // Runtime delivers ext frames here (waking the DO from hibernation as needed).
   async webSocketMessage(ws, raw) {
+    this.lastRx.set(ws, Date.now());   // any frame proves the browser is alive (#liveSockets)
     let msg;
     try {
       msg = JSON.parse(typeof raw === 'string' ? raw : new TextDecoder().decode(raw));
     } catch {
       return; // ignore non-JSON
     }
+    // A keepalive that reached the handler instead of the runtime's auto-response:
+    // answer it, or the extension's silence watchdog sees a dead socket.
+    if (msg && msg.ping === true) { try { ws.send('{"pong":true}'); } catch { /* closing */ } return; }
 
     if (msg.type === 'result' || msg.type === 'queued' || msg.type === 'started') {
       const entry = this.pending.get(msg.id);
