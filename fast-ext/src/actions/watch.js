@@ -1,15 +1,19 @@
 // watch.js — live watches on a tab, pushed to the relay as they happen (fast_watch_read there).
 //
-// Two kinds share one registry and one delivery path (watchOutbox.js):
+// Three kinds share one registry and one delivery path (watchOutbox.js):
 //   dom      fast_watch: a MutationObserver in the page (isolated world) re-reads the items
 //            matching `selector` whenever the DOM changes; the service worker diffs them
 //            against the last list it saw and pushes add / change / remove events.
+//   notify   fast_watch {notifications:true}: every notification the page shows (a hook on
+//            showNotification / new Notification in the page) is one event, so a burst of
+//            messages is a burst of events even when the page renders only the last one.
 //   request  fast_capture (capture.js): matching network requests with headers and body.
-// The relay assigns every watchId. The registry (chrome.storage.session) survives a
-// service-worker restart; a page load re-installs that tab's DOM watches and diffs against
-// the stored list, so a reload reports only what really changed. A closed tab ends its
-// watches ({kind:'ended'}). The hello names the live watch ids, so the relay ends the ones
-// a restarted Chrome or a reloaded FastLink no longer runs.
+// The relay assigns every watchId. The registry, the last lists and the outbox live in
+// chrome.storage.local: a service-worker restart AND a FastLink update keep them (an update
+// re-installs dom/notify watches in their tabs and diffs against the stored list, so nothing
+// that changed meanwhile is lost). A Chrome restart (new tab ids) clears them. A page load
+// re-installs that tab's watches. A closed tab ends its watches ({kind:'ended'}). The hello
+// names the live watch ids, so the relay ends the ones a restarted Chrome no longer runs.
 
 import { injectInTab } from '../util.js';
 import { maskCardNumbers } from './frames.js';
@@ -23,24 +27,24 @@ export const WATCH_LIMIT_MAX = 200;
 const MAX_FIELDS = 20;
 const WATCH_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
 
-const session = {
-  get: async (k) => (await chrome.storage.session.get(k))[k],
-  set: (k, v) => chrome.storage.session.set({ [k]: v }),
-  del: (k) => chrome.storage.session.remove(k),
+const store = {
+  get: async (k) => (await chrome.storage.local.get(k))[k],
+  set: (k, v) => chrome.storage.local.set({ [k]: v }),
+  del: (k) => chrome.storage.local.remove(k),
 };
 
 let registry = null;   // { [watchId]: { kind, tabId, spec, createdAt } }
 export const ready = (async () => {
-  try { registry = (await session.get(REG_KEY)) || {}; } catch { registry = {}; }
+  try { registry = (await store.get(REG_KEY)) || {}; } catch { registry = {}; }
 })().then(() => resendHello());
-const saveRegistry = () => session.set(REG_KEY, registry).catch(() => {});
+const saveRegistry = () => store.set(REG_KEY, registry).catch(() => {});
 
 // Kind-specific teardown (capture.js registers 'request').
-const kinds = { dom: { stop: stopDomInPage } };
+const kinds = { dom: { stop: stopDomInPage }, notify: { stop: stopNotifyInPage } };
 export function registerKind(kind, handlers) { kinds[kind] = handlers; }
 
 export const outbox = createWatchOutbox({
-  storage: { get: session.get, set: session.set },
+  storage: { get: store.get, set: store.set },
   send: sendRelayFrame,
   onGone: (id) => { endWatch(id).catch(() => {}); },
 });
@@ -85,7 +89,7 @@ async function endLocal(id, reason = null) {
   if (!w) return false;
   delete registry[id];
   await saveRegistry();
-  try { await session.del(STATE_PREFIX + id); } catch {}
+  try { await store.del(STATE_PREFIX + id); } catch {}
   try { await kinds[w.kind]?.stop?.(id, w); } catch {}
   if (reason) await pushEvents(id, [{ kind: 'ended', reason }]);
   return true;
@@ -157,9 +161,11 @@ async function installIn(tabId, id, spec) {
 }
 
 // fast_watch {watchId, tabId, selector, fields?, key?, limit?} → the items now.
+// fast_watch {watchId, tabId, notifications:true} → a notify watch (see installNotifyHook).
 export async function watchStart(args = {}) {
   const id = args.watchId;
   if (typeof id !== 'string' || !WATCH_ID_RE.test(id)) return { error: 'fast_watch: no watchId (the relay assigns it; update the relay)' };
+  if (args.notifications === true) return notifyStart(id, args);
   const chk = checkDomSpec(args);
   if (chk.error) return chk;
   await ready;
@@ -169,9 +175,70 @@ export async function watchStart(args = {}) {
     const items = maskCardNumbers(r.items);
     if (!r.origin) return { error: 'fast_watch works only on an http(s) page' };
     await addWatch(id, { kind: 'dom', tabId: r.tabId, origin: r.origin, spec: chk.spec });
-    await session.set(STATE_PREFIX + id, stateOf(items, chk.spec.key));
+    await store.set(STATE_PREFIX + id, stateOf(items, chk.spec.key));
     return { watchId: id, tabId: r.tabId, matches: r.matches, items };
   });
+}
+
+// ---- notify watch -----------------------------------------------------------
+
+async function installNotifyIn(tabId, id) {
+  const r = await injectInTab({ world: 'MAIN', tabId, func: installNotifyHook, args: [] });
+  if (r.error) return r;
+  const l = await injectInTab({ world: 'ISOLATED', tabId: r.tab.id, func: installNotifyListener, args: [id] });
+  if (l.error) return l;
+  return { ...JSON.parse(r.result), tabId: r.tab.id, origin: originOf(r.tab.url) };
+}
+
+async function notifyStart(id, args) {
+  await ready;
+  return serial(id, async () => {
+    const r = await installNotifyIn(args.tabId, id);
+    if (r.error) return r;
+    if (!r.origin) return { error: 'fast_watch works only on an http(s) page' };
+    await addWatch(id, { kind: 'notify', tabId: r.tabId, origin: r.origin, spec: { notifications: true } });
+    return {
+      watchId: id, tabId: r.tabId, notifications: true, permission: r.permission,
+      ...(r.permission === 'granted' ? {} : { note: `This site's notification permission in Chrome is "${r.permission}", so the page shows none and this watch sees none: allow notifications for ${r.origin} in that browser.` }),
+    };
+  });
+}
+
+// A notification the page showed: one event. Only from the watch's own tab and origin.
+function onNotify(id, tabId, n, origin) {
+  return serial(id, async () => {
+    await ready;
+    const w = registry[id];
+    if (!w || w.kind !== 'notify' || w.tabId !== tabId) return false;
+    if (origin !== w.origin) return false;
+    const clip = (s, max) => (s == null ? null : String(s).slice(0, max));
+    let data = null;
+    try { if (n.data != null) { const j = JSON.stringify(n.data); data = j.length <= 4000 ? JSON.parse(j) : null; } } catch { data = null; }
+    const [masked] = maskCardNumbers([{ title: clip(n.title, 500), body: clip(n.body, 4000) }]);
+    await pushEvents(id, [{
+      kind: 'notification', title: masked.title, body: masked.body, tag: clip(n.tag, 200),
+      ...(n.timestamp ? { timestamp: Number(n.timestamp) || null } : {}), ...(data != null ? { data } : {}),
+      via: n.via === 'Notification' ? 'Notification' : 'showNotification',
+    }]);
+    return true;
+  });
+}
+
+async function stopNotifyInPage(id, w) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: w.tabId }, world: 'ISOLATED', func: (wid) => { globalThis.__fastlinkNotify?.get(wid)?.(); globalThis.__fastlinkNotify?.delete(wid); }, args: [id] });
+  } catch { /* tab gone or navigated */ }
+}
+
+// Re-install a dom/notify watch in its tab (a page load, or FastLink updated) and report
+// what changed since the stored list. Returns false when the tab can't take it.
+async function reinstall(id, w) {
+  if (w.kind === 'notify') { const r = await installNotifyIn(w.tabId, id); return !r.error && r.origin === w.origin; }
+  if (w.kind !== 'dom') return false;
+  const r = await serial(id, async () => { const x = await installIn(w.tabId, id, w.spec); return x.error ? null : x; });
+  if (!r || r.origin !== w.origin) return false;
+  await onItems(id, w.tabId, r.items, r.origin);
+  return true;
 }
 
 // A page reported its list (or a reload re-read it): push what changed. Only from the
@@ -183,12 +250,12 @@ function onItems(id, tabId, items, origin) {
     const w = registry[id];
     if (!w || w.kind !== 'dom' || w.tabId !== tabId) return false;
     if (origin !== w.origin) return false;   // a report from a page on another site is never sent
-    const prev = (await session.get(STATE_PREFIX + id)) || [];
+    const prev = (await store.get(STATE_PREFIX + id)) || [];
     if (!items.length && prev.length) return true;
     const next = stateOf(maskCardNumbers(items), w.spec.key);
     const events = diffItems(prev, next);
     if (!events.length) return true;
-    await session.set(STATE_PREFIX + id, next);
+    await store.set(STATE_PREFIX + id, next);
     await pushEvents(id, events);
     return true;
   });
@@ -212,6 +279,35 @@ try {
     }).catch(() => {});
     return false;
   });
+  chrome.runtime.onMessage.addListener((msg, sender) => {
+    if (msg?.type !== 'fastlink:watch-notify' || typeof msg.watchId !== 'string' || !msg.n || typeof msg.n !== 'object') return false;
+    const tabId = sender?.tab?.id;
+    if (typeof tabId !== 'number' || sender.id !== chrome.runtime.id) return false;
+    onNotify(msg.watchId, tabId, msg.n, originOf(sender.url || sender.tab?.url || '')).then((known) => {
+      if (known === false) stopNotifyInPage(msg.watchId, { tabId });
+    }).catch(() => {});
+    return false;
+  });
+  // FastLink updated or reloaded: the pages' observers died with the old copy. Put the
+  // dom/notify watches back in their tabs (same tab ids) and report what changed meanwhile.
+  // A capture's debugger session is gone too: it ends and says so.
+  chrome.runtime.onInstalled.addListener(async (d) => {
+    if (d.reason !== 'update') return;
+    await ready;
+    for (const [id, w] of Object.entries(registry)) {
+      if (w.kind === 'request') { endWatch(id, 'FastLink was updated in that browser, which ends a capture: start it again').catch(() => {}); continue; }
+      reinstall(id, w).then((ok) => { if (!ok) endWatch(id, 'FastLink was updated and the watch could not be put back in its tab (closed or on another site)'); }).catch(() => {});
+    }
+  });
+  // Chrome started: tab ids are new, so stored watches point nowhere. The hello then lets
+  // the relay end them ("restarted"); unacked events still go out.
+  chrome.runtime.onStartup.addListener(async () => {
+    await ready;
+    for (const id of Object.keys(registry)) { try { await store.del(STATE_PREFIX + id); } catch {} }
+    registry = {};
+    await saveRegistry();
+    resendHello();
+  });
   // The tab committed a page: watches approved for another site end before it loads anything.
   chrome.webNavigation.onCommitted.addListener(async (d) => {
     if (d.frameId !== 0) return;
@@ -224,12 +320,9 @@ try {
   chrome.webNavigation.onCompleted.addListener(async (d) => {
     if (d.frameId !== 0) return;
     await ready;
-    for (const [id, w] of watchesOnTab(d.tabId, 'dom')) {
-      if (originOf(d.url) !== w.origin) continue;
-      serial(id, async () => {
-        const r = await installIn(d.tabId, id, w.spec);
-        return r.error ? null : r.items;
-      }).then((items) => items && onItems(id, d.tabId, items, originOf(d.url))).catch(() => {});
+    for (const [id, w] of watchesOnTab(d.tabId)) {
+      if (w.kind === 'request' || originOf(d.url) !== w.origin) continue;
+      reinstall(id, w).catch(() => {});
     }
   });
   chrome.tabs.onRemoved.addListener(async (tabId) => {
@@ -296,4 +389,56 @@ export function installWatch(watchId, spec) {
   mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
   W.set(watchId, { stop });
   return JSON.stringify(first);
+}
+
+// Runs in the page's MAIN world (self-contained). Wraps the two ways a page shows a
+// notification so each call is also announced as a 'fastlink-notify' DOM event (detail =
+// JSON string: a string crosses into the isolated world). The page's call is unchanged.
+// Idempotent: a second install (another watch, a re-install) finds the wrap in place.
+export function installNotifyHook() {
+  const permission = (() => { try { return Notification.permission; } catch { return 'unsupported'; } })();
+  if (globalThis.__fastlinkNotifyHooked) return JSON.stringify({ permission });
+  const announce = (via, title, opts) => {
+    try {
+      const o = opts && typeof opts === 'object' ? opts : {};
+      let data = null;
+      try { data = o.data === undefined ? null : JSON.parse(JSON.stringify(o.data)); } catch { data = null; }
+      document.dispatchEvent(new CustomEvent('fastlink-notify', { detail: JSON.stringify({ via, title: String(title ?? ''), body: o.body == null ? null : String(o.body), tag: o.tag == null ? null : String(o.tag), timestamp: o.timestamp ?? null, data }) }));
+    } catch { /* never break the page's notification */ }
+  };
+  try {
+    const P = globalThis.ServiceWorkerRegistration?.prototype;
+    if (P && typeof P.showNotification === 'function') {
+      const orig = P.showNotification;
+      P.showNotification = function showNotification(title, opts) { announce('showNotification', title, opts); return orig.apply(this, arguments); };
+    }
+  } catch { /* no service workers here */ }
+  try {
+    const N = globalThis.Notification;
+    if (typeof N === 'function') {
+      const Wrapped = function Notification(title, opts) { announce('Notification', title, opts); return new.target ? Reflect.construct(N, [title, opts], new.target) : N(title, opts); };
+      Object.setPrototypeOf(Wrapped, N);
+      Wrapped.prototype = N.prototype;
+      globalThis.Notification = Wrapped;
+    }
+  } catch { /* leave Notification alone */ }
+  globalThis.__fastlinkNotifyHooked = true;
+  return JSON.stringify({ permission });
+}
+
+// Runs in FastLink's isolated world: forwards 'fastlink-notify' events of watch `watchId`
+// to the service worker. A re-install replaces this watch's listener.
+export function installNotifyListener(watchId) {
+  const L = (globalThis.__fastlinkNotify ||= new Map());
+  L.get(watchId)?.();
+  const on = (e) => {
+    let n;
+    try { n = JSON.parse(e.detail); } catch { return; }
+    try { chrome.runtime.sendMessage({ type: 'fastlink:watch-notify', watchId, n }).catch(() => {}); }
+    catch { off(); }   // FastLink was reloaded: this copy can no longer report
+  };
+  const off = () => { document.removeEventListener('fastlink-notify', on); L.delete(watchId); };
+  document.addEventListener('fastlink-notify', on);
+  L.set(watchId, off);
+  return true;
 }
